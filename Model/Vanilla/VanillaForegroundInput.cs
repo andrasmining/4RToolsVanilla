@@ -24,6 +24,12 @@ namespace _4RTools.Model.Vanilla
     /// </summary>
     internal sealed class VanillaForegroundInput : IDisposable
     {
+        internal const int DeliberateDragStartHoldMs = 250;
+        internal const int DeliberateDragMoveSteps = 12;
+        internal const int DeliberateDragStepDelayMs = 100;
+        internal const int DeliberateDragDestinationHoldMs = 300;
+        internal const int DeliberateDragPostReleaseMs = 500;
+
         private static readonly object ForegroundGate = new object();
         private readonly Process process;
         private readonly IntPtr preferredWindow;
@@ -354,7 +360,9 @@ namespace _4RTools.Model.Vanilla
         {
             // Cart maintenance deliberately moves much more slowly than an ordinary click/drag.
             // This tolerates RDP/client lag without changing unrelated mouse automation.
-            DragNormalizedCore(fromX, fromY, toX, toY, 250, 12, 100, 300, 500, "SLOW DRAG");
+            DragNormalizedCore(fromX, fromY, toX, toY,
+                DeliberateDragStartHoldMs, DeliberateDragMoveSteps, DeliberateDragStepDelayMs,
+                DeliberateDragDestinationHoldMs, DeliberateDragPostReleaseMs, "SLOW DRAG");
         }
 
         private void DragNormalizedCore(double fromX, double fromY, double toX, double toY,
