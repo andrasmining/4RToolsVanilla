@@ -40,6 +40,8 @@ namespace Vanilla.Diagnostics.Tests
             Test("Autobattle STOP requires five continuous stationary seconds", StopStationaryWindow);
             Test("Autobattle STOP resets stillness when X/Y moves", StopMovementResetsWindow);
             Test("Autobattle STOP retries on the ten-second cadence", StopRetryCadence);
+            Test("Autobattle STOP aborts immediately when HP falls by more than ten percent", StopHpDamageAbort);
+            Test("Autobattle STOP tolerates exactly ten percent HP loss", StopHpExactThreshold);
             Test("Autobattle STOP stops after three moving attempts", StopBoundedFailure);
             Test("Autobattle STOP verification constants stay bounded", StopVerificationConstants);
             Test("Cancellation before startup sends no key", CancelBeforeStart);
@@ -275,12 +277,12 @@ namespace Vanilla.Diagnostics.Tests
             internal Action OnFocus, OnDelay;
             internal long UtcOffset;
             internal DateTimeOffset Now { get { return Epoch.AddMilliseconds(Ms + UtcOffset); } }
-            internal VanillaClientState Sample(int x = 10, int y = 20)
+            internal VanillaClientState Sample(int x = 10, int y = 20, uint hp = 100, uint maxHp = 100)
             {
                 var state = VanillaClientState.Create(Session, Now, null, new Dictionary<VanillaField, object>
                 {
                     { VanillaField.X, x }, { VanillaField.Y, y }, { VanillaField.Map, "map" },
-                    { VanillaField.CharacterName, "fake character" }, { VanillaField.CurrentHP, 100U }, { VanillaField.MaxHP, 100U }
+                    { VanillaField.CharacterName, "fake character" }, { VanillaField.CurrentHP, hp }, { VanillaField.MaxHP, maxHp }
                 }, null, null);
                 state.ProcessId = Pid;
                 foreach (var field in state.Fields.Values.Where(v => v.IsAvailable)) field.Validation = StateValidation.Valid;
@@ -454,6 +456,26 @@ namespace Vanilla.Diagnostics.Tests
                 "STOP retries must occur on a ten-second cadence and still require five stationary seconds.");
         }
 
+        private static void StopHpDamageAbort()
+        {
+            var h = new StopHarness();
+            h.ReadOverride = () => h.Sample(10, 20, h.Ms >= 2000 ? 89U : 100U, 100U);
+            Assert(!h.Run(), "HP danger incorrectly authorized Cart input.");
+            Assert(h.Verifier.HpDamageDetected && !h.Verifier.StationaryVerified && h.Sends == 1 && h.Ms == 2000,
+                "HP >10% damage must abort STOP verification immediately without another STOP attempt.");
+            Assert(h.Progress.Any(p => p.IndexOf("HP dropped by more than", StringComparison.OrdinalIgnoreCase) >= 0),
+                "HP damage abort was not reported.");
+        }
+
+        private static void StopHpExactThreshold()
+        {
+            var h = new StopHarness();
+            h.ReadOverride = () => h.Sample(10, 20, h.Ms >= 1000 ? 90U : 100U, 100U);
+            Assert(h.Run(), "Exactly ten percentage points of HP loss should not cross the >10% abort threshold.");
+            Assert(!h.Verifier.HpDamageDetected && h.Verifier.StationaryVerified && h.Sends == 1 && h.Ms == 5000,
+                "Exact threshold handling changed unexpectedly.");
+        }
+
         private static void StopBoundedFailure()
         {
             var h = new StopHarness();
@@ -477,6 +499,8 @@ namespace Vanilla.Diagnostics.Tests
                 "STOP verification must require five continuous stationary seconds.");
             Assert(VanillaAutobattleStopVerifier.PollIntervalMs <= 100,
                 "STOP X/Y polling became too coarse.");
+            Assert(VanillaAutobattleStopVerifier.HpDamageAbortPercent == 10m,
+                "STOP HP damage threshold changed unexpectedly.");
         }
 
         private static void CancelBeforeStart()
