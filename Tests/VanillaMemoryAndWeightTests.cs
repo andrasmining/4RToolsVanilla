@@ -131,6 +131,19 @@ namespace Vanilla.Diagnostics.Tests
                 throw new Exception("Cart precision filling must start exactly at 95%.");
             if (VanillaWeightAlertService.PrecisionCartRetrySeconds != 60)
                 throw new Exception("Near-full Cart retry cadence changed unexpectedly.");
+            if (VanillaWeightCartAutomation.TransferAttemptLimit < 3)
+                throw new Exception("Cart transfers must retry at least three times before manual hold.");
+            if (VanillaWeightCartAutomation.TransferSettleMs < 700
+                || VanillaWeightCartAutomation.QuantityPromptTimeoutMs < 2000
+                || VanillaWeightCartAutomation.CartProgressTimeoutMs < 3000
+                || VanillaWeightCartAutomation.TransferRetryPauseMs < 700)
+                throw new Exception("Cart transfer pacing became too aggressive for lag tolerance.");
+            if (VanillaForegroundInput.DeliberateDragStartHoldMs < 200
+                || VanillaForegroundInput.DeliberateDragMoveSteps < 10
+                || VanillaForegroundInput.DeliberateDragStepDelayMs < 90
+                || VanillaForegroundInput.DeliberateDragDestinationHoldMs < 250
+                || VanillaForegroundInput.DeliberateDragPostReleaseMs < 400)
+                throw new Exception("Deliberate Cart drag pacing became too fast.");
         }
 
         private static void WeightThresholds()
