@@ -39,6 +39,11 @@ namespace _4RTools.Model.Vanilla
         internal static bool UseWideRecoveryLayout(int availableWidth) { return availableWidth >= 1100; }
         internal static int MinimumVisibleAccountRows(int accountCount) { return Math.Max(5, accountCount + 1); }
         internal static int MinimumRecoveryLogHeight(int fontHeight) { return Math.Max(84, Math.Max(1, fontHeight) * 4); }
+        internal static bool RecoverySplitCanRotate(int width, int height, int splitterWidth)
+        {
+            int minimumAxis = Math.Max(1, splitterWidth) + 2;
+            return width > minimumAxis && height > minimumAxis;
+        }
         internal static int PreferredAccountsPanelHeight(int availableHeight)
         {
             if (availableHeight < 620) return 170;
@@ -253,7 +258,8 @@ namespace _4RTools.Model.Vanilla
                             ? responsiveSplit.ClientSize.Width : responsiveSplit.ClientSize.Height;
                         int targetAxis = targetOrientation == Orientation.Vertical
                             ? responsiveSplit.ClientSize.Width : responsiveSplit.ClientSize.Height;
-                        if (currentAxis <= splitterWidth + 2 || targetAxis <= splitterWidth + 2)
+                        if (!RecoverySplitCanRotate(responsiveSplit.ClientSize.Width,
+                            responsiveSplit.ClientSize.Height, splitterWidth))
                             return; // A later Size/Layout event retries once both axes are real.
 
                         responsiveSplit.SplitterDistance = 1;
