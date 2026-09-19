@@ -142,17 +142,22 @@ namespace Vanilla.Diagnostics.Tests
                 throw new Exception("Cart transfers must attempt at least three slow drags before deferring.");
             if (VanillaWeightCartAutomation.TransientCartRetrySeconds != 60)
                 throw new Exception("Transient Cart failures must retry after one minute.");
+            if (!VanillaWeightCartAutomation.HpDamageExceeded(100m, 89.9m)
+                || VanillaWeightCartAutomation.HpDamageExceeded(100m, 90m)
+                || VanillaWeightCartAutomation.HpDamageAbortPercent != 10m)
+                throw new Exception("Stopped Cart HP guard must abort only after a >10 percentage-point drop.");
             if (VanillaWeightCartAutomation.TransferSettleMs < 700
                 || VanillaWeightCartAutomation.QuantityPromptTimeoutMs < 3000
                 || VanillaWeightCartAutomation.CartProgressTimeoutMs < 4000
                 || VanillaWeightCartAutomation.TransferRetryPauseMs < 1000)
                 throw new Exception("Cart transfer pacing became too aggressive for lag tolerance.");
             if (VanillaForegroundInput.DeliberateDragStartHoldMs < 200
-                || VanillaForegroundInput.DeliberateDragMoveSteps < 10
-                || VanillaForegroundInput.DeliberateDragStepDelayMs < 90
+                || VanillaForegroundInput.DeliberateDragMoveSteps < 4
+                || VanillaForegroundInput.DeliberateDragStepDelayMs < 20
+                || VanillaForegroundInput.DeliberateDragStepDelayMs > 50
                 || VanillaForegroundInput.DeliberateDragDestinationHoldMs < 250
                 || VanillaForegroundInput.DeliberateDragPostReleaseMs < 400)
-                throw new Exception("Deliberate Cart drag pacing became too fast.");
+                throw new Exception("Cart drag must keep deliberate source/drop holds while cursor travel stays fast.");
         }
 
         private static void WeightThresholds()
