@@ -227,7 +227,7 @@ namespace _4RTools.Model.Vanilla
         internal const int CartProgressTimeoutMs = 4000;
         internal const int TransferRetryPauseMs = 1000;
         private const int MaxTransfers = 120;
-        internal const decimal PrecisionThresholdPercent = 95m;
+        internal const decimal PrecisionThresholdPercent = 75m;
         internal const decimal CartFullPercent = 100m;
         internal const decimal FarmingDoneCartPercent = 99m;
         internal const decimal FarmingDoneCarryPercent = 50m;
@@ -245,7 +245,7 @@ namespace _4RTools.Model.Vanilla
         {
             // Current farming profile has exactly two known loot families:
             // Use -> Mastela Fruit (3 weight), Etc -> Peco Feather (1 weight).
-            // Equip remains unknown and therefore cannot use precision filling above 95%.
+            // Equip remains unknown and therefore cannot use precision filling from the 75% precision threshold.
             if (category == 0) return new VanillaCartItemRule
             {
                 Category = 0, CategoryName = "Use", ItemName = "Mastela Fruit", UnitWeight = 3
@@ -394,7 +394,7 @@ namespace _4RTools.Model.Vanilla
                                 cartSafetyStop = true;
                                 activity(token.Account.Label + ": weight maintenance: Cart is "
                                     + cartBefore.Percent.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)
-                                    + "% full (>=95%). " + categoryName
+                                    + "% full (>=75%). " + categoryName
                                     + " has no verified unit-weight rule, so this category is skipped and no blind full-stack transfer is sent.");
                                 break;
                             }
@@ -512,7 +512,7 @@ namespace _4RTools.Model.Vanilla
                                             && cartBefore.Remaining >= pendingWeightBefore.Value;
                                         if (fullStackDefinitelyFits)
                                         {
-                                            activity(token.Account.Label + ": weight maintenance: Cart is at/above 95%, but the remaining "
+                                            activity(token.Account.Label + ": weight maintenance: Cart is at/above 75%, but the remaining "
                                                 + cartBefore.Remaining + " capacity is at least the character's entire current carried weight "
                                                 + pendingWeightBefore.Value + "; the full stack is provably safe.");
                                             input.Press(Keys.Enter);
@@ -522,7 +522,7 @@ namespace _4RTools.Model.Vanilla
                                         {
                                             requestedQuantity = fit;
                                             activity(token.Account.Label + ": weight maintenance: Cart "
-                                                + cartBefore.Current + "/" + cartBefore.Maximum + " is at/above 95%; precision fill for "
+                                                + cartBefore.Current + "/" + cartBefore.Maximum + " is at/above 75%; precision fill for "
                                                 + itemRule.ItemName + " (" + itemRule.UnitWeight + " weight each) requests at most " + fit
                                                 + " item(s) to fit the remaining " + cartBefore.Remaining + " weight.");
                                             input.ReplaceFocusedText(fit.ToString(System.Globalization.CultureInfo.InvariantCulture));
@@ -682,7 +682,7 @@ namespace _4RTools.Model.Vanilla
                     else if (retryLater)
                         activity(token.Account.Label + ": weight maintenance: temporary Cart transfer deferral; closing panels and resuming Autobattle before the scheduled retry.");
                     else if (cartSafetyStop)
-                        activity(token.Account.Label + ": weight maintenance: stopped Cart filling safely at/above 95%; no unverified-weight item will be transferred.");
+                        activity(token.Account.Label + ": weight maintenance: stopped Cart filling safely at/above 75%; no unverified-weight item will be transferred.");
                     else
                         activity(token.Account.Label + ": weight maintenance: every enabled inventory category is confirmed complete.");
 
@@ -726,7 +726,7 @@ namespace _4RTools.Model.Vanilla
                     completed = true;
                     string message = token.Account.Label + ": cart maintenance completed; moved " + moved
                         + " transfer(s), Cart " + (cartFull ? "100% full" : retryLater ? "temporarily deferred"
-                            : cartSafetyStop ? "stopped safely at/above 95%" : "processed")
+                            : cartSafetyStop ? "stopped safely at/above 75%" : "processed")
                         + ", autobattle movement verified, client minimized."
                         + (retryLater ? " Retry scheduled in about " + TransientCartRetrySeconds + "s." : "");
                     VanillaDebugLog.Write("WEIGHT", "event=cart-complete trigger=" + trigger + " account='" + token.Account.Label
