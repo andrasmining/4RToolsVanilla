@@ -146,7 +146,7 @@ namespace _4RTools.Model.Vanilla
                 weightManualHolds.Remove(token.AccountId);
                 weightCompletedHolds.Add(token.AccountId);
                 SetStage(runtime, VanillaReconnectStage.Stopped,
-                    detail ?? "Farming complete: Cart full and carried weight target reached; Autobattle intentionally OFF");
+                    detail ?? "Farming complete: Cart >=99% and carried weight >=50%; Autobattle intentionally OFF");
             }
             RaiseUpdated();
         }
