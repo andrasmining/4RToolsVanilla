@@ -248,9 +248,11 @@ namespace _4RTools.Model.Vanilla
         internal const int AttemptWindowMs = 10000;
         internal const int RequiredStationaryMs = 5000;
         internal const int PollIntervalMs = 100;
+        internal const decimal HpDamageAbortPercent = 10m;
         private bool started;
         internal int Attempts { get; private set; }
         internal bool StationaryVerified { get; private set; }
+        internal bool HpDamageDetected { get; private set; }
 
         internal async Task<bool> VerifyAsync(int processId, Func<VanillaClientState> read, System.Action focus,
             System.Action sendStop, Func<bool> cancelled, Func<TimeSpan> clock, Func<DateTimeOffset> utcNow,
@@ -298,6 +300,7 @@ namespace _4RTools.Model.Vanilla
                 focus();
                 checkCancelled();
                 VanillaClientState previous = sample();
+                decimal hpBaselinePercent = HpPercent(previous);
                 Attempts = attempt;
                 report("Sending Autobattle STOP hotkey attempt " + attempt + "/" + MaximumAttempts);
                 sendStop();
@@ -319,12 +322,19 @@ namespace _4RTools.Model.Vanilla
                         // Require one fresh sample at/after the stationary deadline rather than
                         // allowing elapsed wall time alone to authorize Cart input.
                         VanillaClientState confirmation = sample();
+                        if (HpDroppedMoreThan(hpBaselinePercent, confirmation, HpDamageAbortPercent))
+                        {
+                            HpDamageDetected = true;
+                            report("HP dropped by more than " + HpDamageAbortPercent.ToString("0.#")
+                                + " percentage points after STOP; Cart/Inventory input is not authorized");
+                            return false;
+                        }
                         if (!Moved(previous, confirmation))
                         {
                             StationaryVerified = true;
                             report("Autobattle STOP verified after " + attempt + "/" + MaximumAttempts
                                 + ": X/Y remained unchanged continuously for at least "
-                                + (RequiredStationaryMs / 1000) + " seconds");
+                                + (RequiredStationaryMs / 1000) + " seconds and HP stayed within the damage guard");
                             return true;
                         }
                         previous = confirmation;
@@ -341,6 +351,13 @@ namespace _4RTools.Model.Vanilla
                     checkCancelled();
 
                     VanillaClientState current = sample();
+                    if (HpDroppedMoreThan(hpBaselinePercent, current, HpDamageAbortPercent))
+                    {
+                        HpDamageDetected = true;
+                        report("HP dropped by more than " + HpDamageAbortPercent.ToString("0.#")
+                            + " percentage points after STOP; Cart/Inventory input is not authorized");
+                        return false;
+                    }
                     if (Moved(previous, current))
                     {
                         previous = current;
@@ -362,6 +379,20 @@ namespace _4RTools.Model.Vanilla
             report("Autobattle STOP could not be verified after " + MaximumAttempts
                 + " attempts; Cart/Inventory input is not authorized");
             return false;
+        }
+
+        internal static decimal HpPercent(VanillaClientState state)
+        {
+            if (state == null || !state.CurrentHP.IsAvailable || !state.MaxHP.IsAvailable
+                || state.CurrentHP.Validation != StateValidation.Valid || state.MaxHP.Validation != StateValidation.Valid
+                || state.MaxHP.Value == 0 || state.CurrentHP.Value > state.MaxHP.Value)
+                throw new InvalidOperationException("Autobattle STOP requires fresh verified HP for the damage guard.");
+            return state.CurrentHP.Value * 100m / state.MaxHP.Value;
+        }
+
+        internal static bool HpDroppedMoreThan(decimal baselinePercent, VanillaClientState current, decimal thresholdPercent)
+        {
+            return baselinePercent - HpPercent(current) > thresholdPercent;
         }
 
         private static bool Moved(VanillaClientState before, VanillaClientState after)
