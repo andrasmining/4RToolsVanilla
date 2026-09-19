@@ -25,8 +25,8 @@ namespace _4RTools.Model.Vanilla
     internal sealed class VanillaForegroundInput : IDisposable
     {
         internal const int DeliberateDragStartHoldMs = 250;
-        internal const int DeliberateDragMoveSteps = 12;
-        internal const int DeliberateDragStepDelayMs = 100;
+        internal const int DeliberateDragMoveSteps = 6;
+        internal const int DeliberateDragStepDelayMs = 35;
         internal const int DeliberateDragDestinationHoldMs = 300;
         internal const int DeliberateDragPostReleaseMs = 500;
 
