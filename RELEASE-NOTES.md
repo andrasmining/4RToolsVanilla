@@ -1,71 +1,65 @@
-# 4RTools Vanilla 0.6.59
+# 4RTools Vanilla 0.6.60
 
-## Weight/Cart: keep filling after the first successful transfer
+## Weight/Cart: slower drag-and-drop with three bounded retries
 
-The v0.6.57 live debug log showed that the Cart was not actually full or rejecting items. One Use-stack transfer completed successfully, including a positively detected quantity dialog, and the next compacted first inventory slot was again positively classified as occupied. The maintenance pass then stopped only because 4RTools tried to rediscover the Cart's empty-slot lattice after the first item had already been added.
+The live v0.6.59 Cart test showed a different failure from the previous populated-Cart issue: the Use transfers completed, but the Etc/Peco Feather drag produced no quantity dialog and no verified Cart-weight increase. The automation treated that first unsuccessful drag as final and immediately put the character on a manual Cart hold.
 
-That assumption is removed.
+This release makes individual Cart transfers deliberately slower and tolerant of transient RDP/client lag.
 
-- Cart drops now use a bounded deterministic set of safe points inside the already positively detected Cart panel body. Vanilla accepts a drop anywhere in that body; a particular Cart slot does not need to look empty.
-- A populated Cart is allowed to cover the pale empty-slot lattice. The code does not re-require that lattice after each successful transfer.
-- Fresh verified read-only **Cart weight increase** is now the authoritative transfer proof. The source slot is not required to look empty because Vanilla compacts the next stack into the first slot immediately.
-- Carried-weight reduction remains corroborating evidence, but a delayed carried-weight observation no longer invalidates a transfer whose Cart-weight increase was verified.
-- Quantity dialogs still require positive visual recognition before Enter, and any lingering/late quantity modal still fails closed.
-- At/above 95% the existing capacity-aware Mastela/Peco rules remain unchanged, including the fixed 10000 Cart ceiling.
+### Deliberate drag pacing
 
-Offline regression coverage reproduces the populated-Cart condition and verifies that later transfers still have a safe Cart destination.
+Weight/Cart no longer uses the ordinary fast mouse-drag timing. Each Cart drag now:
 
-## One debug file per application start; 10 MiB hard cap
+- holds the cursor on the verified source slot for **250 ms** before mouse-down;
+- moves through **12 deterministic intermediate steps**;
+- waits **100 ms per movement step**;
+- holds over the verified Cart destination for **300 ms** before mouse-up;
+- waits **500 ms after release**;
+- then gives the client another **700 ms** settle period before quantity/progress handling.
 
-The old v0.6.57 debug file could contain many application restarts in one huge file. Debug logging is now process/session-owned from application startup rather than being tied to whichever UI initializes first.
+This changes only the Cart-maintenance drag path; unrelated ordinary input keeps its existing timing.
 
-- Every normal 4RTools process creates a new file immediately at startup:
-  `debug-YYYYMMDD-HHmmss-fff-p<PID>.log`
-- A later app restart never appends to the prior process's debug file.
-- If two starts somehow collide on the same timestamp/PID token, a unique suffix is used rather than sharing a file.
-- Every debug part is hard-capped at **10 MiB** and rotates to `-part02`, `-part03`, etc.
-- The former fixed `debug.log`, when present from an older version, is archived/migrated once and is never used as the live log again.
-- Reconnect/session, memory-access, updater-error and other application-managed `.log` files retain the same **10 MiB per-file hard cap** and bounded history.
-- Oversized legacy logs are split into bounded archive parts during migration.
-- COPY DEBUG LOG uses the current process's debug session rather than concatenating historical debug sessions.
+### Three attempts before manual hold
 
-Regression tests explicitly create two simulated app starts and verify that their log paths/content are isolated, and verify that oversized debug/session payloads cannot create a file above the configured cap.
+One missing Cart-weight increase is no longer enough to fail the maintenance pass.
 
-## Recovery layout thread exception fixed
+For each detected first-slot item, 4RTools now makes up to **3 slow drag attempts**:
 
-The supplied v0.6.57 log also contained repeated WinForms exceptions:
+1. send the slow drag to a safe point inside the positively detected Cart body;
+2. allow up to **2.2 seconds** for a quantity dialog;
+3. if a quantity dialog is positively recognized, handle it with the existing safe Enter/precision-fill rules;
+4. allow up to **3 seconds** for verified read-only Cart-weight progress;
+5. if no progress is seen, wait **800 ms**, re-check Cart weight for delayed evidence, re-detect the first inventory slot, and retry through another deterministic safe Cart point.
 
-`SplitterDistance must be between Panel1MinSize and Width - Panel2MinSize`
+Before every retry, fresh Cart weight is checked again. If late read-only evidence shows the previous drag actually succeeded, the retry is suppressed so 4RTools cannot duplicate the transfer.
 
-The Recovery pane could change SplitContainer orientation during a transient resize/layout state where one axis was only a few pixels wide. WinForms validates the old splitter distance inside the Orientation setter, so the setter itself could throw.
+If the first slot disappears after an earlier attempt while Cart weight still has not increased, 4RTools does not blindly drag whatever compacted item may now occupy that location; it gives Cart memory one final bounded chance to catch up and otherwise fails closed.
 
-4RTools now sizes the SplitContainer first, defers orientation changes while either axis is only a transient layout sliver, and retries on the next normal layout event. The draggable Characters/Log divider remains intact.
+Only after all **three** slow attempts fail to produce verified Cart-weight progress does the character enter the existing manual Cart hold.
 
-## Smart Teleport: minimized client resolution
+### Existing safety remains intact
 
-The same log showed repeated automatic Smart Teleport attempts failing before sending the hotkey because a minimized Vanilla main window reported a current client rectangle of 0x0.
+- Cart weight remains read-only and is the authoritative transfer-success signal.
+- Inventory identity/count is not read from game memory and game memory is never written.
+- Enter is still sent only after a positively recognized quantity dialog.
+- Quantity-one transfers may legitimately have no dialog, so no dialog still means no Enter.
+- At/above 95%, the existing Mastela Fruit = 3 and Peco Feather = 1 capacity-aware rules remain in force.
+- Cart capacity remains fixed/validated at 10000.
+- UI ownership, cancellation, stale/unverified state, late modal ambiguity and incoherent precision-weight deltas still fail closed.
 
-Background Smart Teleport now:
+## Regression coverage
 
-- resolves the verified owned Vanilla main HWND by PID/class/title even while minimized;
-- derives the last normal client capture size from `WINDOWPLACEMENT` and the real window style without restoring, moving or foregrounding the game;
-- uses that derived size only for the existing background PrintWindow path;
-- still requires a nonblank/usable capture before sending the teleport hotkey;
-- still requires positive recognition of the expected warp popup before Enter;
-- fails closed if ownership, geometry, capture, popup verification or background input is unavailable.
+The diagnostics tests now lock the lag-tolerant policy:
 
-This preserves the rule that Smart Teleport must not pop a minimized gameplay client to the foreground merely to recover it.
+- at least 3 transfer attempts;
+- >=700 ms transfer settle;
+- >=2.0 s quantity-dialog observation;
+- >=3.0 s Cart-progress observation;
+- >=700 ms retry pause;
+- deliberate drag source/destination holds and multi-step movement cannot regress back to the previous fast timing.
 
-## Validation
+The full Windows pipeline also runs the existing build-profile checks, Debug/Release regression suites, portable package smoke test, native recovery checks, and mock-data UI validation.
 
-Before versioning this release, the full Windows pipeline passed:
+## Live-validation boundary
 
-- shipped Vanilla build-profile validation;
-- complete Debug diagnostics/regression suite;
-- Release build/package/smoke tests;
-- native test-owned recovery checks;
-- mock-data UI rendering/layout checks.
-
-New regressions cover populated-Cart drop handling, per-start debug isolation and hard rotation, transient Recovery splitter geometry, and minimized background-teleport capture sizing.
-
-The engineering runner cannot reproduce the user's live Gepard/Vanilla/RDP session. The Cart root cause is grounded in the supplied live v0.6.57 log, while the corrected subsequent multi-item transfer and minimized PrintWindow behavior remain the next live VPS validation boundary.
+The engineering runner cannot reproduce the user's live Vanilla/Gepard/RDP timing. The failed v0.6.59 feather transfer is grounded in the supplied live screenshot/log; v0.6.60 specifically changes that transfer path so the next live Weight/Cart run can verify the slower three-attempt behavior.
