@@ -17,6 +17,8 @@ namespace _4RTools.Model.Vanilla
         internal bool Deferred;
         internal bool CartFull;
         internal bool StoppedForCartSafety;
+        internal bool RetryLater;
+        internal int RetryAfterSeconds;
         internal int ItemsMoved;
         internal string Message;
     }
@@ -227,7 +229,9 @@ namespace _4RTools.Model.Vanilla
         private const int MaxTransfers = 120;
         internal const decimal PrecisionThresholdPercent = 95m;
         internal const decimal CartFullPercent = 100m;
+        internal const decimal FarmingDoneCartPercent = 99m;
         internal const decimal FarmingDoneCarryPercent = 50m;
+        internal const int TransientCartRetrySeconds = 60;
         private readonly VanillaFleetMonitor fleet;
         private readonly VanillaReconnectSupervisor supervisor;
 
@@ -268,6 +272,11 @@ namespace _4RTools.Model.Vanilla
         {
             if (unitWeight == 0 || maximumCartWeight <= currentCartWeight) return 0;
             return (maximumCartWeight - currentCartWeight) / unitWeight;
+        }
+
+        internal static bool IsFarmingComplete(decimal cartPercent, decimal carriedPercent)
+        {
+            return cartPercent >= FarmingDoneCartPercent && carriedPercent >= FarmingDoneCarryPercent;
         }
 
         internal VanillaWeightCartResult Run(int pid, VanillaWeightAlertSettings settings, System.Action<string> report,
@@ -312,7 +321,8 @@ namespace _4RTools.Model.Vanilla
             activity(token.Account.Label + ": weight maintenance started (" + trigger + "); serialized input lease acquired; Cart "
                 + initialCart.Current + "/" + initialCart.Maximum + " (" + initialCart.Percent.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + "%).");
             bool paused = false, manualHold = false, completed = false;
-            bool cartFull = false, cartSafetyStop = false;
+            bool cartFull = false, cartSafetyStop = false, retryLater = false;
+            string retryLaterReason = null;
             Rectangle inventory = Rectangle.Empty, cart = Rectangle.Empty;
             int moved = 0;
             Func<bool> cancelled = () => supervisor.WeightMaintenanceCancelled(token);
@@ -454,10 +464,14 @@ namespace _4RTools.Model.Vanilla
                                         break;
                                     }
 
-                                    manualHold = true;
-                                    throw new VanillaCartManualException(categoryName
-                                        + " first slot became empty after a failed transfer attempt but Cart weight never increased. "
-                                        + "No further drag is safe; Autobattle stays OFF for manual inspection.");
+                                    retryLater = true;
+                                    retryLaterReason = categoryName
+                                        + " first slot changed after a drag but Cart weight has not caught up. "
+                                        + "Treating this as a transient client/RDP delay; no more Cart input this pass.";
+                                    activity(token.Account.Label + ": weight maintenance: " + retryLaterReason
+                                        + " Autobattle will resume and Cart maintenance will retry in "
+                                        + TransientCartRetrySeconds + "s.");
+                                    break;
                                 }
 
                                 activity(token.Account.Label + ": weight maintenance: slow drag attempt " + transferAttempt + "/"
@@ -562,9 +576,13 @@ namespace _4RTools.Model.Vanilla
                                         continue;
                                     }
 
-                                    manualHold = true;
-                                    throw new VanillaCartManualException("Cart did not show a verified weight increase after "
-                                        + TransferAttemptLimit + " slow drag attempts. Autobattle stays OFF for manual inspection.");
+                                    retryLater = true;
+                                    retryLaterReason = "Cart did not show a verified weight increase after "
+                                        + TransferAttemptLimit + " slow drag attempts. This is treated as transient lag, not a terminal failure.";
+                                    activity(token.Account.Label + ": weight maintenance: " + retryLaterReason
+                                        + " Autobattle will resume and Cart maintenance will retry in "
+                                        + TransientCartRetrySeconds + "s.");
+                                    break;
                                 }
 
                                 weightReduced = WaitForWeightReduction(token.ProcessId, pendingWeightBefore, cancelled);
@@ -572,7 +590,7 @@ namespace _4RTools.Model.Vanilla
                                 break;
                             }
 
-                            if (abortForCapacity) break;
+                            if (abortForCapacity || retryLater) break;
                             if (categoryEmpty)
                             {
                                 activity(token.Account.Label + ": weight maintenance: " + categoryName
@@ -585,9 +603,13 @@ namespace _4RTools.Model.Vanilla
                             }
                             if (!transferSucceeded || cartAfter == null)
                             {
-                                manualHold = true;
-                                throw new VanillaCartManualException("Transfer retry sequence ended without verified Cart progress. "
-                                    + "Autobattle stays OFF for manual inspection.");
+                                retryLater = true;
+                                retryLaterReason = retryLaterReason
+                                    ?? "Transfer retry sequence ended without verified Cart progress.";
+                                activity(token.Account.Label + ": weight maintenance: " + retryLaterReason
+                                    + " Autobattle will resume and Cart maintenance will retry in "
+                                    + TransientCartRetrySeconds + "s.");
+                                break;
                             }
 
                             if (!weightReduced)
@@ -638,10 +660,13 @@ namespace _4RTools.Model.Vanilla
                             manualHold = true;
                             throw new VanillaCartManualException("Transfer safety limit reached. Autobattle is left OFF for manual inspection.");
                         }
+                        if (retryLater) break;
                     }
 
                     if (cartFull)
                         activity(token.Account.Label + ": weight maintenance: Cart is full; remaining inventory stays on the character.");
+                    else if (retryLater)
+                        activity(token.Account.Label + ": weight maintenance: temporary Cart transfer deferral; closing panels and resuming Autobattle before the scheduled retry.");
                     else if (cartSafetyStop)
                         activity(token.Account.Label + ": weight maintenance: stopped Cart filling safely at/above 95%; no unverified-weight item will be transferred.");
                     else
@@ -652,21 +677,30 @@ namespace _4RTools.Model.Vanilla
 
                     VanillaFleetClientInfo afterUi = CurrentClient(token.ProcessId);
                     decimal? carriedPercent = afterUi == null ? null : afterUi.WeightPercent;
-                    if (cartFull && carriedPercent.HasValue && carriedPercent.Value >= FarmingDoneCarryPercent)
+                    decimal? finalCartPercent = afterUi == null ? null : afterUi.CartWeightPercent;
+                    if (carriedPercent.HasValue && finalCartPercent.HasValue
+                        && IsFarmingComplete(finalCartPercent.Value, carriedPercent.Value))
                     {
-                        string done = token.Account.Label + ": farming complete immediately after Cart maintenance: Cart 100% and carried weight "
+                        string done = token.Account.Label + ": farming complete immediately after Cart maintenance: Cart "
+                            + finalCartPercent.Value.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)
+                            + "% (>= " + FarmingDoneCartPercent.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)
+                            + "%) and carried weight "
                             + carriedPercent.Value.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)
-                            + "%; Autobattle remains OFF.";
+                            + "% (>= " + FarmingDoneCarryPercent.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)
+                            + "%); Autobattle remains OFF.";
                         activity(done);
                         supervisor.CompleteWeightFarmingDone(token, done);
                         paused = false;
                         completed = true;
                         VanillaDebugLog.Write("WEIGHT", "event=farming-done trigger=" + trigger + " account='" + token.Account.Label
-                            + "' accountId=" + token.AccountId + " pid=" + pid + " cartPercent=100 carriedPercent="
-                            + carriedPercent.Value.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + ".");
+                            + "' accountId=" + token.AccountId + " pid=" + pid + " cartPercent="
+                            + finalCartPercent.Value.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)
+                            + " carriedPercent=" + carriedPercent.Value.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture) + ".");
                         return new VanillaWeightCartResult
                         {
-                            ItemsMoved = moved, CartFull = true, Message = done
+                            ItemsMoved = moved,
+                            CartFull = finalCartPercent.Value >= CartFullPercent,
+                            Message = done
                         };
                     }
 
@@ -677,15 +711,22 @@ namespace _4RTools.Model.Vanilla
                         throw new InvalidOperationException("Autobattle movement was verified but the client could not be minimized.");
                     completed = true;
                     string message = token.Account.Label + ": cart maintenance completed; moved " + moved
-                        + " transfer(s), Cart " + (cartFull ? "100% full" : cartSafetyStop ? "stopped safely at/above 95%" : "processed")
-                        + ", autobattle movement verified, client minimized.";
+                        + " transfer(s), Cart " + (cartFull ? "100% full" : retryLater ? "temporarily deferred"
+                            : cartSafetyStop ? "stopped safely at/above 95%" : "processed")
+                        + ", autobattle movement verified, client minimized."
+                        + (retryLater ? " Retry scheduled in about " + TransientCartRetrySeconds + "s." : "");
                     VanillaDebugLog.Write("WEIGHT", "event=cart-complete trigger=" + trigger + " account='" + token.Account.Label
                         + "' accountId=" + token.AccountId + " pid=" + pid + " items=" + moved + " cartFull=" + cartFull
-                        + " safetyStop=" + cartSafetyStop + ".");
+                        + " safetyStop=" + cartSafetyStop + " retryLater=" + retryLater + ".");
                     supervisor.CompleteWeightMaintenance(token, false, message);
                     return new VanillaWeightCartResult
                     {
-                        ItemsMoved = moved, CartFull = cartFull, StoppedForCartSafety = cartSafetyStop, Message = message
+                        ItemsMoved = moved,
+                        CartFull = cartFull,
+                        StoppedForCartSafety = cartSafetyStop,
+                        RetryLater = retryLater,
+                        RetryAfterSeconds = retryLater ? TransientCartRetrySeconds : 0,
+                        Message = message
                     };
                 }
                 catch (OperationCanceledException ex)
@@ -818,8 +859,7 @@ namespace _4RTools.Model.Vanilla
                 VanillaFleetClientInfo client = CurrentClient(pid);
                 if (client == null || !client.WeightVerified || !client.CartWeightVerified
                     || !client.WeightPercent.HasValue || !client.CartWeightPercent.HasValue
-                    || client.CartWeightPercent.Value < CartFullPercent
-                    || client.WeightPercent.Value < FarmingDoneCarryPercent)
+                    || !IsFarmingComplete(client.CartWeightPercent.Value, client.WeightPercent.Value))
                 {
                     supervisor.CompleteWeightMaintenance(token, false,
                         "Farming-complete stop cancelled because fresh weight conditions were no longer satisfied.");
@@ -829,16 +869,21 @@ namespace _4RTools.Model.Vanilla
                 using (var input = new VanillaForegroundInput(pid))
                 {
                     input.CancellationRequested = () => supervisor.WeightMaintenanceCancelled(token);
-                    report(token.Account.Label + ": Cart 100% and carried weight "
+                    report(token.Account.Label + ": Cart "
+                        + client.CartWeightPercent.Value.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)
+                        + "% and carried weight "
                         + client.WeightPercent.Value.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)
-                        + "%; stopping Autobattle with " + settings.AutobattleStopHotkeyText + ".");
+                        + "% meet the farming-complete thresholds; stopping Autobattle with "
+                        + settings.AutobattleStopHotkeyText + ".");
                     input.Chord(settings.AutobattleStopCtrl, settings.AutobattleStopAlt,
                         settings.AutobattleStopShift, (Keys)settings.AutobattleStopKey);
                     paused = true;
                     Thread.Sleep(500);
                 }
 
-                string detail = token.Account.Label + ": farming complete — Cart 100% and carried weight "
+                string detail = token.Account.Label + ": farming complete — Cart "
+                    + client.CartWeightPercent.Value.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)
+                    + "% and carried weight "
                     + client.WeightPercent.Value.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)
                     + "%; Autobattle intentionally OFF.";
                 supervisor.CompleteWeightFarmingDone(token, detail);
