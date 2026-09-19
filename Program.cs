@@ -19,6 +19,14 @@ namespace _4RTools
         {
             if (VanillaUpdater.TryHandleApplyCommand(args)) return;
             VanillaAppData.InitializeAndMigrateLegacy(AppDomain.CurrentDomain.BaseDirectory);
+
+            // Normal application launches own a debug session from process startup, not from
+            // whichever UI surface happens to initialize first. This guarantees one distinct
+            // timestamp/PID log file for every app restart. UI/smoke rendering stays side-effect
+            // free and therefore deliberately skips runtime debug initialization.
+            bool uiSmoke = args.Contains("--portable-smoke-test") || args.Contains("--original-ui-check");
+            if (!uiSmoke) VanillaDebugLog.Initialize();
+
             if (args.Length > 0 && args[0] == "--vanilla-discover")
             {
                 Discover(args);
