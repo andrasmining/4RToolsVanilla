@@ -219,7 +219,11 @@ namespace _4RTools.Model.Vanilla
         private const int CategoryClickAttempts = 3;
         private const int EmptyCategoryConfirmMs = 180;
         private const int FirstSlotVerifySamples = 4;
-        private const int TransferSettleMs = 300;
+        internal const int TransferAttemptLimit = 3;
+        internal const int TransferSettleMs = 700;
+        internal const int QuantityPromptTimeoutMs = 2200;
+        internal const int CartProgressTimeoutMs = 3000;
+        internal const int TransferRetryPauseMs = 800;
         private const int MaxTransfers = 120;
         internal const decimal PrecisionThresholdPercent = 95m;
         internal const decimal CartFullPercent = 100m;
@@ -356,7 +360,6 @@ namespace _4RTools.Model.Vanilla
                         activity(token.Account.Label + ": weight maintenance: detecting and selecting " + categoryName + " tab"
                             + (itemRule == null ? "." : "; known farming item=" + itemRule.ItemName + " unitWeight=" + itemRule.UnitWeight + "."));
                         SelectCategory(input, inventory, category, categoryName, cancelled, activity);
-                        int noProgress = 0;
                         int categoryMoved = 0;
                         while (moved < MaxTransfers)
                         {
@@ -394,10 +397,184 @@ namespace _4RTools.Model.Vanilla
                                 break;
                             }
 
-                            uint? pendingWeightBefore;
-                            Point sourcePoint;
-                            if (!TryDragNextDetectedItem(token, input, inventory, cart, categoryName, moved, cancelled, activity,
-                                out sourcePoint, out pendingWeightBefore))
+                            VanillaCartWeightSample cartAfter = null;
+                            bool transferSucceeded = false;
+                            bool categoryEmpty = false;
+                            bool abortForCapacity = false;
+                            bool quantity = false;
+                            bool weightReduced = false;
+                            uint? requestedQuantity = null;
+
+                            for (int transferAttempt = 1; transferAttempt <= TransferAttemptLimit; transferAttempt++)
+                            {
+                                ThrowIfCancelled(cancelled);
+
+                                if (transferAttempt > 1)
+                                {
+                                    // Never repeat a drag if delayed read-only evidence now proves
+                                    // the preceding attempt succeeded.
+                                    VanillaCartWeightSample lateProgress = CurrentCartWeight(token.ProcessId);
+                                    if (lateProgress != null && lateProgress.Current > cartBefore.Current)
+                                    {
+                                        cartAfter = lateProgress;
+                                        transferSucceeded = true;
+                                        activity(token.Account.Label + ": weight maintenance: delayed Cart-weight progress appeared before retry "
+                                            + transferAttempt + "/" + TransferAttemptLimit + "; previous drag succeeded, so no duplicate drag is sent.");
+                                        break;
+                                    }
+
+                                    activity(token.Account.Label + ": weight maintenance: transfer attempt "
+                                        + (transferAttempt - 1) + "/" + TransferAttemptLimit
+                                        + " showed no Cart-weight increase; waiting " + TransferRetryPauseMs
+                                        + "ms, then re-detecting the first slot before retry " + transferAttempt + "/" + TransferAttemptLimit + ".");
+                                    Thread.Sleep(TransferRetryPauseMs);
+                                }
+
+                                uint? pendingWeightBefore;
+                                Point sourcePoint;
+                                if (!TryDragNextDetectedItem(token, input, inventory, cart, categoryName,
+                                    moved * TransferAttemptLimit + transferAttempt - 1, cancelled, activity,
+                                    out sourcePoint, out pendingWeightBefore))
+                                {
+                                    if (transferAttempt == 1)
+                                    {
+                                        categoryEmpty = true;
+                                        break;
+                                    }
+
+                                    // The source disappeared after an earlier drag. Give Cart memory
+                                    // one final bounded chance to catch up; do not blindly drag a
+                                    // different compacted item when the prior outcome is uncertain.
+                                    if (WaitForCartWeightIncrease(token.ProcessId, cartBefore.Current, cancelled,
+                                        out cartAfter, CartProgressTimeoutMs))
+                                    {
+                                        transferSucceeded = true;
+                                        activity(token.Account.Label + ": weight maintenance: source slot became empty after retry preparation, "
+                                            + "and delayed Cart-weight progress confirmed the preceding drag succeeded.");
+                                        break;
+                                    }
+
+                                    manualHold = true;
+                                    throw new VanillaCartManualException(categoryName
+                                        + " first slot became empty after a failed transfer attempt but Cart weight never increased. "
+                                        + "No further drag is safe; Autobattle stays OFF for manual inspection.");
+                                }
+
+                                activity(token.Account.Label + ": weight maintenance: slow drag attempt " + transferAttempt + "/"
+                                    + TransferAttemptLimit + " sent; allowing the client to settle before checking quantity/progress.");
+                                Thread.Sleep(TransferSettleMs);
+
+                                quantity = WaitForQuantityPrompt(input, cancelled, QuantityPromptTimeoutMs);
+                                requestedQuantity = null;
+                                if (quantity)
+                                {
+                                    if (precision)
+                                    {
+                                        uint fit = CapacitySafeQuantity(cartBefore.Current, cartBefore.Maximum, itemRule.UnitWeight);
+                                        if (fit == 0)
+                                        {
+                                            activity(token.Account.Label + ": weight maintenance: quantity dialog detected but no "
+                                                + itemRule.ItemName + " can fit; cancelling transfer.");
+                                            input.Press(Keys.Escape);
+                                            cartSafetyStop = true;
+                                            abortForCapacity = true;
+                                            break;
+                                        }
+                                        bool fullStackDefinitelyFits = pendingWeightBefore.HasValue
+                                            && cartBefore.Remaining >= pendingWeightBefore.Value;
+                                        if (fullStackDefinitelyFits)
+                                        {
+                                            activity(token.Account.Label + ": weight maintenance: Cart is at/above 95%, but the remaining "
+                                                + cartBefore.Remaining + " capacity is at least the character's entire current carried weight "
+                                                + pendingWeightBefore.Value + "; the full stack is provably safe.");
+                                            input.Press(Keys.Enter);
+                                            Thread.Sleep(TransferSettleMs);
+                                        }
+                                        else
+                                        {
+                                            uint fit = CapacitySafeQuantity(cartBefore.Current, cartBefore.Maximum, itemRule.UnitWeight);
+                                            requestedQuantity = fit;
+                                            activity(token.Account.Label + ": weight maintenance: Cart "
+                                                + cartBefore.Current + "/" + cartBefore.Maximum + " is at/above 95%; precision fill for "
+                                                + itemRule.ItemName + " (" + itemRule.UnitWeight + " weight each) requests at most " + fit
+                                                + " item(s) to fit the remaining " + cartBefore.Remaining + " weight.");
+                                            input.ReplaceFocusedText(fit.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                                            input.Press(Keys.Enter);
+                                            Thread.Sleep(TransferSettleMs);
+
+                                            bool promptStillOpen;
+                                            using (Bitmap quantityCheck = input.CaptureClientBitmap())
+                                                promptStillOpen = VanillaInventoryVision.HasQuantityPrompt(quantityCheck);
+                                            if (promptStillOpen)
+                                            {
+                                                uint chunk = Math.Min(fit, 20U);
+                                                requestedQuantity = chunk;
+                                                activity(token.Account.Label + ": weight maintenance: precision quantity was not accepted immediately; "
+                                                    + "retrying a small capacity-safe chunk of " + chunk + " " + itemRule.ItemName + ".");
+                                                input.ReplaceFocusedText(chunk.ToString(System.Globalization.CultureInfo.InvariantCulture));
+                                                input.Press(Keys.Enter);
+                                                Thread.Sleep(TransferSettleMs);
+
+                                                using (Bitmap chunkCheck = input.CaptureClientBitmap())
+                                                    promptStillOpen = VanillaInventoryVision.HasQuantityPrompt(chunkCheck);
+                                                if (promptStillOpen)
+                                                {
+                                                    requestedQuantity = 1;
+                                                    activity(token.Account.Label + ": weight maintenance: small chunk was still not accepted; "
+                                                        + "falling back to one " + itemRule.ItemName + " so the transfer remains capacity-safe.");
+                                                    input.ReplaceFocusedText("1");
+                                                    input.Press(Keys.Enter);
+                                                    Thread.Sleep(TransferSettleMs);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    else
+                                    {
+                                        activity(token.Account.Label + ": weight maintenance: quantity dialog positively detected; pressing Enter for the full stack.");
+                                        input.Press(Keys.Enter);
+                                        Thread.Sleep(TransferSettleMs);
+                                    }
+                                }
+                                else
+                                {
+                                    activity(token.Account.Label + ": weight maintenance: no quantity dialog detected after "
+                                        + QuantityPromptTimeoutMs + "ms; Enter NOT sent (single-item path remains possible).");
+                                }
+
+                                bool cartIncreased = WaitForCartWeightIncrease(token.ProcessId, cartBefore.Current, cancelled,
+                                    out cartAfter, CartProgressTimeoutMs);
+                                using (Bitmap verify = input.CaptureClientBitmap())
+                                {
+                                    if (VanillaInventoryVision.HasQuantityPrompt(verify))
+                                    {
+                                        manualHold = true;
+                                        throw new VanillaCartManualException("A quantity dialog remained or appeared late. No further key was sent; Autobattle stays OFF for manual inspection.");
+                                    }
+                                }
+
+                                if (!cartIncreased)
+                                {
+                                    if (transferAttempt < TransferAttemptLimit)
+                                    {
+                                        activity(token.Account.Label + ": weight maintenance: transfer attempt " + transferAttempt + "/"
+                                            + TransferAttemptLimit + " produced no verified Cart-weight increase after "
+                                            + CartProgressTimeoutMs + "ms; the item will be re-detected and retried.");
+                                        continue;
+                                    }
+
+                                    manualHold = true;
+                                    throw new VanillaCartManualException("Cart did not show a verified weight increase after "
+                                        + TransferAttemptLimit + " slow drag attempts. Autobattle stays OFF for manual inspection.");
+                                }
+
+                                weightReduced = WaitForWeightReduction(token.ProcessId, pendingWeightBefore, cancelled);
+                                transferSucceeded = true;
+                                break;
+                            }
+
+                            if (abortForCapacity) break;
+                            if (categoryEmpty)
                             {
                                 activity(token.Account.Label + ": weight maintenance: " + categoryName
                                     + " confirmed empty because the first inventory slot was empty on two fresh classified captures; moved "
@@ -407,112 +584,14 @@ namespace _4RTools.Model.Vanilla
                                     + " moved=" + categoryMoved + " samples=2.");
                                 break;
                             }
-
-                            Thread.Sleep(TransferSettleMs);
-                            bool quantity = WaitForQuantityPrompt(input, cancelled, 1200);
-                            uint? requestedQuantity = null;
-                            if (quantity)
+                            if (!transferSucceeded || cartAfter == null)
                             {
-                                if (precision)
-                                {
-                                    uint fit = CapacitySafeQuantity(cartBefore.Current, cartBefore.Maximum, itemRule.UnitWeight);
-                                    if (fit == 0)
-                                    {
-                                        activity(token.Account.Label + ": weight maintenance: quantity dialog detected but no "
-                                            + itemRule.ItemName + " can fit; cancelling transfer.");
-                                        input.Press(Keys.Escape);
-                                        cartSafetyStop = true;
-                                        break;
-                                    }
-                                    bool fullStackDefinitelyFits = pendingWeightBefore.HasValue
-                                        && cartBefore.Remaining >= pendingWeightBefore.Value;
-                                    if (fullStackDefinitelyFits)
-                                    {
-                                        activity(token.Account.Label + ": weight maintenance: Cart is at/above 95%, but the remaining "
-                                            + cartBefore.Remaining + " capacity is at least the character's entire current carried weight "
-                                            + pendingWeightBefore.Value + "; the full stack is provably safe.");
-                                        input.Press(Keys.Enter);
-                                        Thread.Sleep(TransferSettleMs);
-                                    }
-                                    else
-                                    {
-                                        requestedQuantity = fit;
-                                        activity(token.Account.Label + ": weight maintenance: Cart "
-                                            + cartBefore.Current + "/" + cartBefore.Maximum + " is at/above 95%; precision fill for "
-                                            + itemRule.ItemName + " (" + itemRule.UnitWeight + " weight each) requests at most " + fit
-                                            + " item(s) to fit the remaining " + cartBefore.Remaining + " weight.");
-                                        input.ReplaceFocusedText(fit.ToString(System.Globalization.CultureInfo.InvariantCulture));
-                                        input.Press(Keys.Enter);
-                                        Thread.Sleep(TransferSettleMs);
-
-                                        bool promptStillOpen;
-                                        using (Bitmap quantityCheck = input.CaptureClientBitmap())
-                                            promptStillOpen = VanillaInventoryVision.HasQuantityPrompt(quantityCheck);
-                                        if (promptStillOpen)
-                                        {
-                                            // A common safe reason is that the stack contains fewer items than the
-                                            // capacity-derived request. Try a small bounded chunk first, then one.
-                                            uint chunk = Math.Min(fit, 20U);
-                                            requestedQuantity = chunk;
-                                            activity(token.Account.Label + ": weight maintenance: precision quantity was not accepted immediately; "
-                                                + "retrying a small capacity-safe chunk of " + chunk + " " + itemRule.ItemName + ".");
-                                            input.ReplaceFocusedText(chunk.ToString(System.Globalization.CultureInfo.InvariantCulture));
-                                            input.Press(Keys.Enter);
-                                            Thread.Sleep(TransferSettleMs);
-
-                                            using (Bitmap chunkCheck = input.CaptureClientBitmap())
-                                                promptStillOpen = VanillaInventoryVision.HasQuantityPrompt(chunkCheck);
-                                            if (promptStillOpen)
-                                            {
-                                                requestedQuantity = 1;
-                                                activity(token.Account.Label + ": weight maintenance: small chunk was still not accepted; "
-                                                    + "falling back to one " + itemRule.ItemName + " so the transfer remains capacity-safe.");
-                                                input.ReplaceFocusedText("1");
-                                                input.Press(Keys.Enter);
-                                                Thread.Sleep(TransferSettleMs);
-                                            }
-                                        }
-                                    }
-                                }
-                                else
-                                {
-                                    activity(token.Account.Label + ": weight maintenance: quantity dialog positively detected; pressing Enter for the full stack.");
-                                    input.Press(Keys.Enter);
-                                    Thread.Sleep(TransferSettleMs);
-                                }
-                            }
-                            else
-                            {
-                                activity(token.Account.Label + ": weight maintenance: no quantity dialog detected in the bounded window; Enter NOT sent.");
+                                manualHold = true;
+                                throw new VanillaCartManualException("Transfer retry sequence ended without verified Cart progress. "
+                                    + "Autobattle stays OFF for manual inspection.");
                             }
 
-                            bool weightReduced = WaitForWeightReduction(token.ProcessId, pendingWeightBefore, cancelled);
-                            VanillaCartWeightSample cartAfter;
-                            bool cartIncreased = WaitForCartWeightIncrease(token.ProcessId, cartBefore.Current, cancelled, out cartAfter);
-                            using (Bitmap verify = input.CaptureClientBitmap())
-                            {
-                                if (VanillaInventoryVision.HasQuantityPrompt(verify))
-                                {
-                                    manualHold = true;
-                                    throw new VanillaCartManualException("A quantity dialog remained or appeared late. No further key was sent; Autobattle stays OFF for manual inspection.");
-                                }
-                            }
-
-                            // Verified read-only Cart weight is the authoritative transfer signal.
-                            // Do not require the source slot or Cart slot lattice to be visually
-                            // re-detectable after a successful transfer: Vanilla compacts the next
-                            // stack into the first source slot, and populated Cart graphics can hide
-                            // the empty-slot lattice even though subsequent drops still work.
-                            if (!cartIncreased)
-                            {
-                                noProgress++;
-                                if (noProgress >= 1)
-                                {
-                                    manualHold = true;
-                                    throw new VanillaCartManualException("Cart did not show a verified weight increase after the drag. The Cart may be full or the transfer was rejected; Autobattle stays OFF for manual inspection.");
-                                }
-                            }
-                            else if (!weightReduced)
+                            if (!weightReduced)
                             {
                                 activity(token.Account.Label + ": weight maintenance: Cart weight increased from "
                                     + cartBefore.Current + " to " + cartAfter.Current
@@ -542,8 +621,6 @@ namespace _4RTools.Model.Vanilla
                                     throw new VanillaCartManualException("Precision Cart transfer exceeded the requested capacity-safe quantity.");
                                 }
                             }
-
-                            noProgress = 0;
                             moved++;
                             categoryMoved++;
                             activity(token.Account.Label + ": weight maintenance: moved " + categoryName + " transfer "
