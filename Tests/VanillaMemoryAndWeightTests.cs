@@ -310,13 +310,22 @@ namespace Vanilla.Diagnostics.Tests
                 if (emptiedAgain.State != VanillaInventorySlotState.Empty)
                     throw new Exception("First slot did not return to Empty after the final item disappeared.");
 
-                Point[] destinations = Enumerable.Range(0, 4)
-                    .Select(i => VanillaInventoryVision.CartDropPoint(grid, i)).ToArray();
-                if (destinations.Distinct().Count() < 3)
+                Point[] destinations = Enumerable.Range(0, 8)
+                    .Select(i => VanillaInventoryVision.CartDropPoint(panel, i)).ToArray();
+                if (destinations.Distinct().Count() < 6)
                     throw new Exception("Cart destination rotation did not vary across detected interior points.");
                 foreach (Point point in destinations)
                     if (!panel.Contains(point))
                         throw new Exception("Detected Cart destination escaped the Cart panel.");
+
+                // Regression from the 2026-09-19 live run: after one successful transfer,
+                // populated Cart graphics can hide the empty-slot lattice. A later item must
+                // still have a safe destination because the Cart body itself remains valid.
+                using (Graphics g = Graphics.FromImage(frame))
+                    g.FillRectangle(Brushes.DarkSlateBlue, panel);
+                Point populatedCartDestination = VanillaInventoryVision.CartDropPoint(panel, 9);
+                if (!panel.Contains(populatedCartDestination))
+                    throw new Exception("Populated Cart lost its panel-based safe destination.");
             }
         }
 
