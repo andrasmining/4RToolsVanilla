@@ -731,6 +731,7 @@ namespace _4RTools.Model.Vanilla
             public DateTimeOffset? LastSentAt;
             public DateTimeOffset NextAttemptAt = DateTimeOffset.MinValue;
             public DateTimeOffset NextCartAttemptAt = DateTimeOffset.MinValue;
+            public DateTimeOffset NextCompletionAttemptAt = DateTimeOffset.MinValue;
             public DateTimeOffset NextMilestoneMailAt = DateTimeOffset.MinValue;
         }
     }
