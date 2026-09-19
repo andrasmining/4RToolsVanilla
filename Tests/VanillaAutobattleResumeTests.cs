@@ -395,12 +395,12 @@ namespace Vanilla.Diagnostics.Tests
             internal Action OnDelay, OnFocus;
             internal DateTimeOffset Now { get { return Epoch.AddMilliseconds(Ms); } }
 
-            internal VanillaClientState Sample(int x = 10, int y = 20)
+            internal VanillaClientState Sample(int x = 10, int y = 20, uint hp = 100, uint maxHp = 100)
             {
                 var state = VanillaClientState.Create(Session, Now, null, new Dictionary<VanillaField, object>
                 {
                     { VanillaField.X, x }, { VanillaField.Y, y }, { VanillaField.Map, "map" },
-                    { VanillaField.CharacterName, "fake character" }, { VanillaField.CurrentHP, 100U }, { VanillaField.MaxHP, 100U }
+                    { VanillaField.CharacterName, "fake character" }, { VanillaField.CurrentHP, hp }, { VanillaField.MaxHP, maxHp }
                 }, null, null);
                 state.ProcessId = Pid;
                 foreach (var field in state.Fields.Values.Where(v => v.IsAvailable))
