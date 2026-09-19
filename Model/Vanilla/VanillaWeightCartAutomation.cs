@@ -341,13 +341,32 @@ namespace _4RTools.Model.Vanilla
                 try
                 {
                     activity(token.Account.Label + ": weight maintenance: stopping Autobattle with dedicated Weight hotkey "
-                        + settings.AutobattleStopHotkeyText + ".");
-                    VanillaDebugLog.Write("WEIGHT", "event=cart-autobattle-stop account='" + token.Account.Label
-                        + "' accountId=" + token.AccountId + " pid=" + pid + " hotkey='" + settings.AutobattleStopHotkeyText + "'.");
-                    input.Chord(settings.AutobattleStopCtrl, settings.AutobattleStopAlt,
-                        settings.AutobattleStopShift, (Keys)settings.AutobattleStopKey);
+                        + settings.AutobattleStopHotkeyText + " and verifying continuous X/Y stillness before any panel input.");
+                    bool stopVerified = VerifyAutobattleStopped(token, input, settings, cancelled, activity,
+                        () => paused = true, "cart-start");
+                    if (!stopVerified)
+                    {
+                        string detail = token.Account.Label + ": Autobattle STOP was not verified after "
+                            + VanillaAutobattleStopVerifier.MaximumAttempts
+                            + " attempts; Inventory/Cart were NOT opened. Leaving gameplay alone and retrying Cart maintenance in about "
+                            + TransientCartRetrySeconds + "s.";
+                        activity(detail);
+                        VanillaDebugLog.Write("WEIGHT", "event=cart-stop-unverified trigger=" + trigger
+                            + " account='" + token.Account.Label + "' accountId=" + token.AccountId + " pid=" + pid
+                            + " attempts=" + VanillaAutobattleStopVerifier.MaximumAttempts + ".");
+                        // Continuous/recurrent movement was observed through the verification windows,
+                        // so do not send Resume here; simply release Cart ownership and try later.
+                        paused = false;
+                        completed = true;
+                        supervisor.CompleteWeightMaintenance(token, false, detail);
+                        return new VanillaWeightCartResult
+                        {
+                            RetryLater = true,
+                            RetryAfterSeconds = TransientCartRetrySeconds,
+                            Message = detail
+                        };
+                    }
                     paused = true;
-                    Thread.Sleep(700);
                     ThrowIfCancelled(cancelled);
 
                     inventory = EnsureToggledPanel(input, settings.InventoryCtrl, settings.InventoryAlt, settings.InventoryShift,
@@ -887,12 +906,25 @@ namespace _4RTools.Model.Vanilla
                         + client.CartWeightPercent.Value.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)
                         + "% and carried weight "
                         + client.WeightPercent.Value.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)
-                        + "% meet the farming-complete thresholds; stopping Autobattle with "
+                        + "% meet the farming-complete thresholds; verifying Autobattle STOP with "
                         + settings.AutobattleStopHotkeyText + ".");
-                    input.Chord(settings.AutobattleStopCtrl, settings.AutobattleStopAlt,
-                        settings.AutobattleStopShift, (Keys)settings.AutobattleStopKey);
+                    bool stopVerified = VerifyAutobattleStopped(token, input, settings,
+                        () => supervisor.WeightMaintenanceCancelled(token), report,
+                        () => paused = true, "farming-done");
+                    if (!stopVerified)
+                    {
+                        string notStopped = token.Account.Label + ": farming-complete STOP was not verified after "
+                            + VanillaAutobattleStopVerifier.MaximumAttempts
+                            + " attempts; completed-farming hold is NOT armed yet and STOP will be retried.";
+                        paused = false;
+                        supervisor.CompleteWeightMaintenance(token, false, notStopped);
+                        VanillaDebugLog.Write("WEIGHT", "event=farming-done-stop-unverified account='"
+                            + token.Account.Label + "' accountId=" + token.AccountId + " pid=" + pid
+                            + " attempts=" + VanillaAutobattleStopVerifier.MaximumAttempts + ".");
+                        report(notStopped);
+                        return false;
+                    }
                     paused = true;
-                    Thread.Sleep(500);
                 }
 
                 string detail = token.Account.Label + ": farming complete — Cart "
@@ -955,6 +987,43 @@ namespace _4RTools.Model.Vanilla
                 Thread.Sleep(150);
             }
             return false;
+        }
+
+        private bool VerifyAutobattleStopped(VanillaWeightMaintenanceToken token, VanillaForegroundInput input,
+            VanillaWeightAlertSettings settings, Func<bool> cancelled, System.Action<string> report,
+            System.Action onStopSent, string context)
+        {
+            var clock = Stopwatch.StartNew();
+            var verifier = new VanillaAutobattleStopVerifier();
+            Func<VanillaClientState> read = () =>
+            {
+                VanillaFleetClientInfo client = fleet.Poll().FirstOrDefault(item => item.ProcessId == token.ProcessId);
+                if (client == null || client.Snapshot == null)
+                    throw new InvalidOperationException("Fresh fleet state is unavailable for Autobattle STOP verification.");
+                return client.Snapshot;
+            };
+
+            bool verified = verifier.VerifyAsync(token.ProcessId, read, input.Activate,
+                () =>
+                {
+                    input.ChordInVerifiedForeground(settings.AutobattleStopCtrl, settings.AutobattleStopAlt,
+                        settings.AutobattleStopShift, (Keys)settings.AutobattleStopKey);
+                    onStopSent?.Invoke();
+                    VanillaDebugLog.Write("WEIGHT", "event=autobattle-stop-attempt context=" + context
+                        + " account='" + token.Account.Label + "' accountId=" + token.AccountId
+                        + " pid=" + token.ProcessId + " attempt=" + verifier.Attempts + "/"
+                        + VanillaAutobattleStopVerifier.MaximumAttempts + " hotkey='"
+                        + settings.AutobattleStopHotkeyText + "'.");
+                },
+                cancelled, () => clock.Elapsed, () => DateTimeOffset.UtcNow,
+                milliseconds => Task.Delay(milliseconds),
+                text => report(token.Account.Label + ": weight maintenance: " + text))
+                .GetAwaiter().GetResult();
+
+            VanillaDebugLog.Write("WEIGHT", "event=autobattle-stop-verification context=" + context
+                + " account='" + token.Account.Label + "' accountId=" + token.AccountId
+                + " pid=" + token.ProcessId + " verified=" + verified + " attempts=" + verifier.Attempts + ".");
+            return verified;
         }
 
         private void VerifyResume(VanillaWeightMaintenanceToken token, VanillaForegroundInput input, Func<bool> cancelled, System.Action<string> report)
