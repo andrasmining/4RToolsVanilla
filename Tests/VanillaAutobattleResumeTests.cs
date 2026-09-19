@@ -37,6 +37,11 @@ namespace Vanilla.Diagnostics.Tests
             Test("Intermediate movement is seen even if the character returns", MovementAndReturn);
             Test("Movement at the deadline prevents another toggle", DeadlineMovement);
             Test("Movement while refocusing prevents a retry", RefocusMovement);
+            Test("Autobattle STOP requires five continuous stationary seconds", StopStationaryWindow);
+            Test("Autobattle STOP resets stillness when X/Y moves", StopMovementResetsWindow);
+            Test("Autobattle STOP retries on the ten-second cadence", StopRetryCadence);
+            Test("Autobattle STOP stops after three moving attempts", StopBoundedFailure);
+            Test("Autobattle STOP verification constants stay bounded", StopVerificationConstants);
             Test("Cancellation before startup sends no key", CancelBeforeStart);
             Test("Cancellation during observation sends no late key", CancelDuringWait);
             Test("Cancellation during focus sends no key", CancelDuringFocus);
@@ -374,6 +379,106 @@ namespace Vanilla.Diagnostics.Tests
             var h = new Harness(); h.ReadOverride = () => h.Sample(h.Focuses >= 2 ? 11 : 10);
             h.Run(); Assert(h.Focuses == 2 && h.Sends == 1 && h.Teleports == 1 && h.Ms == 20000, "Movement after refocus did not prevent a second toggle.");
         }
+        private sealed class StopHarness
+        {
+            internal int Pid = 42, Sends, Focuses;
+            internal long Ms;
+            internal bool Cancelled;
+            internal readonly Guid Session = Guid.NewGuid();
+            internal readonly VanillaAutobattleStopVerifier Verifier = new VanillaAutobattleStopVerifier();
+            internal readonly List<long> SentAt = new List<long>();
+            internal readonly List<string> Progress = new List<string>();
+            internal Func<VanillaClientState> ReadOverride;
+            internal Action OnDelay, OnFocus;
+            internal DateTimeOffset Now { get { return Epoch.AddMilliseconds(Ms); } }
+
+            internal VanillaClientState Sample(int x = 10, int y = 20)
+            {
+                var state = VanillaClientState.Create(Session, Now, null, new Dictionary<VanillaField, object>
+                {
+                    { VanillaField.X, x }, { VanillaField.Y, y }, { VanillaField.Map, "map" },
+                    { VanillaField.CharacterName, "fake character" }, { VanillaField.CurrentHP, 100U }, { VanillaField.MaxHP, 100U }
+                }, null, null);
+                state.ProcessId = Pid;
+                foreach (var field in state.Fields.Values.Where(v => v.IsAvailable))
+                    field.Validation = StateValidation.Valid;
+                return state;
+            }
+
+            internal Task<bool> RunAsync()
+            {
+                return Verifier.VerifyAsync(Pid, () => ReadOverride == null ? Sample() : ReadOverride(),
+                    () => { Focuses++; OnFocus?.Invoke(); },
+                    () => { Sends++; SentAt.Add(Ms); },
+                    () => Cancelled, () => TimeSpan.FromMilliseconds(Ms), () => Now,
+                    milliseconds => { Ms += milliseconds; OnDelay?.Invoke(); return Task.FromResult(0); }, Progress.Add);
+            }
+
+            internal bool Run() { return RunAsync().GetAwaiter().GetResult(); }
+        }
+
+        private static void StopStationaryWindow()
+        {
+            var h = new StopHarness();
+            Assert(h.Run(), "Stationary client was not accepted as stopped.");
+            Assert(h.Verifier.StationaryVerified && h.Sends == 1 && h.Ms == 5000,
+                "STOP must require exactly one full five-second stationary window before Cart input.");
+            Assert(h.SentAt.SequenceEqual(new long[] { 0 }), "Stationary STOP sent an unnecessary retry.");
+        }
+
+        private static void StopMovementResetsWindow()
+        {
+            var h = new StopHarness();
+            h.ReadOverride = () =>
+            {
+                int x = h.Ms < 3000 ? 10 + (int)(h.Ms / 500) : 20;
+                return h.Sample(x, 20);
+            };
+            Assert(h.Run(), "Client that became stationary within the attempt window was rejected.");
+            Assert(h.Sends == 1 && h.Ms >= 7500 && h.Ms <= 8000,
+                "X/Y movement did not reset the required continuous five-second stillness window.");
+            Assert(h.Progress.Any(p => p.IndexOf("stationary window reset", StringComparison.OrdinalIgnoreCase) >= 0),
+                "STOP verifier did not report movement/reset evidence.");
+        }
+
+        private static void StopRetryCadence()
+        {
+            var h = new StopHarness();
+            h.ReadOverride = () =>
+            {
+                int x = h.Ms < 10000 ? 10 + (int)(h.Ms / 100) : 110;
+                return h.Sample(x, 20);
+            };
+            Assert(h.Run(), "Second STOP attempt did not succeed after movement ceased.");
+            Assert(h.Sends == 2 && h.SentAt.SequenceEqual(new long[] { 0, 10000 }) && h.Ms == 15000,
+                "STOP retries must occur on a ten-second cadence and still require five stationary seconds.");
+        }
+
+        private static void StopBoundedFailure()
+        {
+            var h = new StopHarness();
+            h.ReadOverride = () => h.Sample(10 + (int)(h.Ms / 100), 20);
+            Assert(!h.Run(), "Continuously moving client was incorrectly authorized for Cart input.");
+            Assert(!h.Verifier.StationaryVerified && h.Sends == 3 && h.Ms == 30000,
+                "STOP verification must end after three ten-second moving attempts.");
+            Assert(h.SentAt.SequenceEqual(new long[] { 0, 10000, 20000 }),
+                "STOP attempts were not sent at 0/10/20 seconds.");
+            Assert(h.Progress.Last().IndexOf("Cart/Inventory input is not authorized", StringComparison.Ordinal) >= 0,
+                "Failed STOP verification did not explicitly deny Cart/Inventory input.");
+        }
+
+        private static void StopVerificationConstants()
+        {
+            Assert(VanillaAutobattleStopVerifier.MaximumAttempts == 3,
+                "STOP verification retry budget changed unexpectedly.");
+            Assert(VanillaAutobattleStopVerifier.AttemptWindowMs == 10000,
+                "STOP attempts must use ten-second windows.");
+            Assert(VanillaAutobattleStopVerifier.RequiredStationaryMs == 5000,
+                "STOP verification must require five continuous stationary seconds.");
+            Assert(VanillaAutobattleStopVerifier.PollIntervalMs <= 100,
+                "STOP X/Y polling became too coarse.");
+        }
+
         private static void CancelBeforeStart()
         {
             var h = new Harness { Cancelled = true }; Expect<OperationCanceledException>(h.Run);
