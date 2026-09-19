@@ -486,14 +486,11 @@ namespace _4RTools.Model.Vanilla
                                 activity(token.Account.Label + ": weight maintenance: no quantity dialog detected in the bounded window; Enter NOT sent.");
                             }
 
-                            bool cleared, weightReduced = WaitForWeightReduction(token.ProcessId, pendingWeightBefore, cancelled);
+                            bool weightReduced = WaitForWeightReduction(token.ProcessId, pendingWeightBefore, cancelled);
                             VanillaCartWeightSample cartAfter;
                             bool cartIncreased = WaitForCartWeightIncrease(token.ProcessId, cartBefore.Current, cancelled, out cartAfter);
                             using (Bitmap verify = input.CaptureClientBitmap())
                             {
-                                VanillaUiSlotGrid grid = VanillaInventoryVision.DetectSlotGrid(verify, inventory);
-                                Point? stillOccupied = VanillaInventoryVision.FirstOccupiedSlotNear(verify, grid, sourcePoint);
-                                cleared = !stillOccupied.HasValue;
                                 if (VanillaInventoryVision.HasQuantityPrompt(verify))
                                 {
                                     manualHold = true;
@@ -501,7 +498,12 @@ namespace _4RTools.Model.Vanilla
                                 }
                             }
 
-                            if (!cartIncreased || (!weightReduced && !cleared))
+                            // Verified read-only Cart weight is the authoritative transfer signal.
+                            // Do not require the source slot or Cart slot lattice to be visually
+                            // re-detectable after a successful transfer: Vanilla compacts the next
+                            // stack into the first source slot, and populated Cart graphics can hide
+                            // the empty-slot lattice even though subsequent drops still work.
+                            if (!cartIncreased)
                             {
                                 noProgress++;
                                 if (noProgress >= 1)
@@ -509,6 +511,12 @@ namespace _4RTools.Model.Vanilla
                                     manualHold = true;
                                     throw new VanillaCartManualException("Cart did not show a verified weight increase after the drag. The Cart may be full or the transfer was rejected; Autobattle stays OFF for manual inspection.");
                                 }
+                            }
+                            else if (!weightReduced)
+                            {
+                                activity(token.Account.Label + ": weight maintenance: Cart weight increased from "
+                                    + cartBefore.Current + " to " + cartAfter.Current
+                                    + "; carried-weight reduction was not independently observed, so Cart weight remains the transfer proof.");
                             }
 
                             if (precision)
@@ -1077,8 +1085,11 @@ namespace _4RTools.Model.Vanilla
                         emptyStable = 0;
                         if (occupiedStable >= 2)
                         {
-                            VanillaUiSlotGrid cartGrid = VanillaInventoryVision.DetectSlotGrid(frame, cart);
-                            Point destination = VanillaInventoryVision.CartDropPoint(cartGrid, transferSequence);
+                            // The Cart accepts drops anywhere inside its item body. Do not require
+                            // the Cart's empty-slot lattice to remain visually detectable after items
+                            // have already been transferred: the live 2026-09-19 run proved that this
+                            // can disappear while the Cart remains fully usable.
+                            Point destination = VanillaInventoryVision.CartDropPoint(cart, transferSequence);
                             sourcePoint = first.Center;
                             weightBefore = CurrentWeight(token.ProcessId);
                             report(categoryName + " first slot confirmed occupied on two fresh captures; dragging it to a safe detected Cart interior point.");
@@ -1435,25 +1446,38 @@ namespace _4RTools.Model.Vanilla
             };
         }
 
-        internal static Point CartDropPoint(VanillaUiSlotGrid grid, int sequence)
+        internal static Point CartDropPoint(Rectangle cartPanel, int sequence)
         {
-            if (grid == null || grid.Columns == null || grid.Columns.Length == 0 || grid.Rows == null || grid.Rows.Length == 0)
-                throw new InvalidOperationException("Detected Cart grid is empty.");
+            if (cartPanel.Width < 40 || cartPanel.Height < 30)
+                throw new InvalidOperationException("Detected Cart panel is too small for a safe interior drop.");
 
-            // Any point inside the Cart item body accepts a transfer. Vary the destination
-            // deterministically across detected grid centers for UI robustness; do not depend on
-            // an empty Cart slot and do not use stochastic anti-detection behavior.
-            int[] columnOrder = { grid.Columns.Length / 2, Math.Max(0, grid.Columns.Length / 3),
-                Math.Max(0, grid.Columns.Length * 2 / 3), 0, grid.Columns.Length - 1 };
-            int[] rowOrder = { grid.Rows.Length / 2, Math.Max(0, grid.Rows.Length / 3),
-                Math.Max(0, grid.Rows.Length * 2 / 3), 0, grid.Rows.Length - 1 };
-            int index = Math.Abs(sequence) % Math.Min(columnOrder.Length, rowOrder.Length);
-            int ci = Math.Max(0, Math.Min(grid.Columns.Length - 1, columnOrder[index]));
-            int ri = Math.Max(0, Math.Min(grid.Rows.Length - 1, rowOrder[index]));
-            Point point = new Point(grid.Columns[ci], grid.Rows[ri]);
-            if (!grid.Panel.Contains(point))
+            // Vanilla accepts the dragged item anywhere in the Cart item body. Use only the
+            // positively detected Cart rectangle and keep a generous inset from borders/tabs.
+            // A deterministic rotation avoids depending on any particular Cart slot being empty
+            // or even visually detectable once the Cart contains items.
+            double[] xs = { 0.50, 0.35, 0.65, 0.25, 0.75, 0.50, 0.40, 0.60 };
+            double[] ys = { 0.55, 0.55, 0.55, 0.55, 0.55, 0.35, 0.72, 0.72 };
+            int index = Math.Abs(sequence) % xs.Length;
+            int insetX = Math.Max(10, Math.Min(28, cartPanel.Width / 10));
+            int insetY = Math.Max(8, Math.Min(20, cartPanel.Height / 7));
+            int left = cartPanel.Left + insetX;
+            int right = cartPanel.Right - insetX - 1;
+            int top = cartPanel.Top + insetY;
+            int bottom = cartPanel.Bottom - insetY - 1;
+            if (right <= left || bottom <= top)
+                throw new InvalidOperationException("Detected Cart panel has no safe interior drop area.");
+            int x = left + (int)Math.Round((right - left) * xs[index]);
+            int y = top + (int)Math.Round((bottom - top) * ys[index]);
+            Point point = new Point(Math.Max(left, Math.Min(right, x)), Math.Max(top, Math.Min(bottom, y)));
+            if (!cartPanel.Contains(point))
                 throw new InvalidOperationException("Detected Cart drop point escaped the detected Cart panel.");
             return point;
+        }
+
+        internal static Point CartDropPoint(VanillaUiSlotGrid grid, int sequence)
+        {
+            if (grid == null) throw new ArgumentNullException(nameof(grid));
+            return CartDropPoint(grid.Panel, sequence);
         }
 
         internal static Point? FirstOccupiedSlot(Bitmap frame, VanillaUiSlotGrid grid)
