@@ -867,7 +867,7 @@ namespace _4RTools.Model.Vanilla
                 if (weightCompletedHolds.Contains(runtime.Account.Id))
                 {
                     SetStage(runtime, VanillaReconnectStage.Stopped,
-                        "Farming complete: Cart full and carried weight target reached; Autobattle intentionally OFF");
+                        "Farming complete: Cart >=99% and carried weight >=50%; Autobattle intentionally OFF");
                     continue;
                 }
                 if (weightManualHolds.Contains(runtime.Account.Id))
