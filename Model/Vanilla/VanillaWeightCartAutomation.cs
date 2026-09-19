@@ -859,10 +859,10 @@ namespace _4RTools.Model.Vanilla
                             }
 
                             supervisor.MinimizeWeightMaintenanceClient(token);
-                            string detail = token.Account.Label + ": HP safety guard aborted Cart maintenance; Autobattle movement was resumed and Cart retry is scheduled in about "
+                            string resumeDetail = token.Account.Label + ": HP safety guard aborted Cart maintenance; Autobattle movement was resumed and Cart retry is scheduled in about "
                                 + TransientCartRetrySeconds + "s.";
                             completed = true;
-                            supervisor.CompleteWeightMaintenance(token, false, detail);
+                            supervisor.CompleteWeightMaintenance(token, false, resumeDetail);
                             return new VanillaWeightCartResult
                             {
                                 ItemsMoved = moved,
@@ -870,22 +870,22 @@ namespace _4RTools.Model.Vanilla
                                 RetryAfterSeconds = TransientCartRetrySeconds,
                                 CartFull = cartFull,
                                 StoppedForCartSafety = cartSafetyStop,
-                                Message = detail
+                                Message = resumeDetail
                             };
                         }
                         catch (Exception resumeEx)
                         {
-                            string detail = token.Account.Label + ": HP safety guard triggered, but verified Autobattle resume failed: "
+                            string resumeFailureDetail = token.Account.Label + ": HP safety guard triggered, but verified Autobattle resume failed: "
                                 + resumeEx.Message + ". Manual intervention is required.";
-                            activity(detail);
-                            supervisor.CompleteWeightMaintenance(token, true, detail);
+                            activity(resumeFailureDetail);
+                            supervisor.CompleteWeightMaintenance(token, true, resumeFailureDetail);
                             return new VanillaWeightCartResult
                             {
                                 ItemsMoved = moved,
                                 RequiresManualIntervention = true,
                                 CartFull = cartFull,
                                 StoppedForCartSafety = cartSafetyStop,
-                                Message = detail
+                                Message = resumeFailureDetail
                             };
                         }
                     }
