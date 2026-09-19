@@ -437,8 +437,19 @@ namespace _4RTools.Model.Vanilla
         private readonly Func<bool> cancelled;
         private IntPtr window;
 
+        private const int GWL_STYLE = -16, GWL_EXSTYLE = -20;
+
         [StructLayout(LayoutKind.Sequential)]
         private struct RECT { public int Left, Top, Right, Bottom; }
+        [StructLayout(LayoutKind.Sequential)]
+        private struct POINT { public int X, Y; }
+        [StructLayout(LayoutKind.Sequential)]
+        private struct WINDOWPLACEMENT
+        {
+            public int Length, Flags, ShowCmd;
+            public POINT MinPosition, MaxPosition;
+            public RECT NormalPosition;
+        }
         private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
 
         [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
@@ -446,6 +457,10 @@ namespace _4RTools.Model.Vanilla
         [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
         [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr hwnd);
         [DllImport("user32.dll", SetLastError = true)] private static extern bool GetClientRect(IntPtr hwnd, out RECT rect);
+        [DllImport("user32.dll", SetLastError = true)] private static extern bool GetWindowPlacement(IntPtr hwnd, ref WINDOWPLACEMENT placement);
+        [DllImport("user32.dll", SetLastError = true)] private static extern int GetWindowLong(IntPtr hwnd, int index);
+        [DllImport("user32.dll")] private static extern IntPtr GetMenu(IntPtr hwnd);
+        [DllImport("user32.dll", SetLastError = true)] private static extern bool AdjustWindowRectEx(ref RECT rect, int style, bool menu, int exStyle);
         [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
         [DllImport("user32.dll", SetLastError = true)] private static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
         [DllImport("user32.dll")] private static extern uint MapVirtualKey(uint code, uint mapType);
@@ -459,8 +474,13 @@ namespace _4RTools.Model.Vanilla
             this.pid = pid;
             this.cancelled = cancelled ?? (() => false);
             window = ResolveWindow();
+            int captureWidth, captureHeight;
+            string captureSource;
+            if (!TryGetCaptureSize(window, out captureWidth, out captureHeight, out captureSource))
+                throw new InvalidOperationException("Owned Vanilla window was found, but no safe background capture size could be derived.");
             VanillaDebugLog.Write("TELEPORT", "Background input bound to PID=" + pid + ", hwnd=0x" + window.ToInt64().ToString("X")
-                + ". It will not restore or foreground the game window.");
+                + ", capture=" + captureWidth + "x" + captureHeight + " source=" + captureSource
+                + ", iconic=" + IsIconic(window) + ". It will not restore or foreground the game window.");
         }
 
         internal void Chord(bool ctrl, bool alt, bool shift, Keys key)
@@ -497,12 +517,10 @@ namespace _4RTools.Model.Vanilla
         internal Bitmap CaptureClientBitmap()
         {
             EnsureAllowed();
-            RECT rect;
-            if (!GetClientRect(window, out rect))
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "Could not read the background Vanilla client area.");
-            int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;
-            if (width < 200 || height < 120)
-                throw new InvalidOperationException("Background Vanilla client area is too small for popup recognition: " + width + "x" + height + ".");
+            int width, height;
+            string sizeSource;
+            if (!TryGetCaptureSize(window, out width, out height, out sizeSource))
+                throw new InvalidOperationException("Background Vanilla client size is unavailable; no teleport input continued.");
 
             var bitmap = new Bitmap(width, height, PixelFormat.Format24bppRgb);
             using (Graphics graphics = Graphics.FromImage(bitmap))
@@ -556,17 +574,69 @@ namespace _4RTools.Model.Vanilla
                 if (GetWindowThreadProcessId(hwnd, out owner) == 0 || owner != (uint)pid) return true;
                 string cls = Text(hwnd, false), title = Text(hwnd, true);
                 if (!VanillaForegroundInput.IsKnownVanillaGameWindow(cls, title)) return true;
-                RECT rect;
-                if (!GetClientRect(hwnd, out rect)) return true;
-                int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;
-                if (width < 200 || height < 120) return true;
-                long area = (long)width * height + (IsWindowVisible(hwnd) ? 1000000000L : 0L) + (IsIconic(hwnd) ? 0L : 500000000L);
+                int width, height;
+                string sizeSource;
+                if (!TryGetCaptureSize(hwnd, out width, out height, out sizeSource)) return true;
+                long area = (long)width * height + (IsWindowVisible(hwnd) ? 1000000000L : 0L)
+                    + (IsIconic(hwnd) ? 0L : 500000000L);
                 if (area > bestArea) { bestArea = area; best = hwnd; }
                 return true;
             }, IntPtr.Zero);
             if (best == IntPtr.Zero)
                 throw new InvalidOperationException("No owned Vanilla game window is available for background Smart Teleport.");
             return best;
+        }
+
+        private static bool TryGetCaptureSize(IntPtr hwnd, out int width, out int height, out string source)
+        {
+            width = height = 0;
+            source = "none";
+            RECT client;
+            if (GetClientRect(hwnd, out client))
+            {
+                width = client.Right - client.Left;
+                height = client.Bottom - client.Top;
+                if (width >= 200 && height >= 120)
+                {
+                    source = "client-rect";
+                    return true;
+                }
+            }
+
+            // A minimized Vanilla top-level window reports a 0x0 client area on the user's
+            // machine even though PostMessage/PrintWindow can still address that owned HWND.
+            // WINDOWPLACEMENT retains the normal outer bounds. Subtract the current style's
+            // non-client frame to recover the last normal client size without restoring,
+            // foregrounding or moving the game window.
+            var placement = new WINDOWPLACEMENT { Length = Marshal.SizeOf(typeof(WINDOWPLACEMENT)) };
+            if (!GetWindowPlacement(hwnd, ref placement)) return false;
+            int outerWidth = placement.NormalPosition.Right - placement.NormalPosition.Left;
+            int outerHeight = placement.NormalPosition.Bottom - placement.NormalPosition.Top;
+            if (outerWidth < 200 || outerHeight < 120) return false;
+
+            RECT probe = new RECT { Left = 0, Top = 0, Right = 1000, Bottom = 1000 };
+            int style = GetWindowLong(hwnd, GWL_STYLE);
+            int exStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
+            if (AdjustWindowRectEx(ref probe, style, GetMenu(hwnd) != IntPtr.Zero, exStyle))
+            {
+                int frameWidth = Math.Max(0, (probe.Right - probe.Left) - 1000);
+                int frameHeight = Math.Max(0, (probe.Bottom - probe.Top) - 1000);
+                width = outerWidth - frameWidth;
+                height = outerHeight - frameHeight;
+                if (width >= 200 && height >= 120)
+                {
+                    source = "normal-placement-minus-frame";
+                    return true;
+                }
+            }
+
+            // Conservative fallback: PrintWindow paints at the top-left. A small amount of
+            // non-client slack is preferable to restoring a minimized client; visual validation
+            // below still rejects blank/indeterminate captures before any teleport key is sent.
+            width = outerWidth;
+            height = outerHeight;
+            source = "normal-placement-outer-fallback";
+            return width >= 200 && height >= 120;
         }
 
         private static string Text(IntPtr hwnd, bool title)
