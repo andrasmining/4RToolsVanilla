@@ -395,15 +395,19 @@ started or recovered, not one shared global proxy control.
 
 During the current live-hardening phase, global debug logging is ON by default.
 Keep one Debug log checkbox and one COPY DEBUG LOG action in the left action area
-of the top Vanilla header. Every 4RTools application startup must begin with a
-fresh live `debug.log`; archive the previous debug session under a timestamped
-filename before the new process writes. Do not concatenate old debug sessions
-back into COPY DEBUG LOG: the copied bundle should use the current debug session
-plus the current application/startup/recovery/memory/update logs, while summary
-counts may scan recent archives. Every application-managed `.log` file is hard
-capped at 10 MiB; rotate before exceeding that cap and split any oversized
-legacy/migrated log into bounded timestamped parts during startup migration.
-Keep bounded history rather than allowing log families to grow without limit.
+of the top Vanilla header. Every normal 4RTools process startup must create a
+brand-new process-owned debug file named with its startup timestamp and PID
+(`debug-yyyyMMdd-HHmmss-fff-pPID.log`). Never reuse or append to a shared live
+`debug.log`; overlapping updater/old/new processes must therefore be unable to
+mix sessions. Legacy fixed `debug.log` is migrated/archived once. Rotation for a
+long-running session creates timestamp/PID session part files, never a cross-session
+append. Do not concatenate old debug sessions back into COPY DEBUG LOG: the copied
+bundle should use the current process's debug session plus current
+application/startup/recovery/memory/update logs, while summary counts may scan
+recent archives. Every application-managed `.log` file is hard capped at 10 MiB;
+rotate before exceeding that cap and split any oversized legacy/migrated log into
+bounded timestamped parts during startup migration. Keep bounded history rather
+than allowing log families to grow without limit.
 Debug mode should record process/PID changes, stage/visual transitions, launcher
 evidence, focus attempts, clicks/keys/hotkeys, and errors with timestamps while
 never logging passwords or typed secret contents. Remove or reduce this temporary
