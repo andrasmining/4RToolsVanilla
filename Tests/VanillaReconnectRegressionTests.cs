@@ -328,6 +328,11 @@ namespace Vanilla.Diagnostics.Tests
                 "Compact Recovery layouts should keep four readable log lines without forcing outer scrolling.");
             Assert(VanillaReconnectForm.MinimumRecoveryLogHeight(24) == 96,
                 "Enlarged text should grow the compact log minimum by font metrics rather than a six-line hard floor.");
+            Assert(!VanillaReconnectForm.RecoverySplitCanRotate(1, 700, 5)
+                && !VanillaReconnectForm.RecoverySplitCanRotate(1000, 1, 5),
+                "Recovery splitter must defer orientation changes while either axis is only a transient layout sliver.");
+            Assert(VanillaReconnectForm.RecoverySplitCanRotate(1000, 700, 5),
+                "Recovery splitter should rotate normally once both axes have real viewport size.");
         }
 
         private static void SavedAccountCatalog()
