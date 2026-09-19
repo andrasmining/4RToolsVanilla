@@ -122,7 +122,7 @@ namespace Vanilla.Diagnostics.Tests
             Equal(0L, VanillaWeightCartAutomation.CapacitySafeQuantity(9998, 10000, 3), "Mastela cannot fill a 2-weight remainder");
             Equal(2L, VanillaWeightCartAutomation.CapacitySafeQuantity(9998, 10000, 1), "Peco Feather fills a 2-weight remainder");
             Equal(0L, VanillaWeightCartAutomation.CapacitySafeQuantity(10000, 10000, 1), "full Cart quantity");
-            if (VanillaWeightCartAutomation.PrecisionThresholdPercent != 95m
+            if (VanillaWeightCartAutomation.PrecisionThresholdPercent != 75m
                 || VanillaWeightCartAutomation.FarmingDoneCartPercent != 99m
                 || VanillaWeightCartAutomation.FarmingDoneCarryPercent != 50m)
                 throw new Exception("Cart precision or farming completion threshold changed unexpectedly.");
@@ -131,10 +131,11 @@ namespace Vanilla.Diagnostics.Tests
                 || !VanillaWeightCartAutomation.IsFarmingComplete(99m, 50m)
                 || !VanillaWeightCartAutomation.IsFarmingComplete(100m, 80m))
                 throw new Exception("Farming completion must require Cart >=99% and carried weight >=50%.");
-            if (VanillaWeightCartAutomation.RequiresPrecisionFill(94.999m)
+            if (VanillaWeightCartAutomation.RequiresPrecisionFill(74.999m)
+                || !VanillaWeightCartAutomation.RequiresPrecisionFill(75m)
                 || !VanillaWeightCartAutomation.RequiresPrecisionFill(95m)
                 || !VanillaWeightCartAutomation.RequiresPrecisionFill(100m))
-                throw new Exception("Cart precision filling must start exactly at 95%.");
+                throw new Exception("Cart precision filling must start exactly at 75%.");
             if (VanillaWeightAlertService.PrecisionCartRetrySeconds != 60)
                 throw new Exception("Near-full Cart retry cadence changed unexpectedly.");
             if (VanillaWeightCartAutomation.TransferAttemptLimit < 3)
