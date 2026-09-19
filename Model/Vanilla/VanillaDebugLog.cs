@@ -22,6 +22,7 @@ namespace _4RTools.Model.Vanilla
         private static readonly string ProcessSessionToken = DateTime.Now.ToString("yyyyMMdd-HHmmss-fff")
             + "-p" + Process.GetCurrentProcess().Id;
         private static bool initialized;
+        private static bool headerWritten;
         private static bool enabled = true;
         private static VanillaDebugSessionLog sessionLog;
         private static string SettingsPath { get { return Path.Combine(VanillaAppData.RootDirectory, "debug.json"); } }
@@ -43,9 +44,14 @@ namespace _4RTools.Model.Vanilla
         internal static void Initialize()
         {
             EnsureInitialized();
+            lock (Gate)
+            {
+                if (headerWritten) return;
+                headerWritten = true;
+            }
             Write("APP", "Global debug logging initialized. version=" + SafeVersion()
-                + ", pid=" + Process.GetCurrentProcess().Id + ", base='" + AppDomain.CurrentDomain.BaseDirectory
-                + "', cwd='" + Environment.CurrentDirectory + "'.");
+                + ", pid=" + Process.GetCurrentProcess().Id + ", sessionFile='" + Path.GetFileName(LogPath)
+                + "', base='" + AppDomain.CurrentDomain.BaseDirectory + "', cwd='" + Environment.CurrentDirectory + "'.");
             try
             {
                 Write("HOST", VanillaHostDiagnostics.Build().Replace("\r", " ").Replace("\n", " | "));
