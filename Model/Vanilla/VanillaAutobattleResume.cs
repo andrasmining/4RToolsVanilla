@@ -238,6 +238,138 @@ namespace _4RTools.Model.Vanilla
         }
     }
 
+    /// <summary>
+    /// Verifies the inverse of resume: after the dedicated Weight STOP hotkey,
+    /// fresh X/Y must remain unchanged continuously before Cart UI input is authorized.
+    /// </summary>
+    internal sealed class VanillaAutobattleStopVerifier
+    {
+        internal const int MaximumAttempts = 3;
+        internal const int AttemptWindowMs = 10000;
+        internal const int RequiredStationaryMs = 5000;
+        internal const int PollIntervalMs = 100;
+        private bool started;
+        internal int Attempts { get; private set; }
+        internal bool StationaryVerified { get; private set; }
+
+        internal async Task<bool> VerifyAsync(int processId, Func<VanillaClientState> read, System.Action focus,
+            System.Action sendStop, Func<bool> cancelled, Func<TimeSpan> clock, Func<DateTimeOffset> utcNow,
+            Func<int, Task> delay, System.Action<string> report)
+        {
+            if (started) throw new InvalidOperationException("An autobattle stop verification cannot be restarted.");
+            started = true;
+            if (processId <= 0 || read == null || focus == null || sendStop == null || cancelled == null
+                || clock == null || utcNow == null || delay == null || report == null)
+                throw new ArgumentException("Autobattle stop verification requires complete state/input services.");
+
+            VanillaClientState identity = null, previousRead = null;
+            TimeSpan lastClock = clock();
+            Func<TimeSpan> now = () =>
+            {
+                TimeSpan value = clock();
+                if (value < lastClock) throw new InvalidOperationException("Autobattle stop verification clock moved backwards.");
+                lastClock = value;
+                return value;
+            };
+            System.Action checkCancelled = () =>
+            {
+                if (cancelled()) throw new OperationCanceledException(
+                    "Autobattle stop verification cancelled; no further hotkeys will be sent.");
+            };
+            Func<VanillaClientState> sample = () =>
+            {
+                checkCancelled();
+                TimeSpan began = now();
+                VanillaClientState state = read();
+                checkCancelled();
+                TimeSpan finished = now();
+                if ((finished - began).TotalMilliseconds > VanillaAutobattleResumeVerifier.MaximumSampleAgeMs
+                    || ReferenceEquals(state, previousRead))
+                    throw new InvalidOperationException("Autobattle stop coordinates are stale; verification stopped.");
+                VanillaAutobattleResumeVerifier.ValidateSample(state, identity, processId, utcNow());
+                identity = identity ?? state;
+                previousRead = state;
+                return state;
+            };
+
+            for (int attempt = 1; attempt <= MaximumAttempts; attempt++)
+            {
+                checkCancelled();
+                focus();
+                checkCancelled();
+                VanillaClientState previous = sample();
+                Attempts = attempt;
+                report("Sending Autobattle STOP hotkey attempt " + attempt + "/" + MaximumAttempts);
+                sendStop();
+                checkCancelled();
+
+                TimeSpan attemptStarted = now();
+                TimeSpan attemptDeadline = attemptStarted + TimeSpan.FromMilliseconds(AttemptWindowMs);
+                TimeSpan stationarySince = attemptStarted;
+                report("Autobattle STOP sent; requiring " + (RequiredStationaryMs / 1000)
+                    + " continuous seconds of unchanged X/Y within attempt " + attempt + "/"
+                    + MaximumAttempts + " (10s window)");
+
+                while (true)
+                {
+                    checkCancelled();
+                    TimeSpan currentTime = now();
+                    if ((currentTime - stationarySince).TotalMilliseconds >= RequiredStationaryMs)
+                    {
+                        // Require one fresh sample at/after the stationary deadline rather than
+                        // allowing elapsed wall time alone to authorize Cart input.
+                        VanillaClientState confirmation = sample();
+                        if (!Moved(previous, confirmation))
+                        {
+                            StationaryVerified = true;
+                            report("Autobattle STOP verified after " + attempt + "/" + MaximumAttempts
+                                + ": X/Y remained unchanged continuously for at least "
+                                + (RequiredStationaryMs / 1000) + " seconds");
+                            return true;
+                        }
+                        previous = confirmation;
+                        stationarySince = now();
+                        report("X/Y movement appeared at the stationary deadline; stillness window reset");
+                    }
+
+                    currentTime = now();
+                    if (currentTime >= attemptDeadline) break;
+
+                    int wait = Math.Max(1, Math.Min(PollIntervalMs,
+                        (int)Math.Ceiling((attemptDeadline - currentTime).TotalMilliseconds)));
+                    await delay(wait).ConfigureAwait(false);
+                    checkCancelled();
+
+                    VanillaClientState current = sample();
+                    if (Moved(previous, current))
+                    {
+                        previous = current;
+                        stationarySince = now();
+                        report("X/Y movement still observed during STOP attempt " + attempt + "/"
+                            + MaximumAttempts + "; 5-second stationary window reset");
+                    }
+                    else
+                    {
+                        previous = current;
+                    }
+                }
+
+                if (attempt < MaximumAttempts)
+                    report("Autobattle STOP not verified in the 10-second window; retrying STOP attempt "
+                        + (attempt + 1) + "/" + MaximumAttempts);
+            }
+
+            report("Autobattle STOP could not be verified after " + MaximumAttempts
+                + " attempts; Cart/Inventory input is not authorized");
+            return false;
+        }
+
+        private static bool Moved(VanillaClientState before, VanillaClientState after)
+        {
+            return before.X.Value != after.X.Value || before.Y.Value != after.Y.Value;
+        }
+    }
+
     internal static class VanillaAutobattleStatus
     {
         internal static string Compact(VanillaReconnectStage stage, string detail)
