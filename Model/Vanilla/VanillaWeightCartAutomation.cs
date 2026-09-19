@@ -379,8 +379,9 @@ namespace _4RTools.Model.Vanilla
                     activity(token.Account.Label + ": weight maintenance: stopping Autobattle with dedicated Weight hotkey "
                         + settings.AutobattleStopHotkeyText + " and verifying continuous X/Y stillness before any panel input.");
                     bool stopHpDamage;
+                    decimal? stopHpBaseline;
                     bool stopVerified = VerifyAutobattleStopped(token, input, settings, supervisorCancelled, activity,
-                        () => paused = true, "cart-start", out stopHpDamage);
+                        () => paused = true, "cart-start", out stopHpDamage, out stopHpBaseline);
                     if (!stopVerified)
                     {
                         if (stopHpDamage)
@@ -421,7 +422,7 @@ namespace _4RTools.Model.Vanilla
                         hpDangerReason = "Fresh verified HP is unavailable immediately after the verified Autobattle STOP.";
                         throw new OperationCanceledException(hpDangerReason);
                     }
-                    stoppedHpBaselinePercent = stoppedHp.HpPercent.Value;
+                    stoppedHpBaselinePercent = stopHpBaseline ?? stoppedHp.HpPercent.Value;
                     activity(token.Account.Label + ": weight maintenance: HP damage guard armed at "
                         + stoppedHpBaselinePercent.Value.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)
                         + "%; any drop greater than " + HpDamageAbortPercent.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)
@@ -1034,9 +1035,10 @@ namespace _4RTools.Model.Vanilla
                         + "% meet the farming-complete thresholds; verifying Autobattle STOP with "
                         + settings.AutobattleStopHotkeyText + ".");
                     bool stopHpDamage;
+                    decimal? ignoredStopHpBaseline;
                     Func<bool> stopCancelled = () => supervisor.WeightMaintenanceCancelled(token);
                     bool stopVerified = VerifyAutobattleStopped(token, input, settings,
-                        stopCancelled, report, () => paused = true, "farming-done", out stopHpDamage);
+                        stopCancelled, report, () => paused = true, "farming-done", out stopHpDamage, out ignoredStopHpBaseline);
                     if (!stopVerified)
                     {
                         if (stopHpDamage)
@@ -1135,7 +1137,7 @@ namespace _4RTools.Model.Vanilla
 
         private bool VerifyAutobattleStopped(VanillaWeightMaintenanceToken token, VanillaForegroundInput input,
             VanillaWeightAlertSettings settings, Func<bool> cancelled, System.Action<string> report,
-            System.Action onStopSent, string context, out bool hpDamageDetected)
+            System.Action onStopSent, string context, out bool hpDamageDetected, out decimal? hpBaselinePercent)
         {
             var clock = Stopwatch.StartNew();
             var verifier = new VanillaAutobattleStopVerifier();
@@ -1165,6 +1167,7 @@ namespace _4RTools.Model.Vanilla
                 .GetAwaiter().GetResult();
 
             hpDamageDetected = verifier.HpDamageDetected;
+            hpBaselinePercent = verifier.HpBaselinePercent;
             VanillaDebugLog.Write("WEIGHT", "event=autobattle-stop-verification context=" + context
                 + " account='" + token.Account.Label + "' accountId=" + token.AccountId
                 + " pid=" + token.ProcessId + " verified=" + verified + " hpDamage=" + hpDamageDetected
