@@ -41,6 +41,7 @@ namespace Vanilla.Diagnostics.Tests
             Test("Autobattle STOP resets stillness when X/Y moves", StopMovementResetsWindow);
             Test("Autobattle STOP retries on the ten-second cadence", StopRetryCadence);
             Test("Autobattle STOP aborts immediately when HP falls by more than ten percent", StopHpDamageAbort);
+            Test("Autobattle STOP HP guard stays cumulative across retries", StopHpCumulativeAcrossRetries);
             Test("Autobattle STOP tolerates exactly ten percent HP loss", StopHpExactThreshold);
             Test("Autobattle STOP stops after three moving attempts", StopBoundedFailure);
             Test("Autobattle STOP verification constants stay bounded", StopVerificationConstants);
@@ -465,6 +466,20 @@ namespace Vanilla.Diagnostics.Tests
                 "HP >10% damage must abort STOP verification immediately without another STOP attempt.");
             Assert(h.Progress.Any(p => p.IndexOf("HP dropped by more than", StringComparison.OrdinalIgnoreCase) >= 0),
                 "HP damage abort was not reported.");
+        }
+
+        private static void StopHpCumulativeAcrossRetries()
+        {
+            var h = new StopHarness();
+            h.ReadOverride = () =>
+            {
+                uint hp = h.Ms >= 10100 ? 89U : h.Ms >= 5000 ? 94U : 100U;
+                return h.Sample(10 + (int)(h.Ms / 100), 20, hp, 100U);
+            };
+            Assert(!h.Run(), "Cumulative HP loss across STOP retries was ignored.");
+            Assert(h.Verifier.HpDamageDetected && h.Verifier.HpBaselinePercent == 100m
+                && h.Sends == 2 && h.Ms == 10100,
+                "STOP retries must retain the original HP baseline rather than re-baselining after each hotkey.");
         }
 
         private static void StopHpExactThreshold()
