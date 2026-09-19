@@ -391,7 +391,7 @@ namespace _4RTools.Model.Vanilla
                 try
                 {
                     if (!SetCursorPos(from.X, from.Y)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows rejected the drag start position.");
-                    Thread.Sleep(startHoldMs);
+                    DelayWithCancellation(startHoldMs);
                     VerifyMouseOwner(from, "drag start");
                     VerifyForeground();
                     var down = new[] { new INPUT { type = INPUT_MOUSE, U = new INPUTUNION { mi = new MOUSEINPUT { dwFlags = MOUSEEVENTF_LEFTDOWN } } } };
@@ -405,10 +405,10 @@ namespace _4RTools.Model.Vanilla
                             int x = from.X + (to.X - from.X) * step / moveSteps;
                             int y = from.Y + (to.Y - from.Y) * step / moveSteps;
                             if (!SetCursorPos(x, y)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows rejected drag movement.");
-                            Thread.Sleep(stepDelayMs);
+                            DelayWithCancellation(stepDelayMs);
                         }
                         VerifyMouseOwner(to, "drag destination");
-                        if (destinationHoldMs > 0) Thread.Sleep(destinationHoldMs);
+                        if (destinationHoldMs > 0) DelayWithCancellation(destinationHoldMs);
                     }
                     finally
                     {
@@ -416,7 +416,7 @@ namespace _4RTools.Model.Vanilla
                         if (SendInput(1, up, Marshal.SizeOf(typeof(INPUT))) != 1)
                             VanillaDebugLog.Write("INPUT", "PID=" + process.Id + " drag mouse-up was not fully accepted by Windows.");
                     }
-                    Thread.Sleep(postReleaseMs);
+                    DelayWithCancellation(postReleaseMs);
                     VanillaDebugLog.Write("INPUT", "PID=" + process.Id + " " + label + " client normalized ("
                         + fromX.ToString("0.0000") + "," + fromY.ToString("0.0000") + ") -> ("
                         + toX.ToString("0.0000") + "," + toY.ToString("0.0000") + "); startHoldMs="
@@ -425,6 +425,19 @@ namespace _4RTools.Model.Vanilla
                 }
                 finally { if (restore) SetCursorPos(previous.X, previous.Y); }
             }
+        }
+
+        private void DelayWithCancellation(int milliseconds)
+        {
+            int remaining = Math.Max(0, milliseconds);
+            while (remaining > 0)
+            {
+                ThrowIfCancelled();
+                int slice = Math.Min(50, remaining);
+                Thread.Sleep(slice);
+                remaining -= slice;
+            }
+            ThrowIfCancelled();
         }
 
         private void VerifyMouseOwner(POINT point, string context)
