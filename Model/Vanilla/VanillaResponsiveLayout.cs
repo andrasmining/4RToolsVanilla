@@ -237,16 +237,29 @@ namespace _4RTools.Model.Vanilla
                     responsiveSplit.Panel1MinSize = 0;
                     responsiveSplit.Panel2MinSize = 0;
                     responsiveSplit.SplitterWidth = splitterWidth;
+
+                    // Size the SplitContainer on its current axis BEFORE rotating it. WinForms
+                    // validates SplitterDistance inside the Orientation setter; during a resize/
+                    // AutoScroll layout callback the control can briefly still be only 0-1 px on
+                    // the target axis, which made Orientation itself throw even after setting the
+                    // old-axis distance to 1. The live v0.6.57 log hit this repeatedly.
+                    Put(responsiveSplit, origin.X, origin.Y, width, height);
+                    responsiveSplit.PerformLayout();
+
                     Orientation targetOrientation = wide ? Orientation.Vertical : Orientation.Horizontal;
                     if (responsiveSplit.Orientation != targetOrientation)
                     {
-                        // Clear the old-axis distance before rotating; a wide vertical distance can
-                        // exceed the available height when switching to the stacked narrow layout.
+                        int currentAxis = responsiveSplit.Orientation == Orientation.Vertical
+                            ? responsiveSplit.ClientSize.Width : responsiveSplit.ClientSize.Height;
+                        int targetAxis = targetOrientation == Orientation.Vertical
+                            ? responsiveSplit.ClientSize.Width : responsiveSplit.ClientSize.Height;
+                        if (currentAxis <= splitterWidth + 2 || targetAxis <= splitterWidth + 2)
+                            return; // A later Size/Layout event retries once both axes are real.
+
                         responsiveSplit.SplitterDistance = 1;
                         responsiveSplit.Orientation = targetOrientation;
+                        responsiveSplit.PerformLayout();
                     }
-                    Put(responsiveSplit, origin.X, origin.Y, width, height);
-                    responsiveSplit.PerformLayout();
 
                     int axis = wide ? responsiveSplit.ClientSize.Width : responsiveSplit.ClientSize.Height;
                     int usable = Math.Max(1, axis - responsiveSplit.SplitterWidth);
