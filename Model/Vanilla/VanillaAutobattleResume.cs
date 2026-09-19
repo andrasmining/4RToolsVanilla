@@ -253,6 +253,7 @@ namespace _4RTools.Model.Vanilla
         internal int Attempts { get; private set; }
         internal bool StationaryVerified { get; private set; }
         internal bool HpDamageDetected { get; private set; }
+        internal decimal? HpBaselinePercent { get; private set; }
 
         internal async Task<bool> VerifyAsync(int processId, Func<VanillaClientState> read, System.Action focus,
             System.Action sendStop, Func<bool> cancelled, Func<TimeSpan> clock, Func<DateTimeOffset> utcNow,
@@ -301,7 +302,11 @@ namespace _4RTools.Model.Vanilla
                 focus();
                 checkCancelled();
                 VanillaClientState previous = sample();
-                if (!hpBaselinePercent.HasValue) hpBaselinePercent = HpPercent(previous);
+                if (!hpBaselinePercent.HasValue)
+                {
+                    hpBaselinePercent = HpPercent(previous);
+                    HpBaselinePercent = hpBaselinePercent;
+                }
                 Attempts = attempt;
                 report("Sending Autobattle STOP hotkey attempt " + attempt + "/" + MaximumAttempts);
                 sendStop();
