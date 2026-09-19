@@ -19,10 +19,21 @@ namespace _4RTools.Model.Vanilla
         }
 
         private static readonly object Gate = new object();
+        private static readonly string ProcessSessionToken = DateTime.Now.ToString("yyyyMMdd-HHmmss-fff")
+            + "-p" + Process.GetCurrentProcess().Id;
         private static bool initialized;
         private static bool enabled = true;
+        private static VanillaDebugSessionLog sessionLog;
         private static string SettingsPath { get { return Path.Combine(VanillaAppData.RootDirectory, "debug.json"); } }
-        internal static string LogPath { get { return Path.Combine(VanillaAppData.LogsDirectory, "debug.log"); } }
+        private static string LegacyFixedLogPath { get { return Path.Combine(VanillaAppData.LogsDirectory, "debug.log"); } }
+        internal static string LogPath
+        {
+            get
+            {
+                EnsureInitialized();
+                lock (Gate) return sessionLog.CurrentPath;
+            }
+        }
 
         internal static bool Enabled
         {
@@ -66,9 +77,9 @@ namespace _4RTools.Model.Vanilla
                 if (!enabled) return;
                 try
                 {
-                    Directory.CreateDirectory(VanillaAppData.LogsDirectory);
-                    string line = DateTimeOffset.Now.ToString("O") + " [" + Clean(category) + "] " + (message ?? "") + Environment.NewLine;
-                    VanillaLogRotation.Append(LogPath, "debug", line);
+                    string line = DateTimeOffset.Now.ToString("O") + " [" + Clean(category) + "] "
+                        + (message ?? "") + Environment.NewLine;
+                    sessionLog.WriteText(line);
                 }
                 catch { }
             }
@@ -231,7 +242,6 @@ namespace _4RTools.Model.Vanilla
             lock (Gate)
             {
                 if (initialized) return;
-                initialized = true;
                 enabled = true; // DEBUG MODE DEFAULT ON during current hardening cycle.
                 try
                 {
@@ -243,14 +253,22 @@ namespace _4RTools.Model.Vanilla
                 }
                 catch { enabled = true; }
 
+                Directory.CreateDirectory(VanillaAppData.LogsDirectory);
+
+                // v0.6.58 and older used one shared fixed debug.log. Migrate that file once,
+                // but never use a shared live file again: overlapping updater/app processes
+                // must not be able to append different sessions into the same debug file.
                 try
                 {
-                    Directory.CreateDirectory(VanillaAppData.LogsDirectory);
-                    // Every 4RTools process gets a fresh debug.log. The previous live file
-                    // becomes a timestamped archive before this process writes its first line.
-                    VanillaLogRotation.StartNewSession(LogPath, "debug");
+                    if (File.Exists(LegacyFixedLogPath))
+                        VanillaLogRotation.StartNewSession(LegacyFixedLogPath, "debug-legacy");
                 }
                 catch { }
+
+                // Each process owns a timestamp+PID named file from birth. Rotation creates
+                // part files for this same session, each hard-capped at 10 MiB.
+                sessionLog = new VanillaDebugSessionLog(VanillaAppData.LogsDirectory, ProcessSessionToken);
+                initialized = true;
 
                 try
                 {
