@@ -492,7 +492,6 @@ namespace _4RTools.Model.Vanilla
                                         }
                                         else
                                         {
-                                            uint fit = CapacitySafeQuantity(cartBefore.Current, cartBefore.Maximum, itemRule.UnitWeight);
                                             requestedQuantity = fit;
                                             activity(token.Account.Label + ": weight maintenance: Cart "
                                                 + cartBefore.Current + "/" + cartBefore.Maximum + " is at/above 95%; precision fill for "
@@ -782,11 +781,12 @@ namespace _4RTools.Model.Vanilla
             };
         }
 
-        private bool WaitForCartWeightIncrease(int pid, uint before, Func<bool> cancelled, out VanillaCartWeightSample after)
+        private bool WaitForCartWeightIncrease(int pid, uint before, Func<bool> cancelled,
+            out VanillaCartWeightSample after, int timeoutMs = CartProgressTimeoutMs)
         {
             after = null;
             Stopwatch watch = Stopwatch.StartNew();
-            while (watch.ElapsedMilliseconds < 1800)
+            while (watch.ElapsedMilliseconds < timeoutMs)
             {
                 ThrowIfCancelled(cancelled);
                 VanillaCartWeightSample current = CurrentCartWeight(pid);
@@ -1170,7 +1170,7 @@ namespace _4RTools.Model.Vanilla
                             sourcePoint = first.Center;
                             weightBefore = CurrentWeight(token.ProcessId);
                             report(categoryName + " first slot confirmed occupied on two fresh captures; dragging it to a safe detected Cart interior point.");
-                            input.DragNormalized(NormalizeX(sourcePoint.X, frame.Width), NormalizeY(sourcePoint.Y, frame.Height),
+                            input.DragNormalizedDeliberate(NormalizeX(sourcePoint.X, frame.Width), NormalizeY(sourcePoint.Y, frame.Height),
                                 NormalizeX(destination.X, frame.Width), NormalizeY(destination.Y, frame.Height));
                             return true;
                         }
