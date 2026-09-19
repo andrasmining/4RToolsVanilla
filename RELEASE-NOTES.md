@@ -1,89 +1,71 @@
-# 4RTools Vanilla 0.6.58
+# 4RTools Vanilla 0.6.59
 
-## Fresh bounded logs on every application start
+## Weight/Cart: keep filling after the first successful transfer
 
-Global debug logging no longer grows one permanent `debug.log`.
+The v0.6.57 live debug log showed that the Cart was not actually full or rejecting items. One Use-stack transfer completed successfully, including a positively detected quantity dialog, and the next compacted first inventory slot was again positively classified as occupied. The maintenance pass then stopped only because 4RTools tried to rediscover the Cart's empty-slot lattice after the first item had already been added.
 
-- Every normal 4RTools start begins with a fresh live `debug.log`.
-- The previous debug session is renamed to a timestamped archive before the new process writes its first debug line.
-- Every application-managed `.log` file is hard-capped at **10 MiB**.
-- Fixed-name logs rotate into timestamped archives before exceeding the cap.
-- Reconnect/session logs keep their session naming and also obey the same 10 MiB hard cap, including a single unusually large payload.
-- Existing oversized legacy/migrated logs are split into bounded timestamped parts during startup migration.
-- Log families keep bounded history rather than growing without limit.
-- COPY DEBUG LOG uses the current debug session/current operational logs instead of concatenating every old debug archive; recent action summaries may still read recent archives.
+That assumption is removed.
 
-## Verified Cart weight memory
+- Cart drops now use a bounded deterministic set of safe points inside the already positively detected Cart panel body. Vanilla accepts a drop anywhere in that body; a particular Cart slot does not need to look empty.
+- A populated Cart is allowed to cover the pale empty-slot lattice. The code does not re-require that lattice after each successful transfer.
+- Fresh verified read-only **Cart weight increase** is now the authoritative transfer proof. The source slot is not required to look empty because Vanilla compacts the next stack into the first slot immediately.
+- Carried-weight reduction remains corroborating evidence, but a delayed carried-weight observation no longer invalidates a transfer whose Cart-weight increase was verified.
+- Quantity dialogs still require positive visual recognition before Enter, and any lingering/late quantity modal still fails closed.
+- At/above 95% the existing capacity-aware Mastela/Peco rules remain unchanged, including the fixed 10000 Cart ceiling.
 
-This release adds the read-only Cart weight pair supplied from the live Memory Finder evidence for the current verified Vanilla executable:
+Offline regression coverage reproduces the populated-Cart condition and verifies that later transfers still have a safe Cart destination.
 
-- **Current Cart weight:** module + `0xD34B3C` (absolute `0x01134B3C` with the observed `0x00400000` module base). The supplied controlled sample changed **4000 -> 4005**.
-- **Maximum Cart weight:** module + `0xD34B40` (absolute `0x01134B40`), the adjacent stable **10000** value from the supplied max-weight search.
+## One debug file per application start; 10 MiB hard cap
 
-The pair is accepted only when the current value is within range and the maximum is exactly the known Vanilla Cart capacity of **10000**. Unknown, stale, unverified or incoherent readings remain unusable for automation.
+The old v0.6.57 debug file could contain many application restarts in one huge file. Debug logging is now process/session-owned from application startup rather than being tied to whichever UI initializes first.
 
-## Compact live client cards
+- Every normal 4RTools process creates a new file immediately at startup:
+  `debug-YYYYMMDD-HHmmss-fff-p<PID>.log`
+- A later app restart never appends to the prior process's debug file.
+- If two starts somehow collide on the same timestamp/PID token, a unique suffix is used rather than sharing a file.
+- Every debug part is hard-capped at **10 MiB** and rotates to `-part02`, `-part03`, etc.
+- The former fixed `debug.log`, when present from an older version, is archived/migrated once and is never used as the live log again.
+- Reconnect/session, memory-access, updater-error and other application-managed `.log` files retain the same **10 MiB per-file hard cap** and bounded history.
+- Oversized legacy logs are split into bounded archive parts during migration.
+- COPY DEBUG LOG uses the current process's debug session rather than concatenating historical debug sessions.
 
-The top fleet cards now show four compact read-only resources for each Vanilla client:
+Regression tests explicitly create two simulated app starts and verify that their log paths/content are isolated, and verify that oversized debug/session payloads cannot create a file above the configured cap.
 
-- HP
-- SP
-- carried Weight
-- Cart Weight
+## Recovery layout thread exception fixed
 
-Each gets a short bar rather than consuming half the card width. The Location line also shows the remaining Cart capacity when verified. The previous **Activity** field is removed because activity semantics have not been independently verified.
+The supplied v0.6.57 log also contained repeated WinForms exceptions:
 
-## Capacity-aware Cart filling
+`SplitterDistance must be between Panel1MinSize and Width - Panel2MinSize`
 
-Weight/Cart maintenance now treats verified Cart capacity as a first-class safety signal.
+The Recovery pane could change SplitContainer orientation during a transient resize/layout state where one axis was only a few pixels wide. WinForms validates the old splitter distance inside the Orientation setter, so the setter itself could throw.
 
-Below 95% Cart weight, the existing category walker remains in charge. Starting **at 95%**, transfers enter precision mode so the Cart is never intentionally overfilled.
+4RTools now sizes the SplitContainer first, defers orientation changes while either axis is only a transient layout sliver, and retries on the next normal layout event. The draggable Characters/Log divider remains intact.
 
-The currently verified farming item rules are:
+## Smart Teleport: minimized client resolution
 
-- **Use / Mastela Fruit:** 3 weight per item.
-- **Etc / Peco Feather:** 1 weight per item.
-- Equip remains unknown for precision filling.
+The same log showed repeated automatic Smart Teleport attempts failing before sending the hotkey because a minimized Vanilla main window reported a current client rectangle of 0x0.
 
-For known items, 4RTools calculates the maximum count that can fit in the remaining Cart capacity. A quantity is typed only after the normal quantity dialog is positively detected. If the carried stack is already proven small enough to fit, the existing full-stack confirmation remains valid. Every accepted precision transfer must then produce a coherent verified Cart-weight increase; an inconsistent delta fails closed.
+Background Smart Teleport now:
 
-If a 3-weight Mastela cannot fit the final 1–2 weight, that category is skipped and the lighter 1-weight Peco Feather can finish the remainder. If the Cart is still near-full but not complete because no suitable known item is currently available, Autobattle resumes and the Cart fill is retried later with a bounded cadence instead of looping UI input.
+- resolves the verified owned Vanilla main HWND by PID/class/title even while minimized;
+- derives the last normal client capture size from `WINDOWPLACEMENT` and the real window style without restoring, moving or foregrounding the game;
+- uses that derived size only for the existing background PrintWindow path;
+- still requires a nonblank/usable capture before sending the teleport hotkey;
+- still requires positive recognition of the expected warp popup before Enter;
+- fails closed if ownership, geometry, capture, popup verification or background input is unavailable.
 
-Unknown-weight categories are never blindly transferred at/above 95%.
-
-## Cart-full and DONE farming milestones
-
-A verified **100% Cart** is now a farming milestone.
-
-- When valid SMTP/recipient settings are saved, 4RTools sends one **Cart full** e-mail as soon as Cart reaches 100%. This milestone mail is independent of the optional carried-weight warning checkbox.
-- Farming then continues normally while the character still has carrying capacity.
-- When Cart remains 100% and carried Weight reaches **50% or more**, 4RTools sends the dedicated Weight Autobattle STOP hotkey.
-- That character enters an intentional completed-farming hold so reconnect/movement recovery cannot restart Autobattle.
-- One **DONE** e-mail is sent through the same saved SMTP transport.
-- The completed hold is cleared only by the explicit Weight/Cart hold-clear action.
-
-If Cart reaches 100% during a maintenance pass while carried Weight is already at least 50%, the client remains stopped instead of briefly resuming Autobattle.
-
-## Recovery/UI regressions retained
-
-The previous v0.6.57 autoattack/Smart-Teleport recovery remains unchanged: movement suppresses further recovery input immediately, the three bounded recovery cycles remain serialized, and continued stationarity escalates through the existing 180-second restart path.
-
-The Recovery layout was also tightened so the compact four-resource client cards and the reconnect Log both remain inside the viewport on Full-HD, 1366x768 with 150% text, and 1050x700/RDP-style layouts, including long update-status notifications.
+This preserves the rule that Smart Teleport must not pop a minimized gameplay client to the foreground merely to recover it.
 
 ## Validation
 
-The Windows validation pipeline covers:
+Before versioning this release, the full Windows pipeline passed:
 
-- shipped build-profile validation and exact Cart mapping offsets;
-- Cart maximum=10000 sanity validation and percentage calculation;
-- 95% precision boundary;
-- Mastela/Peco unit-weight and remaining-capacity calculations;
-- bounded near-full retry policy;
-- milestone-mail transport policy;
-- fresh-session debug logging, timestamped archives and 10 MiB hard rotation;
-- Debug and Release test suites;
-- portable package/smoke validation;
+- shipped Vanilla build-profile validation;
+- complete Debug diagnostics/regression suite;
+- Release build/package/smoke tests;
 - native test-owned recovery checks;
-- mock-data UI screenshots/layout validation across desktop, RDP and enlarged-text sizes.
+- mock-data UI rendering/layout checks.
 
-The engineering environment cannot execute the final workflow against the user's live Vanilla/Gepard client. The supplied screenshots are therefore the live evidence for the new Cart offsets, while the exact live quantity-entry/Cart-delta/DONE sequence remains the next VPS runtime-validation boundary.
+New regressions cover populated-Cart drop handling, per-start debug isolation and hard rotation, transient Recovery splitter geometry, and minimized background-teleport capture sizing.
+
+The engineering runner cannot reproduce the user's live Gepard/Vanilla/RDP session. The Cart root cause is grounded in the supplied live v0.6.57 log, while the corrected subsequent multi-item transfer and minimized PrintWindow behavior remain the next live VPS validation boundary.
