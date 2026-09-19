@@ -123,8 +123,14 @@ namespace Vanilla.Diagnostics.Tests
             Equal(2L, VanillaWeightCartAutomation.CapacitySafeQuantity(9998, 10000, 1), "Peco Feather fills a 2-weight remainder");
             Equal(0L, VanillaWeightCartAutomation.CapacitySafeQuantity(10000, 10000, 1), "full Cart quantity");
             if (VanillaWeightCartAutomation.PrecisionThresholdPercent != 95m
+                || VanillaWeightCartAutomation.FarmingDoneCartPercent != 99m
                 || VanillaWeightCartAutomation.FarmingDoneCarryPercent != 50m)
                 throw new Exception("Cart precision or farming completion threshold changed unexpectedly.");
+            if (VanillaWeightCartAutomation.IsFarmingComplete(98.99m, 60m)
+                || VanillaWeightCartAutomation.IsFarmingComplete(99m, 49.99m)
+                || !VanillaWeightCartAutomation.IsFarmingComplete(99m, 50m)
+                || !VanillaWeightCartAutomation.IsFarmingComplete(100m, 80m))
+                throw new Exception("Farming completion must require Cart >=99% and carried weight >=50%.");
             if (VanillaWeightCartAutomation.RequiresPrecisionFill(94.999m)
                 || !VanillaWeightCartAutomation.RequiresPrecisionFill(95m)
                 || !VanillaWeightCartAutomation.RequiresPrecisionFill(100m))
@@ -132,11 +138,13 @@ namespace Vanilla.Diagnostics.Tests
             if (VanillaWeightAlertService.PrecisionCartRetrySeconds != 60)
                 throw new Exception("Near-full Cart retry cadence changed unexpectedly.");
             if (VanillaWeightCartAutomation.TransferAttemptLimit < 3)
-                throw new Exception("Cart transfers must retry at least three times before manual hold.");
+                throw new Exception("Cart transfers must attempt at least three slow drags before deferring.");
+            if (VanillaWeightCartAutomation.TransientCartRetrySeconds != 60)
+                throw new Exception("Transient Cart failures must retry after one minute.");
             if (VanillaWeightCartAutomation.TransferSettleMs < 700
-                || VanillaWeightCartAutomation.QuantityPromptTimeoutMs < 2000
-                || VanillaWeightCartAutomation.CartProgressTimeoutMs < 3000
-                || VanillaWeightCartAutomation.TransferRetryPauseMs < 700)
+                || VanillaWeightCartAutomation.QuantityPromptTimeoutMs < 3000
+                || VanillaWeightCartAutomation.CartProgressTimeoutMs < 4000
+                || VanillaWeightCartAutomation.TransferRetryPauseMs < 1000)
                 throw new Exception("Cart transfer pacing became too aggressive for lag tolerance.");
             if (VanillaForegroundInput.DeliberateDragStartHoldMs < 200
                 || VanillaForegroundInput.DeliberateDragMoveSteps < 10
