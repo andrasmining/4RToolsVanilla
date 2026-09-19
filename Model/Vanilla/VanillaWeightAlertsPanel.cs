@@ -75,7 +75,7 @@ namespace _4RTools.Model.Vanilla
             root.Controls.Add(new Label
             {
                 AutoSize = true, MaximumSize = new Size(1150, 0), ForeColor = Color.DimGray, Margin = new Padding(0, 5, 0, 10),
-                Text = "Weight decisions use verified read-only carried and Cart weight only. Cart maintenance uses ordinary UI hotkeys, visual slot/category detection and slow drag/drop; it never reads or writes inventory memory. A transfer gets up to 3 slow attempts; pure transfer non-progress resumes Autobattle and retries about 60s later instead of holding the character. At 95% Cart weight it switches to capacity-safe precision filling: Mastela Fruit=3 and Peco Feather=1, using a positively detected quantity dialog and verified Cart-weight progress. Exact Cart 100% remains the Cart-full mail milestone; farming is DONE at Cart >=99% plus carried weight >=50%, then Autobattle is intentionally stopped."
+                Text = "Weight decisions use verified read-only carried and Cart weight only. Cart maintenance uses ordinary UI hotkeys, visual slot/category detection and slow drag/drop; it never reads or writes inventory memory. A transfer gets up to 3 slow attempts; pure transfer non-progress resumes Autobattle and retries about 60s later instead of holding the character. At 75% Cart weight it switches to capacity-safe precision filling: Mastela Fruit=3 and Peco Feather=1, using a positively detected quantity dialog and verified Cart-weight progress. Exact Cart 100% remains the Cart-full mail milestone; farming is DONE at Cart >=99% plus carried weight >=50%, then Autobattle is intentionally stopped."
             }, 0, 1);
 
             root.Controls.Add(BuildCartGroup(), 0, 2);
