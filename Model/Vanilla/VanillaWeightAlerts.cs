@@ -392,7 +392,7 @@ namespace _4RTools.Model.Vanilla
             bool startStop;
             lock (gate)
             {
-                startStop = !state.CompletionStopping;
+                startStop = !state.CompletionStopping && DateTimeOffset.UtcNow >= state.NextCompletionAttemptAt;
                 if (startStop) state.CompletionStopping = true;
             }
             if (!startStop) return;
@@ -403,8 +403,18 @@ namespace _4RTools.Model.Vanilla
                 {
                     bool stopped = cartAutomation.StopForFarmingCompletion(observation.ProcessId, current,
                         text => SetStatus(text));
-                    if (!stopped) return;
-                    lock (gate) state.FarmingDone = true;
+                    if (!stopped)
+                    {
+                        lock (gate)
+                            state.NextCompletionAttemptAt = DateTimeOffset.UtcNow.AddSeconds(
+                                VanillaWeightCartAutomation.TransientCartRetrySeconds);
+                        return;
+                    }
+                    lock (gate)
+                    {
+                        state.FarmingDone = true;
+                        state.NextCompletionAttemptAt = DateTimeOffset.MinValue;
+                    }
                     if (milestoneMail) TrySendDoneMail(current, observation, accountId, state);
                 }
                 finally
