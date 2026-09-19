@@ -1,65 +1,79 @@
-# 4RTools Vanilla 0.6.60
+# 4RTools Vanilla 0.6.61
 
-## Weight/Cart: slower drag-and-drop with three bounded retries
+## Weight/Cart: transient failures no longer stop farming
 
-The live v0.6.59 Cart test showed a different failure from the previous populated-Cart issue: the Use transfers completed, but the Etc/Peco Feather drag produced no quantity dialog and no verified Cart-weight increase. The automation treated that first unsuccessful drag as final and immediately put the character on a manual Cart hold.
+The live v0.6.59/v0.6.60 Cart testing showed that an individual drag can fail temporarily because of RDP/client lag even though the Inventory and Cart are otherwise healthy. Cart maintenance is now intentionally tolerant of that condition.
 
-This release makes individual Cart transfers deliberately slower and tolerant of transient RDP/client lag.
+### Slow drag timing remains
 
-### Deliberate drag pacing
+Every Weight/Cart transfer uses the deliberate Cart drag path:
 
-Weight/Cart no longer uses the ordinary fast mouse-drag timing. Each Cart drag now:
+- 250 ms source hold before mouse-down;
+- 12 deterministic movement steps;
+- 100 ms per movement step;
+- 300 ms hold over the detected Cart body before release;
+- 500 ms post-release wait;
+- 700 ms additional transfer settle.
 
-- holds the cursor on the verified source slot for **250 ms** before mouse-down;
-- moves through **12 deterministic intermediate steps**;
-- waits **100 ms per movement step**;
-- holds over the verified Cart destination for **300 ms** before mouse-up;
-- waits **500 ms after release**;
-- then gives the client another **700 ms** settle period before quantity/progress handling.
+The quantity-dialog observation window is now 3 seconds and Cart-weight progress may take up to 4 seconds before an attempt is considered unsuccessful.
 
-This changes only the Cart-maintenance drag path; unrelated ordinary input keeps its existing timing.
+### Three attempts, then resume and retry later
 
-### Three attempts before manual hold
+For one detected first-slot item, 4RTools makes up to three slow drag attempts. Between retries it:
 
-One missing Cart-weight increase is no longer enough to fail the maintenance pass.
+- waits 1 second;
+- checks verified Cart weight both before and after that pause;
+- suppresses the retry immediately if delayed Cart-weight progress proves the previous drag actually succeeded;
+- re-detects the compacted first inventory slot before another drag;
+- rotates through another safe point inside the positively detected Cart body.
 
-For each detected first-slot item, 4RTools now makes up to **3 slow drag attempts**:
+If all three drag attempts still produce no verified Cart-weight increase, this is **not** a manual-hold condition anymore. 4RTools:
 
-1. send the slow drag to a safe point inside the positively detected Cart body;
-2. allow up to **2.2 seconds** for a quantity dialog;
-3. if a quantity dialog is positively recognized, handle it with the existing safe Enter/precision-fill rules;
-4. allow up to **3 seconds** for verified read-only Cart-weight progress;
-5. if no progress is seen, wait **800 ms**, re-check Cart weight for delayed evidence, re-detect the first inventory slot, and retry through another deterministic safe Cart point.
+1. stops sending Cart input for that pass;
+2. closes Cart/Inventory;
+3. resumes Autobattle through the existing verified ResumeHotkey/X-Y movement routine;
+4. minimizes the client;
+5. re-arms Cart maintenance for another automatic attempt after about 60 seconds.
 
-Before every retry, fresh Cart weight is checked again. If late read-only evidence shows the previous drag actually succeeded, the retry is suppressed so 4RTools cannot duplicate the transfer.
+This applies to ordinary transfer non-progress. Truly unsafe states still fail closed: lost client/input ownership, stale/unverified Cart weight, an unresolved modal state, incoherent precision-weight deltas, cancellation/identity replacement, or another condition where a safe resume cannot be established.
 
-If the first slot disappears after an earlier attempt while Cart weight still has not increased, 4RTools does not blindly drag whatever compacted item may now occupy that location; it gives Cart memory one final bounded chance to catch up and otherwise fails closed.
+## Cart completion threshold: 99% + 50% carried
 
-Only after all **three** slow attempts fail to produce verified Cart-weight progress does the character enter the existing manual Cart hold.
+Farming completion no longer requires an exact 10000/10000 Cart.
 
-### Existing safety remains intact
+- **DONE condition:** verified Cart weight >= **99%** and verified carried weight >= **50%**.
+- When both are reached, 4RTools sends the dedicated Weight Autobattle STOP hotkey and keeps that character on the intentional completed-farming hold so recovery cannot restart Autobattle.
+- The DONE e-mail uses the actual observed Cart percentage/value.
+- Exact **100% Cart** remains the separate Cart-full e-mail milestone.
 
-- Cart weight remains read-only and is the authoritative transfer-success signal.
-- Inventory identity/count is not read from game memory and game memory is never written.
-- Enter is still sent only after a positively recognized quantity dialog.
-- Quantity-one transfers may legitimately have no dialog, so no dialog still means no Enter.
-- At/above 95%, the existing Mastela Fruit = 3 and Peco Feather = 1 capacity-aware rules remain in force.
-- Cart capacity remains fixed/validated at 10000.
-- UI ownership, cancellation, stale/unverified state, late modal ambiguity and incoherent precision-weight deltas still fail closed.
+The completion check runs both in the continuous Weight monitor and immediately after a Cart-maintenance pass, so a client that already satisfies 99% + 50% does not unnecessarily resume farming or start another Cart transfer.
 
-## Regression coverage
+## Capacity-aware final filling remains enabled
 
-The diagnostics tests now lock the lag-tolerant policy:
+The existing verified item-weight calculation remains active:
 
-- at least 3 transfer attempts;
-- >=700 ms transfer settle;
-- >=2.0 s quantity-dialog observation;
-- >=3.0 s Cart-progress observation;
-- >=700 ms retry pause;
-- deliberate drag source/destination holds and multi-step movement cannot regress back to the previous fast timing.
+- Mastela Fruit / Use = **3 weight each**
+- Peco Feather / Etc = **1 weight each**
+- Cart maximum = **10000**
 
-The full Windows pipeline also runs the existing build-profile checks, Debug/Release regression suites, portable package smoke test, native recovery checks, and mock-data UI validation.
+Starting at 95% Cart usage, 4RTools calculates the remaining capacity and uses the positively recognized quantity dialog to request at most the count that can fit. For example, a 2-weight remainder cannot accept another Mastela but can accept two Peco Feathers. Every accepted precision transfer must still produce a coherent verified Cart-weight delta and must never exceed 10000.
 
-## Live-validation boundary
+Because the new DONE threshold is 99%, 4RTools may stop before exact 10000 when carried weight is already >=50%; otherwise it continues using the precision rules toward the fullest safe Cart.
 
-The engineering runner cannot reproduce the user's live Vanilla/Gepard/RDP timing. The failed v0.6.59 feather transfer is grounded in the supplied live screenshot/log; v0.6.60 specifically changes that transfer path so the next live Weight/Cart run can verify the slower three-attempt behavior.
+## Validation
+
+Regression coverage locks:
+
+- at least three slow transfer attempts;
+- 3-second quantity-dialog observation;
+- 4-second Cart-progress observation;
+- 1-second inter-attempt pause;
+- delayed-progress checks before a duplicate drag;
+- 60-second transient Cart retry scheduling;
+- farming completion at Cart >=99% plus carried >=50%;
+- existing Mastela/Peco capacity arithmetic and 10000 Cart ceiling;
+- existing per-start debug-log isolation and 10 MiB hard cap.
+
+The full Windows validation/release pipeline also runs shipped build-profile checks, Debug and Release tests, portable-package smoke tests, native recovery checks, and mock-data UI validation.
+
+The engineering runner cannot reproduce the user's live Vanilla/Gepard/RDP timing. The next VPS run remains the live validation boundary for the slow three-attempt feather transfer and one-minute automatic retry behavior.
