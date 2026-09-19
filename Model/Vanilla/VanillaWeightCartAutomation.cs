@@ -223,9 +223,9 @@ namespace _4RTools.Model.Vanilla
         private const int FirstSlotVerifySamples = 4;
         internal const int TransferAttemptLimit = 3;
         internal const int TransferSettleMs = 700;
-        internal const int QuantityPromptTimeoutMs = 2200;
-        internal const int CartProgressTimeoutMs = 3000;
-        internal const int TransferRetryPauseMs = 800;
+        internal const int QuantityPromptTimeoutMs = 3000;
+        internal const int CartProgressTimeoutMs = 4000;
+        internal const int TransferRetryPauseMs = 1000;
         private const int MaxTransfers = 120;
         internal const decimal PrecisionThresholdPercent = 95m;
         internal const decimal CartFullPercent = 100m;
@@ -436,8 +436,22 @@ namespace _4RTools.Model.Vanilla
                                     activity(token.Account.Label + ": weight maintenance: transfer attempt "
                                         + (transferAttempt - 1) + "/" + TransferAttemptLimit
                                         + " showed no Cart-weight increase; waiting " + TransferRetryPauseMs
-                                        + "ms, then re-detecting the first slot before retry " + transferAttempt + "/" + TransferAttemptLimit + ".");
+                                        + "ms, then re-checking Cart weight and re-detecting the first slot before retry "
+                                        + transferAttempt + "/" + TransferAttemptLimit + ".");
                                     Thread.Sleep(TransferRetryPauseMs);
+
+                                    // Progress can arrive during the retry pause on a laggy client.
+                                    // Re-check after the pause as well as before it, otherwise a
+                                    // delayed success could make us drag the next compacted stack.
+                                    lateProgress = CurrentCartWeight(token.ProcessId);
+                                    if (lateProgress != null && lateProgress.Current > cartBefore.Current)
+                                    {
+                                        cartAfter = lateProgress;
+                                        transferSucceeded = true;
+                                        activity(token.Account.Label + ": weight maintenance: delayed Cart-weight progress appeared during the retry pause; "
+                                            + "previous drag succeeded, so retry " + transferAttempt + "/" + TransferAttemptLimit + " is suppressed.");
+                                        break;
+                                    }
                                 }
 
                                 uint? pendingWeightBefore;
