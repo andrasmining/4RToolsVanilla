@@ -288,6 +288,18 @@ namespace Vanilla.Diagnostics.Tests
                 "A known minimized Vanilla gameplay window must remain eligible so it can be restored for verification/input.");
             Assert(hiddenGeneric == int.MinValue,
                 "An arbitrary hidden/minimized same-process window must not become an automation target.");
+
+            int width, height; string source;
+            Assert(VanillaBackgroundWindowInput.TryResolveCaptureSize(1024, 768, 0, 0, 0, 0,
+                out width, out height, out source) && width == 1024 && height == 768 && source == "client-rect",
+                "Visible background capture must prefer the actual client rectangle.");
+            Assert(VanillaBackgroundWindowInput.TryResolveCaptureSize(0, 0, 1040, 807, 16, 39,
+                out width, out height, out source) && width == 1024 && height == 768
+                && source == "normal-placement-minus-frame",
+                "A minimized 0x0 Vanilla client must recover its normal capture size without restoring/foregrounding the window.");
+            Assert(!VanillaBackgroundWindowInput.TryResolveCaptureSize(0, 0, 100, 80, 0, 0,
+                out width, out height, out source),
+                "Tiny/helper window geometry must never become a background teleport capture surface.");
         }
 
         private static void ResponsiveRecoveryBreakpoint()
