@@ -17,6 +17,8 @@ namespace Vanilla.Diagnostics.Tests
             Test("Shared fixed log starts a fresh timestamped session", SharedFreshSession);
             Test("Shared fixed log rotates before the configured cap", SharedBoundedRotation);
             Test("Oversized legacy fixed logs are split below the cap", SharedOversizedArchive);
+            Test("Every app start owns a distinct timestamped debug file", DebugSessionIsolation);
+            Test("Per-start debug parts never exceed the configured cap", DebugSessionHardCap);
             Console.WriteLine("Session logging: {0} passed; {1} failed.", passed, failed);
             return failed;
         }
@@ -134,6 +136,46 @@ namespace Vanilla.Diagnostics.Tests
                 Assert(files.Length >= 5, "Oversized previous log was not split into bounded archive parts.");
                 foreach (string file in files)
                     Assert(new FileInfo(file).Length <= 1024, "Oversized archive part exceeded configured max: " + file);
+            }
+            finally { Cleanup(root); }
+        }
+
+        private static void DebugSessionIsolation()
+        {
+            string root = Temp();
+            try
+            {
+                string dir = Path.Combine(root, "Logs");
+                var first = new VanillaDebugSessionLog(dir, "20260919-223000-000-p1234", 1024, 8192, 20);
+                first.WriteText("first-session\r\n");
+                var second = new VanillaDebugSessionLog(dir, "20260919-223000-000-p1234", 1024, 8192, 20);
+                second.WriteText("second-session\r\n");
+
+                Assert(!string.Equals(first.CurrentPath, second.CurrentPath, StringComparison.OrdinalIgnoreCase),
+                    "Two app starts must never share one live debug file.");
+                Assert(Path.GetFileName(first.CurrentPath).StartsWith("debug-20260919-223000-000-p1234", StringComparison.Ordinal),
+                    "Debug session filename must carry the start timestamp/PID token.");
+                Assert(!File.Exists(Path.Combine(dir, "debug.log")),
+                    "Per-start debug logging must not recreate a shared live debug.log.");
+                Assert(File.ReadAllText(first.CurrentPath).Contains("first-session")
+                    && !File.ReadAllText(first.CurrentPath).Contains("second-session"),
+                    "Second app session appended into the first app's debug file.");
+            }
+            finally { Cleanup(root); }
+        }
+
+        private static void DebugSessionHardCap()
+        {
+            string root = Temp();
+            try
+            {
+                string dir = Path.Combine(root, "Logs");
+                var log = new VanillaDebugSessionLog(dir, "20260919-223100-000-p5678", 1024, 16384, 20);
+                log.WriteText(new string('d', 5000));
+                string[] files = Directory.GetFiles(dir, "debug-20260919-223100-000-p5678*.log");
+                Assert(files.Length >= 5, "Large debug session did not rotate into bounded parts.");
+                foreach (string file in files)
+                    Assert(new FileInfo(file).Length <= 1024, "Debug part exceeded configured hard cap: " + file);
             }
             finally { Cleanup(root); }
         }
