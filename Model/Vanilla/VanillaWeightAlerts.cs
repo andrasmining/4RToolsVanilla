@@ -566,7 +566,18 @@ namespace _4RTools.Model.Vanilla
                     lock (gate)
                     {
                         state.ManualHold = result.RequiresManualIntervention;
-                        if (result.Deferred) state.CartArmed = true;
+                        if (result.RetryLater && !result.RequiresManualIntervention)
+                        {
+                            state.CartArmed = true;
+                            state.NextCartAttemptAt = DateTimeOffset.UtcNow.AddSeconds(
+                                result.RetryAfterSeconds > 0 ? result.RetryAfterSeconds
+                                    : VanillaWeightCartAutomation.TransientCartRetrySeconds);
+                        }
+                        else if (result.Deferred)
+                        {
+                            state.CartArmed = true;
+                            state.NextCartAttemptAt = DateTimeOffset.MinValue;
+                        }
                     }
                     SetStatus(result.Message);
                 }
