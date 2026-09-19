@@ -231,6 +231,7 @@ namespace _4RTools.Model.Vanilla
         internal const decimal CartFullPercent = 100m;
         internal const decimal FarmingDoneCartPercent = 99m;
         internal const decimal FarmingDoneCarryPercent = 50m;
+        internal const decimal HpDamageAbortPercent = 10m;
         internal const int TransientCartRetrySeconds = 60;
         private readonly VanillaFleetMonitor fleet;
         private readonly VanillaReconnectSupervisor supervisor;
@@ -279,6 +280,11 @@ namespace _4RTools.Model.Vanilla
             return cartPercent >= FarmingDoneCartPercent && carriedPercent >= FarmingDoneCarryPercent;
         }
 
+        internal static bool HpDamageExceeded(decimal stoppedBaselinePercent, decimal currentPercent)
+        {
+            return stoppedBaselinePercent - currentPercent > HpDamageAbortPercent;
+        }
+
         internal VanillaWeightCartResult Run(int pid, VanillaWeightAlertSettings settings, System.Action<string> report,
             string trigger = "automatic-threshold")
         {
@@ -325,7 +331,37 @@ namespace _4RTools.Model.Vanilla
             string retryLaterReason = null;
             Rectangle inventory = Rectangle.Empty, cart = Rectangle.Empty;
             int moved = 0;
-            Func<bool> cancelled = () => supervisor.WeightMaintenanceCancelled(token);
+            decimal? stoppedHpBaselinePercent = null;
+            bool hpDanger = false;
+            string hpDangerReason = null;
+            Func<bool> supervisorCancelled = () => supervisor.WeightMaintenanceCancelled(token);
+            Func<bool> cancelled = () =>
+            {
+                if (supervisorCancelled()) return true;
+                if (hpDanger) return true;
+                if (!stoppedHpBaselinePercent.HasValue) return false;
+
+                VanillaFleetClientInfo hpClient = CurrentClient(token.ProcessId);
+                if (hpClient == null || !hpClient.HpVerified || !hpClient.HpPercent.HasValue)
+                {
+                    hpDanger = true;
+                    hpDangerReason = "Fresh verified HP became unavailable after Autobattle STOP; Cart work is aborted.";
+                    return true;
+                }
+
+                decimal currentHp = hpClient.HpPercent.Value;
+                if (HpDamageExceeded(stoppedHpBaselinePercent.Value, currentHp))
+                {
+                    hpDanger = true;
+                    hpDangerReason = "HP fell from "
+                        + stoppedHpBaselinePercent.Value.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)
+                        + "% to " + currentHp.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)
+                        + "% after Autobattle STOP (> " + HpDamageAbortPercent.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)
+                        + " percentage-point drop).";
+                    return true;
+                }
+                return false;
+            };
             VanillaForegroundInput openedInput;
             try { openedInput = new VanillaForegroundInput(pid); }
             catch (Exception ex)
@@ -342,10 +378,20 @@ namespace _4RTools.Model.Vanilla
                 {
                     activity(token.Account.Label + ": weight maintenance: stopping Autobattle with dedicated Weight hotkey "
                         + settings.AutobattleStopHotkeyText + " and verifying continuous X/Y stillness before any panel input.");
-                    bool stopVerified = VerifyAutobattleStopped(token, input, settings, cancelled, activity,
-                        () => paused = true, "cart-start");
+                    bool stopHpDamage;
+                    bool stopVerified = VerifyAutobattleStopped(token, input, settings, supervisorCancelled, activity,
+                        () => paused = true, "cart-start", out stopHpDamage);
                     if (!stopVerified)
                     {
+                        if (stopHpDamage)
+                        {
+                            hpDanger = true;
+                            hpDangerReason = "HP dropped by more than "
+                                + HpDamageAbortPercent.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)
+                                + " percentage points while verifying Autobattle STOP.";
+                            throw new OperationCanceledException(hpDangerReason);
+                        }
+
                         string detail = token.Account.Label + ": Autobattle STOP was not verified after "
                             + VanillaAutobattleStopVerifier.MaximumAttempts
                             + " attempts; Inventory/Cart were NOT opened. Leaving gameplay alone and retrying Cart maintenance in about "
@@ -367,6 +413,20 @@ namespace _4RTools.Model.Vanilla
                         };
                     }
                     paused = true;
+
+                    VanillaFleetClientInfo stoppedHp = CurrentClient(token.ProcessId);
+                    if (stoppedHp == null || !stoppedHp.HpVerified || !stoppedHp.HpPercent.HasValue)
+                    {
+                        hpDanger = true;
+                        hpDangerReason = "Fresh verified HP is unavailable immediately after the verified Autobattle STOP.";
+                        throw new OperationCanceledException(hpDangerReason);
+                    }
+                    stoppedHpBaselinePercent = stoppedHp.HpPercent.Value;
+                    activity(token.Account.Label + ": weight maintenance: HP damage guard armed at "
+                        + stoppedHpBaselinePercent.Value.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)
+                        + "%; any drop greater than " + HpDamageAbortPercent.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)
+                        + " percentage points aborts Cart work and resumes Autobattle.");
+                    input.CancellationRequested = cancelled;
                     ThrowIfCancelled(cancelled);
 
                     inventory = EnsureToggledPanel(input, settings.InventoryCtrl, settings.InventoryAlt, settings.InventoryShift,
@@ -764,6 +824,71 @@ namespace _4RTools.Model.Vanilla
                 }
                 catch (OperationCanceledException ex)
                 {
+                    if (hpDanger)
+                    {
+                        string danger = hpDangerReason ?? "HP safety guard triggered after Autobattle STOP.";
+                        activity(token.Account.Label + ": weight maintenance: " + danger
+                            + " Resuming Autobattle immediately; Cart maintenance will retry in about "
+                            + TransientCartRetrySeconds + "s.");
+                        VanillaDebugLog.Write("WEIGHT", "event=cart-hp-danger trigger=" + trigger
+                            + " account='" + token.Account.Label + "' accountId=" + token.AccountId + " pid=" + pid
+                            + " items=" + moved + " reason='" + danger + "'.");
+
+                        try
+                        {
+                            input.CancellationRequested = supervisorCancelled;
+                            if (paused)
+                            {
+                                VerifyResume(token, input, supervisorCancelled, activity);
+                                paused = false;
+                            }
+
+                            try
+                            {
+                                if (!cart.IsEmpty)
+                                    ClosePanelIfOpen(input, settings.CartCtrl, settings.CartAlt, settings.CartShift,
+                                        (Keys)settings.CartKey, cart, "Cart", supervisorCancelled);
+                                if (!inventory.IsEmpty)
+                                    ClosePanelIfOpen(input, settings.InventoryCtrl, settings.InventoryAlt, settings.InventoryShift,
+                                        (Keys)settings.InventoryKey, inventory, "Inventory", supervisorCancelled);
+                            }
+                            catch (Exception closeEx)
+                            {
+                                VanillaDebugLog.Write("WEIGHT", "HP-danger cleanup panel close failed after Autobattle resume: " + closeEx.Message);
+                            }
+
+                            supervisor.MinimizeWeightMaintenanceClient(token);
+                            string detail = token.Account.Label + ": HP safety guard aborted Cart maintenance; Autobattle movement was resumed and Cart retry is scheduled in about "
+                                + TransientCartRetrySeconds + "s.";
+                            completed = true;
+                            supervisor.CompleteWeightMaintenance(token, false, detail);
+                            return new VanillaWeightCartResult
+                            {
+                                ItemsMoved = moved,
+                                RetryLater = true,
+                                RetryAfterSeconds = TransientCartRetrySeconds,
+                                CartFull = cartFull,
+                                StoppedForCartSafety = cartSafetyStop,
+                                Message = detail
+                            };
+                        }
+                        catch (Exception resumeEx)
+                        {
+                            string detail = token.Account.Label + ": HP safety guard triggered, but verified Autobattle resume failed: "
+                                + resumeEx.Message + ". Manual intervention is required.";
+                            activity(detail);
+                            supervisor.CompleteWeightMaintenance(token, true, detail);
+                            return new VanillaWeightCartResult
+                            {
+                                ItemsMoved = moved,
+                                RequiresManualIntervention = true,
+                                CartFull = cartFull,
+                                StoppedForCartSafety = cartSafetyStop,
+                                Message = detail
+                            };
+                        }
+                    }
+
                     string detail = "Weight/cart maintenance cancelled by supervisor/settings/client ownership change: " + ex.Message;
                     activity(token.Account.Label + ": " + detail);
                     supervisor.MarkWeightMaintenanceCancelled(token, paused, detail);
@@ -908,11 +1033,30 @@ namespace _4RTools.Model.Vanilla
                         + client.WeightPercent.Value.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)
                         + "% meet the farming-complete thresholds; verifying Autobattle STOP with "
                         + settings.AutobattleStopHotkeyText + ".");
+                    bool stopHpDamage;
+                    Func<bool> stopCancelled = () => supervisor.WeightMaintenanceCancelled(token);
                     bool stopVerified = VerifyAutobattleStopped(token, input, settings,
-                        () => supervisor.WeightMaintenanceCancelled(token), report,
-                        () => paused = true, "farming-done");
+                        stopCancelled, report, () => paused = true, "farming-done", out stopHpDamage);
                     if (!stopVerified)
                     {
+                        if (stopHpDamage)
+                        {
+                            string danger = token.Account.Label + ": HP dropped by more than "
+                                + HpDamageAbortPercent.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)
+                                + " percentage points during farming-complete STOP verification; resuming Autobattle and deferring completion.";
+                            report(danger);
+                            if (paused)
+                            {
+                                VerifyResume(token, input, stopCancelled, report);
+                                paused = false;
+                            }
+                            supervisor.MinimizeWeightMaintenanceClient(token);
+                            supervisor.CompleteWeightMaintenance(token, false, danger);
+                            VanillaDebugLog.Write("WEIGHT", "event=farming-done-hp-danger account='"
+                                + token.Account.Label + "' accountId=" + token.AccountId + " pid=" + pid + ".");
+                            return false;
+                        }
+
                         string notStopped = token.Account.Label + ": farming-complete STOP was not verified after "
                             + VanillaAutobattleStopVerifier.MaximumAttempts
                             + " attempts; completed-farming hold is NOT armed yet and STOP will be retried.";
@@ -991,7 +1135,7 @@ namespace _4RTools.Model.Vanilla
 
         private bool VerifyAutobattleStopped(VanillaWeightMaintenanceToken token, VanillaForegroundInput input,
             VanillaWeightAlertSettings settings, Func<bool> cancelled, System.Action<string> report,
-            System.Action onStopSent, string context)
+            System.Action onStopSent, string context, out bool hpDamageDetected)
         {
             var clock = Stopwatch.StartNew();
             var verifier = new VanillaAutobattleStopVerifier();
@@ -1020,9 +1164,11 @@ namespace _4RTools.Model.Vanilla
                 text => report(token.Account.Label + ": weight maintenance: " + text))
                 .GetAwaiter().GetResult();
 
+            hpDamageDetected = verifier.HpDamageDetected;
             VanillaDebugLog.Write("WEIGHT", "event=autobattle-stop-verification context=" + context
                 + " account='" + token.Account.Label + "' accountId=" + token.AccountId
-                + " pid=" + token.ProcessId + " verified=" + verified + " attempts=" + verifier.Attempts + ".");
+                + " pid=" + token.ProcessId + " verified=" + verified + " hpDamage=" + hpDamageDetected
+                + " attempts=" + verifier.Attempts + ".");
             return verified;
         }
 
