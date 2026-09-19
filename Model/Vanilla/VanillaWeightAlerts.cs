@@ -464,6 +464,9 @@ namespace _4RTools.Model.Vanilla
                     state.NextCartAttemptAt = DateTimeOffset.MinValue;
                 }
                 if (observation.CartVerified && observation.CartPercent.HasValue
+                    && VanillaWeightCartAutomation.IsFarmingComplete(
+                        observation.CartPercent.Value, observation.Percent.Value)) return;
+                if (observation.CartVerified && observation.CartPercent.HasValue
                     && observation.CartPercent.Value >= VanillaWeightCartAutomation.CartFullPercent) return;
                 if (!current.AutoCartEnabled || observation.Percent.Value < current.AutoCartThresholdPercent
                     || !state.CartArmed || state.CartRunning || state.ManualHold || now < state.NextCartAttemptAt
