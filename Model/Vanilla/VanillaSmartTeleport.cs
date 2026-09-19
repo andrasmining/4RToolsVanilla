@@ -592,16 +592,14 @@ namespace _4RTools.Model.Vanilla
             width = height = 0;
             source = "none";
             RECT client;
+            int clientWidth = 0, clientHeight = 0;
             if (GetClientRect(hwnd, out client))
             {
-                width = client.Right - client.Left;
-                height = client.Bottom - client.Top;
-                if (width >= 200 && height >= 120)
-                {
-                    source = "client-rect";
-                    return true;
-                }
+                clientWidth = client.Right - client.Left;
+                clientHeight = client.Bottom - client.Top;
             }
+            if (TryResolveCaptureSize(clientWidth, clientHeight, 0, 0, 0, 0, out width, out height, out source))
+                return true;
 
             // A minimized Vanilla top-level window reports a 0x0 client area on the user's
             // machine even though PostMessage/PrintWindow can still address that owned HWND.
@@ -612,29 +610,51 @@ namespace _4RTools.Model.Vanilla
             if (!GetWindowPlacement(hwnd, ref placement)) return false;
             int outerWidth = placement.NormalPosition.Right - placement.NormalPosition.Left;
             int outerHeight = placement.NormalPosition.Bottom - placement.NormalPosition.Top;
-            if (outerWidth < 200 || outerHeight < 120) return false;
 
+            int frameWidth = 0, frameHeight = 0;
             RECT probe = new RECT { Left = 0, Top = 0, Right = 1000, Bottom = 1000 };
             int style = GetWindowLong(hwnd, GWL_STYLE);
             int exStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
             if (AdjustWindowRectEx(ref probe, style, GetMenu(hwnd) != IntPtr.Zero, exStyle))
             {
-                int frameWidth = Math.Max(0, (probe.Right - probe.Left) - 1000);
-                int frameHeight = Math.Max(0, (probe.Bottom - probe.Top) - 1000);
-                width = outerWidth - frameWidth;
-                height = outerHeight - frameHeight;
-                if (width >= 200 && height >= 120)
-                {
-                    source = "normal-placement-minus-frame";
-                    return true;
-                }
+                frameWidth = Math.Max(0, (probe.Right - probe.Left) - 1000);
+                frameHeight = Math.Max(0, (probe.Bottom - probe.Top) - 1000);
+            }
+            return TryResolveCaptureSize(clientWidth, clientHeight, outerWidth, outerHeight,
+                frameWidth, frameHeight, out width, out height, out source);
+        }
+
+        internal static bool TryResolveCaptureSize(int clientWidth, int clientHeight,
+            int normalOuterWidth, int normalOuterHeight, int frameWidth, int frameHeight,
+            out int width, out int height, out string source)
+        {
+            width = height = 0;
+            source = "none";
+            if (clientWidth >= 200 && clientHeight >= 120)
+            {
+                width = clientWidth;
+                height = clientHeight;
+                source = "client-rect";
+                return true;
+            }
+
+            if (normalOuterWidth < 200 || normalOuterHeight < 120) return false;
+            int derivedWidth = normalOuterWidth - Math.Max(0, frameWidth);
+            int derivedHeight = normalOuterHeight - Math.Max(0, frameHeight);
+            if (derivedWidth >= 200 && derivedHeight >= 120)
+            {
+                width = derivedWidth;
+                height = derivedHeight;
+                source = frameWidth > 0 || frameHeight > 0
+                    ? "normal-placement-minus-frame" : "normal-placement-outer-fallback";
+                return true;
             }
 
             // Conservative fallback: PrintWindow paints at the top-left. A small amount of
             // non-client slack is preferable to restoring a minimized client; visual validation
             // below still rejects blank/indeterminate captures before any teleport key is sent.
-            width = outerWidth;
-            height = outerHeight;
+            width = normalOuterWidth;
+            height = normalOuterHeight;
             source = "normal-placement-outer-fallback";
             return width >= 200 && height >= 120;
         }
