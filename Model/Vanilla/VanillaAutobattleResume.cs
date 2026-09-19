@@ -294,13 +294,14 @@ namespace _4RTools.Model.Vanilla
                 return state;
             };
 
+            decimal? hpBaselinePercent = null;
             for (int attempt = 1; attempt <= MaximumAttempts; attempt++)
             {
                 checkCancelled();
                 focus();
                 checkCancelled();
                 VanillaClientState previous = sample();
-                decimal hpBaselinePercent = HpPercent(previous);
+                if (!hpBaselinePercent.HasValue) hpBaselinePercent = HpPercent(previous);
                 Attempts = attempt;
                 report("Sending Autobattle STOP hotkey attempt " + attempt + "/" + MaximumAttempts);
                 sendStop();
@@ -322,7 +323,7 @@ namespace _4RTools.Model.Vanilla
                         // Require one fresh sample at/after the stationary deadline rather than
                         // allowing elapsed wall time alone to authorize Cart input.
                         VanillaClientState confirmation = sample();
-                        if (HpDroppedMoreThan(hpBaselinePercent, confirmation, HpDamageAbortPercent))
+                        if (HpDroppedMoreThan(hpBaselinePercent.Value, confirmation, HpDamageAbortPercent))
                         {
                             HpDamageDetected = true;
                             report("HP dropped by more than " + HpDamageAbortPercent.ToString("0.#")
@@ -351,7 +352,7 @@ namespace _4RTools.Model.Vanilla
                     checkCancelled();
 
                     VanillaClientState current = sample();
-                    if (HpDroppedMoreThan(hpBaselinePercent, current, HpDamageAbortPercent))
+                    if (HpDroppedMoreThan(hpBaselinePercent.Value, current, HpDamageAbortPercent))
                     {
                         HpDamageDetected = true;
                         report("HP dropped by more than " + HpDamageAbortPercent.ToString("0.#")
