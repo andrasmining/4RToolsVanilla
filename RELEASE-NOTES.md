@@ -1,79 +1,52 @@
-# 4RTools Vanilla 0.6.61
+# 4RTools Vanilla 0.6.62
 
-## Weight/Cart: transient failures no longer stop farming
+## Cart precision filling now starts at 75%
 
-The live v0.6.59/v0.6.60 Cart testing showed that an individual drag can fail temporarily because of RDP/client lag even though the Inventory and Cart are otherwise healthy. Cart maintenance is now intentionally tolerant of that condition.
+The capacity-aware Cart logic previously waited until 95% Cart usage before it switched from ordinary full-stack handling to item-weight-aware quantity calculation. That leaves too little headroom when the character may already be carrying roughly half of its own maximum weight.
 
-### Slow drag timing remains
+This release moves the precision threshold to **75% Cart usage**.
 
-Every Weight/Cart transfer uses the deliberate Cart drag path:
+From 75% onward:
 
-- 250 ms source hold before mouse-down;
-- 12 deterministic movement steps;
-- 100 ms per movement step;
-- 300 ms hold over the detected Cart body before release;
-- 500 ms post-release wait;
-- 700 ms additional transfer settle.
+- Cart capacity is recalculated before every transfer from the verified read-only Cart current/max weight.
+- Mastela Fruit remains **3 weight per item**.
+- Peco Feather remains **1 weight per item**.
+- If an entire carried stack is provably safe, the existing full-stack confirmation is still allowed.
+- Otherwise 4RTools calculates the maximum quantity that can fit without exceeding the verified 10000 Cart capacity and enters that value only after the quantity dialog is positively recognized.
+- If the remaining capacity is smaller than one Mastela, Mastela is skipped so Peco Feather can still use the remaining 1- or 2-weight space.
+- Unknown-weight categories are not blindly transferred once the Cart has reached the 75% precision threshold.
+- Every accepted precision transfer still requires a coherent verified Cart-weight delta.
 
-The quantity-dialog observation window is now 3 seconds and Cart-weight progress may take up to 4 seconds before an attempt is considered unsuccessful.
+The 75% boundary is intentionally conservative: it gives the automation enough room to handle a character carrying a large amount of loot before the Cart becomes nearly full.
 
-### Three attempts, then resume and retry later
+## Existing resilient transfer policy retained
 
-For one detected first-slot item, 4RTools makes up to three slow drag attempts. Between retries it:
+The v0.6.61 lag-tolerant transfer behavior is unchanged:
 
-- waits 1 second;
-- checks verified Cart weight both before and after that pause;
-- suppresses the retry immediately if delayed Cart-weight progress proves the previous drag actually succeeded;
-- re-detects the compacted first inventory slot before another drag;
-- rotates through another safe point inside the positively detected Cart body.
+- slow deliberate Cart drag;
+- up to three attempts per item;
+- delayed Cart-weight progress suppresses duplicate retries;
+- three pure non-progress attempts resume Autobattle instead of creating a manual hold;
+- Cart maintenance retries automatically after about 60 seconds;
+- truly unsafe/ambiguous ownership, modal or memory states still fail closed.
 
-If all three drag attempts still produce no verified Cart-weight increase, this is **not** a manual-hold condition anymore. 4RTools:
+## Farming completion retained
 
-1. stops sending Cart input for that pass;
-2. closes Cart/Inventory;
-3. resumes Autobattle through the existing verified ResumeHotkey/X-Y movement routine;
-4. minimizes the client;
-5. re-arms Cart maintenance for another automatic attempt after about 60 seconds.
+The farming-complete condition remains:
 
-This applies to ordinary transfer non-progress. Truly unsafe states still fail closed: lost client/input ownership, stale/unverified Cart weight, an unresolved modal state, incoherent precision-weight deltas, cancellation/identity replacement, or another condition where a safe resume cannot be established.
+- verified Cart weight **>=99%**; and
+- verified carried weight **>=50%**.
 
-## Cart completion threshold: 99% + 50% carried
-
-Farming completion no longer requires an exact 10000/10000 Cart.
-
-- **DONE condition:** verified Cart weight >= **99%** and verified carried weight >= **50%**.
-- When both are reached, 4RTools sends the dedicated Weight Autobattle STOP hotkey and keeps that character on the intentional completed-farming hold so recovery cannot restart Autobattle.
-- The DONE e-mail uses the actual observed Cart percentage/value.
-- Exact **100% Cart** remains the separate Cart-full e-mail milestone.
-
-The completion check runs both in the continuous Weight monitor and immediately after a Cart-maintenance pass, so a client that already satisfies 99% + 50% does not unnecessarily resume farming or start another Cart transfer.
-
-## Capacity-aware final filling remains enabled
-
-The existing verified item-weight calculation remains active:
-
-- Mastela Fruit / Use = **3 weight each**
-- Peco Feather / Etc = **1 weight each**
-- Cart maximum = **10000**
-
-Starting at 95% Cart usage, 4RTools calculates the remaining capacity and uses the positively recognized quantity dialog to request at most the count that can fit. For example, a 2-weight remainder cannot accept another Mastela but can accept two Peco Feathers. Every accepted precision transfer must still produce a coherent verified Cart-weight delta and must never exceed 10000.
-
-Because the new DONE threshold is 99%, 4RTools may stop before exact 10000 when carried weight is already >=50%; otherwise it continues using the precision rules toward the fullest safe Cart.
+Exact Cart 100% remains the separate Cart-full e-mail milestone.
 
 ## Validation
 
-Regression coverage locks:
+Regression coverage now locks the precision boundary at exactly 75%:
 
-- at least three slow transfer attempts;
-- 3-second quantity-dialog observation;
-- 4-second Cart-progress observation;
-- 1-second inter-attempt pause;
-- delayed-progress checks before a duplicate drag;
-- 60-second transient Cart retry scheduling;
-- farming completion at Cart >=99% plus carried >=50%;
-- existing Mastela/Peco capacity arithmetic and 10000 Cart ceiling;
-- existing per-start debug-log isolation and 10 MiB hard cap.
+- 74.999% does not enable precision mode;
+- 75% and above do;
+- the existing Mastela/Peco capacity arithmetic, 10000 Cart ceiling, three-attempt retry policy, 60-second transient retry, 99%+50% DONE condition, per-start debug files and 10 MiB log cap remain covered.
 
-The full Windows validation/release pipeline also runs shipped build-profile checks, Debug and Release tests, portable-package smoke tests, native recovery checks, and mock-data UI validation.
+The full Windows build/release pipeline also validates shipped build profiles, Debug and Release tests, portable-package smoke tests, native recovery checks, and mock-data UI layout.
 
-The engineering runner cannot reproduce the user's live Vanilla/Gepard/RDP timing. The next VPS run remains the live validation boundary for the slow three-attempt feather transfer and one-minute automatic retry behavior.
+The engineering runner cannot reproduce the user's live Vanilla/Gepard/RDP timing. The next VPS Cart cycle is the live validation boundary for the earlier 75% transition.
