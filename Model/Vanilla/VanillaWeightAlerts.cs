@@ -312,12 +312,19 @@ namespace _4RTools.Model.Vanilla
             if (string.IsNullOrWhiteSpace(accountId)) return;
             string key = "FARM:" + accountId;
             AlertState state;
+            bool cartAtFullMilestone = observation.CartPercent.Value >= VanillaWeightCartAutomation.CartFullPercent;
+            bool cartAtDoneThreshold = observation.CartPercent.Value >= VanillaWeightCartAutomation.FarmingDoneCartPercent;
             lock (gate)
             {
                 if (!states.TryGetValue(key, out state)) states[key] = state = new AlertState();
-                if (observation.CartPercent.Value < VanillaWeightCartAutomation.CartFullPercent)
-                {
+
+                // Exact 100% remains the Cart-full mail milestone. Farming completion is
+                // intentionally >=99% Cart plus >=50% carried weight.
+                if (!cartAtFullMilestone)
                     state.CartFullNotified = false;
+
+                if (!cartAtDoneThreshold)
+                {
                     state.DoneNotified = false;
                     state.FarmingDone = false;
                     state.CompletionStopping = false;
@@ -328,7 +335,7 @@ namespace _4RTools.Model.Vanilla
 
             DateTimeOffset now = DateTimeOffset.UtcNow;
             bool milestoneMail = MilestoneMailConfigured(current);
-            if (milestoneMail)
+            if (cartAtFullMilestone && milestoneMail)
             {
                 bool sendCartFull;
                 lock (gate) sendCartFull = !state.CartFullNotified && now >= state.NextMilestoneMailAt;
@@ -418,7 +425,8 @@ namespace _4RTools.Model.Vanilla
                 SendMail(current, "DONE: " + observation.CharacterName,
                     "DONE" + Environment.NewLine
                     + "Character: " + observation.CharacterName + Environment.NewLine
-                    + "Cart: " + observation.CurrentCartWeight + " / " + observation.MaxCartWeight + " (100%)" + Environment.NewLine
+                    + "Cart: " + observation.CurrentCartWeight + " / " + observation.MaxCartWeight + " ("
+                    + observation.CartPercent.Value.ToString("0.0", CultureInfo.InvariantCulture) + "%)" + Environment.NewLine
                     + "Carried weight: " + observation.CurrentWeight + " / " + observation.MaxWeight + " ("
                     + observation.Percent.Value.ToString("0.0", CultureInfo.InvariantCulture) + "%)" + Environment.NewLine
                     + "Autobattle: OFF" + Environment.NewLine
@@ -476,7 +484,14 @@ namespace _4RTools.Model.Vanilla
                     lock (gate)
                     {
                         state.ManualHold = result.RequiresManualIntervention;
-                        if (result.Deferred)
+                        if (result.RetryLater && !result.RequiresManualIntervention)
+                        {
+                            int retrySeconds = result.RetryAfterSeconds > 0
+                                ? result.RetryAfterSeconds : VanillaWeightCartAutomation.TransientCartRetrySeconds;
+                            state.CartArmed = true;
+                            state.NextCartAttemptAt = DateTimeOffset.UtcNow.AddSeconds(retrySeconds);
+                        }
+                        else if (result.Deferred)
                         {
                             state.CartArmed = true;
                             state.NextCartAttemptAt = DateTimeOffset.MinValue;
