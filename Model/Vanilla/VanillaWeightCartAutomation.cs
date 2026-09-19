@@ -517,7 +517,7 @@ namespace _4RTools.Model.Vanilla
                                         + " showed no Cart-weight increase; waiting " + TransferRetryPauseMs
                                         + "ms, then re-checking Cart weight and re-detecting the first slot before retry "
                                         + transferAttempt + "/" + TransferAttemptLimit + ".");
-                                    Thread.Sleep(TransferRetryPauseMs);
+                                    WaitWithCancellation(TransferRetryPauseMs, cancelled);
 
                                     // Progress can arrive during the retry pause on a laggy client.
                                     // Re-check after the pause as well as before it, otherwise a
@@ -569,7 +569,7 @@ namespace _4RTools.Model.Vanilla
 
                                 activity(token.Account.Label + ": weight maintenance: slow drag attempt " + transferAttempt + "/"
                                     + TransferAttemptLimit + " sent; allowing the client to settle before checking quantity/progress.");
-                                Thread.Sleep(TransferSettleMs);
+                                WaitWithCancellation(TransferSettleMs, cancelled);
 
                                 quantity = WaitForQuantityPrompt(input, cancelled, QuantityPromptTimeoutMs);
                                 requestedQuantity = null;
@@ -595,7 +595,7 @@ namespace _4RTools.Model.Vanilla
                                                 + cartBefore.Remaining + " capacity is at least the character's entire current carried weight "
                                                 + pendingWeightBefore.Value + "; the full stack is provably safe.");
                                             input.Press(Keys.Enter);
-                                            Thread.Sleep(TransferSettleMs);
+                                            WaitWithCancellation(TransferSettleMs, cancelled);
                                         }
                                         else
                                         {
@@ -606,7 +606,7 @@ namespace _4RTools.Model.Vanilla
                                                 + " item(s) to fit the remaining " + cartBefore.Remaining + " weight.");
                                             input.ReplaceFocusedText(fit.ToString(System.Globalization.CultureInfo.InvariantCulture));
                                             input.Press(Keys.Enter);
-                                            Thread.Sleep(TransferSettleMs);
+                                            WaitWithCancellation(TransferSettleMs, cancelled);
 
                                             bool promptStillOpen;
                                             using (Bitmap quantityCheck = input.CaptureClientBitmap())
@@ -619,7 +619,7 @@ namespace _4RTools.Model.Vanilla
                                                     + "retrying a small capacity-safe chunk of " + chunk + " " + itemRule.ItemName + ".");
                                                 input.ReplaceFocusedText(chunk.ToString(System.Globalization.CultureInfo.InvariantCulture));
                                                 input.Press(Keys.Enter);
-                                                Thread.Sleep(TransferSettleMs);
+                                                WaitWithCancellation(TransferSettleMs, cancelled);
 
                                                 using (Bitmap chunkCheck = input.CaptureClientBitmap())
                                                     promptStillOpen = VanillaInventoryVision.HasQuantityPrompt(chunkCheck);
@@ -630,7 +630,7 @@ namespace _4RTools.Model.Vanilla
                                                         + "falling back to one " + itemRule.ItemName + " so the transfer remains capacity-safe.");
                                                     input.ReplaceFocusedText("1");
                                                     input.Press(Keys.Enter);
-                                                    Thread.Sleep(TransferSettleMs);
+                                                    WaitWithCancellation(TransferSettleMs, cancelled);
                                                 }
                                             }
                                         }
@@ -639,7 +639,7 @@ namespace _4RTools.Model.Vanilla
                                     {
                                         activity(token.Account.Label + ": weight maintenance: quantity dialog positively detected; pressing Enter for the full stack.");
                                         input.Press(Keys.Enter);
-                                        Thread.Sleep(TransferSettleMs);
+                                        WaitWithCancellation(TransferSettleMs, cancelled);
                                     }
                                 }
                                 else
@@ -994,7 +994,7 @@ namespace _4RTools.Model.Vanilla
                     after = current;
                     if (current.Current > before) return true;
                 }
-                Thread.Sleep(150);
+                WaitWithCancellation(150, cancelled);
             }
             return false;
         }
@@ -1114,7 +1114,7 @@ namespace _4RTools.Model.Vanilla
                 ThrowIfCancelled(cancelled);
                 using (Bitmap frame = input.CaptureClientBitmap())
                     if (VanillaInventoryVision.HasQuantityPrompt(frame)) return true;
-                Thread.Sleep(100);
+                WaitWithCancellation(100, cancelled);
             }
             return false;
         }
@@ -1128,7 +1128,7 @@ namespace _4RTools.Model.Vanilla
                 ThrowIfCancelled(cancelled);
                 uint? current = CurrentWeight(pid);
                 if (current.HasValue && current.Value < before.Value) return true;
-                Thread.Sleep(150);
+                WaitWithCancellation(150, cancelled);
             }
             return false;
         }
@@ -1205,7 +1205,7 @@ namespace _4RTools.Model.Vanilla
             using (Bitmap before = input.CaptureClientBitmap())
             {
                 input.Chord(ctrl, alt, shift, key);
-                Thread.Sleep(ToggleSettleMs);
+                WaitWithCancellation(ToggleSettleMs, cancelled);
                 using (Bitmap after = input.CaptureClientBitmap())
                 {
                     bool opened;
@@ -1218,7 +1218,7 @@ namespace _4RTools.Model.Vanilla
                         return panel;
                     }
                     input.Chord(ctrl, alt, shift, key);
-                    Thread.Sleep(ToggleSettleMs);
+                    WaitWithCancellation(ToggleSettleMs, cancelled);
                     using (Bitmap reopened = input.CaptureClientBitmap())
                     {
                         Rectangle reopenedPanel; bool reopenedOpened;
@@ -1239,7 +1239,7 @@ namespace _4RTools.Model.Vanilla
             {
                 if (!VanillaInventoryVision.PanelStillPresent(before, panel)) return;
                 input.Chord(ctrl, alt, shift, key);
-                Thread.Sleep(250);
+                WaitWithCancellation(250, cancelled);
                 VanillaDebugLog.Write("WEIGHT", caption + " close hotkey sent after verified panel presence.");
             }
         }
@@ -1303,7 +1303,7 @@ namespace _4RTools.Model.Vanilla
                 while (watch.ElapsedMilliseconds < CategoryVerifyTimeoutMs)
                 {
                     ThrowIfCancelled(cancelled);
-                    Thread.Sleep(CategorySettleMs);
+                    WaitWithCancellation(CategorySettleMs, cancelled);
                     using (Bitmap after = input.CaptureClientBitmap())
                     {
                         VanillaUiSlotGrid grid = VanillaInventoryVision.DetectSlotGrid(after, inventory);
@@ -1345,7 +1345,7 @@ namespace _4RTools.Model.Vanilla
             Func<bool> cancelled)
         {
             ThrowIfCancelled(cancelled);
-            Thread.Sleep(CategorySettleMs);
+            WaitWithCancellation(CategorySettleMs, cancelled);
             using (Bitmap confirm = input.CaptureClientBitmap())
             {
                 VanillaUiSlotGrid grid = VanillaInventoryVision.DetectSlotGrid(confirm, inventory);
@@ -1455,7 +1455,7 @@ namespace _4RTools.Model.Vanilla
                         occupiedStable = 0;
                     }
                 }
-                Thread.Sleep(EmptyCategoryConfirmMs);
+                WaitWithCancellation(EmptyCategoryConfirmMs, cancelled);
             }
 
             throw new VanillaCartManualException(categoryName
@@ -1480,6 +1480,19 @@ namespace _4RTools.Model.Vanilla
         }
         private static double NormalizeX(double x, int width) { return Math.Max(0, Math.Min(1, x / Math.Max(1.0, width - 1.0))); }
         private static double NormalizeY(double y, int height) { return Math.Max(0, Math.Min(1, y / Math.Max(1.0, height - 1.0))); }
+        private static void WaitWithCancellation(int milliseconds, Func<bool> cancelled)
+        {
+            int remaining = Math.Max(0, milliseconds);
+            while (remaining > 0)
+            {
+                ThrowIfCancelled(cancelled);
+                int slice = Math.Min(100, remaining);
+                Thread.Sleep(slice);
+                remaining -= slice;
+            }
+            ThrowIfCancelled(cancelled);
+        }
+
         private static void ThrowIfCancelled(Func<bool> cancelled) { if (cancelled()) throw new OperationCanceledException("Weight/cart maintenance cancelled."); }
 
         private sealed class VanillaCartManualException : Exception { internal VanillaCartManualException(string message) : base(message) { } }
