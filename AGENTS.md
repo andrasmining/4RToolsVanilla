@@ -621,3 +621,28 @@ Teleport input may use ordinary targeted Windows background messages to the veri
 ## Combined-capacity notification completion (2026-09-20)
 
 In active Cart mode, notify only after Cart >=99% AND carried weight >=50% plus a verified completion STOP. Neither capacity alone sends mail. Without active Cart maintenance, Mail uses the configured carried-weight warning threshold. Re-check current shared and per-character Mail settings immediately before dispatch so queued work cannot use an obsolete enabled switch. Reserve a single in-flight DONE send per character. Mail-only profile edits must preserve Cart/recovery input ownership; Cart, identity, enabled-state or input-setting edits retain normal cancellation. Use EffectiveCartMaintenanceEnabled in every Cart guard, never the legacy WeightEnabled field directly.
+
+## Launcher update reset exception (2026-09-20)
+
+Always start through Vanilla Launcher.exe / patcher.exe, never bypass updates with
+a direct game launch. A supplied game path may resolve to its adjacent launcher;
+missing launcher means configuration failure, not a fallback.
+
+The user authorizes a narrow exception to healthy-sibling isolation: a verified
+launcher update progress screen with no GAME START and no progress/status change
+for 60 continuous seconds may close same-installation patchers and BOTH game
+clients. Missing Start alone, failed/unknown captures and changing progress never
+authorize this. Preflight paths plus creation times twice, freshly reconfirm the
+screen, retain the global recovery lease, close patchers then games and confirm
+every exit plus a final empty process snapshot before restarting the launcher.
+Use the existing bounded creation-time-pinned Windows close protocol. Metadata
+uses limited query only, with no alternate access after failure.
+
+Allow one reset per launch invocation, with a ten-minute supervisor cooldown.
+Recognized changing update progress may extend waiting to a ten-minute hard bound.
+STOP, settings/generation, runtime/PID/session replacement cancel pending closes
+and delayed restart. Preserve disabled characters and Cart/manual/completion holds.
+Restore enabled characters sequentially through login, verified movement and
+minimization; cold startup revisits earlier closed rows before supervision starts.
+Ordinary recovery still leaves healthy siblings untouched. Log the evidence and
+confirmed exits; do not claim a proven file lock from a frozen update screen alone.

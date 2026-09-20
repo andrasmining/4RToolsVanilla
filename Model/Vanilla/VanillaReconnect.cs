@@ -857,6 +857,8 @@ namespace _4RTools.Model.Vanilla
 
         private void TickLocked()
         {
+            // One update owner intentionally closes both clients. No sibling adoption/relaunch mid-reset.
+            if (launcherUpdateResetRunning) return;
             var now = restartEnvironment.UtcNow;
             var desired = settings.Accounts.Where(a => a.Enabled).Take(settings.MaxClients).ToList();
             var desiredIds = new HashSet<string>(desired.Select(a => a.Id), StringComparer.OrdinalIgnoreCase);
@@ -1097,6 +1099,17 @@ namespace _4RTools.Model.Vanilla
             {
                 string error = null;
                 bool aborted = false;
+                Func<bool> launchCancelled = () =>
+                {
+                    lock (gate)
+                    {
+                        Runtime current;
+                        aborted = disposed || !running || generation != Volatile.Read(ref resumeVerificationGeneration)
+                            || !runtimes.TryGetValue(accountId, out current) || !ReferenceEquals(runtime, current)
+                            || current.ResumeOperationGeneration != generation || !current.ScriptRunning;
+                        return aborted;
+                    }
+                };
                 try
                 {
                     int? launchedPid = VanillaPatcherLauncher.Launch(executable, arguments,
@@ -1105,17 +1118,9 @@ namespace _4RTools.Model.Vanilla
                             Log(label + ": " + message);
                             VanillaDebugLog.Write("LAUNCHER", label + ": " + message);
                         },
-                        () =>
-                        {
-                            lock (gate)
-                            {
-                                Runtime current;
-                                aborted = disposed || !running || generation != Volatile.Read(ref resumeVerificationGeneration)
-                                    || !runtimes.TryGetValue(accountId, out current) || !ReferenceEquals(runtime, current)
-                                    || current.ResumeOperationGeneration != generation || !current.ScriptRunning;
-                                return aborted;
-                            }
-                        });
+                        launchCancelled,
+                        recoverUpdate: (blocked, stillBlocked) => RecoverLauncherUpdate(runtime, generation,
+                            launchCancelled, blocked, stillBlocked));
                     lock (gate)
                     {
                         if (!aborted && running && !disposed && launchedPid.HasValue

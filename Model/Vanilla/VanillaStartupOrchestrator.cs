@@ -105,6 +105,7 @@ namespace _4RTools.Model.Vanilla
             string result = null;
             try
             {
+                int updateSerial = launcherUpdateResetSerial;
                 for (int index = 0; index < accounts.Length; index++)
                 {
                     if (StartupCancelled(generation)) throw new OperationCanceledException("Sequential startup cancelled.");
@@ -183,6 +184,13 @@ namespace _4RTools.Model.Vanilla
                     }
 
                     RunOneColdStart(generation, account, config, index + 1, accounts.Length);
+                    if (updateSerial != launcherUpdateResetSerial)
+                    {
+                        // The update may have closed an earlier completed row: revisit before supervision starts.
+                        updateSerial = launcherUpdateResetSerial;
+                        index = -1;
+                        Log("Launcher update completed; rechecking all enabled characters sequentially.");
+                    }
                 }
 
                 lock (gate)
@@ -377,14 +385,16 @@ namespace _4RTools.Model.Vanilla
             int? pid = null;
             try
             {
-                pid = VanillaPatcherLauncher.Launch(config.LaunchExecutable, string.Empty,
+                pid = VanillaPatcherLauncher.Launch(config.LaunchExecutable, config.LaunchArguments,
                     message =>
                     {
                         Log(account.Label + ": " + message);
                         VanillaDebugLog.Write("LAUNCHER", account.Label + ": " + message);
                     },
                     () => StartupCancelled(generation),
-                    debugDirectory: Path.Combine(baseDirectory, "Logs"));
+                    debugDirectory: Path.Combine(baseDirectory, "Logs"),
+                    recoverUpdate: (blocked, stillBlocked) => RecoverLauncherUpdate(runtime, resumeGeneration,
+                        () => StartupCancelled(generation), blocked, stillBlocked));
 
                 if (!pid.HasValue) throw new InvalidOperationException(account.Label + ": launcher did not produce a Vanilla MMO PID.");
                 lock (gate)

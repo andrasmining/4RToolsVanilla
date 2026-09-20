@@ -148,9 +148,9 @@ namespace _4RTools.Model.Vanilla
         }
         internal static bool Run(VanillaLauncherUpdateProcess launcher, Func<bool> stillBlocked,
             Func<VanillaLauncherUpdateProcess[]> snapshot, Action<VanillaLauncherUpdateProcess> close,
-            Action<VanillaLauncherUpdateProcess> exited, Func<bool> cancelled, Action begin)
+            Action<VanillaLauncherUpdateProcess> exited, Func<bool> cancelled, System.Action begin)
         {
-            Action check = () => { if (cancelled()) throw new OperationCanceledException("Launcher update recovery cancelled."); };
+            System.Action check = () => { if (cancelled()) throw new OperationCanceledException("Launcher update recovery cancelled."); };
             check();
             var targets = snapshot(); Validate(launcher, targets);
             if (!targets.Any(p => p.Game)) return false;

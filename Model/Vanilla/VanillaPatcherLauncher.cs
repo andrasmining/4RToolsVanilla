@@ -25,6 +25,16 @@ namespace _4RTools.Model.Vanilla
         internal const int DefaultRetryMs = 15000;
         internal const int LauncherSettleMs = 2500;
         internal const int VisualConfirmationDelayMs = 750;
+        internal const int MaximumUpdateWaitMs = 600000;
+        private sealed class UpdateResetCompletedException : Exception { }
+
+        internal static string RequireLauncher(string executablePath)
+        {
+            string resolved = IsPatcher(executablePath) ? executablePath : PreferPatcherBesideClient(executablePath);
+            if (!IsPatcher(resolved))
+                throw new InvalidOperationException("Vanilla must start through Vanilla Launcher.exe or patcher.exe so updates can finish. No direct game fallback is allowed.");
+            return Path.GetFullPath(resolved);
+        }
 
         [StructLayout(LayoutKind.Sequential)]
         private struct RECT { public int Left, Top, Right, Bottom; }
@@ -51,6 +61,7 @@ namespace _4RTools.Model.Vanilla
         [DllImport("user32.dll")] private static extern bool IsChild(IntPtr parent, IntPtr child);
         [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hwnd);
         [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
+        [DllImport("user32.dll")] private static extern bool IsWindowEnabled(IntPtr hwnd);
         [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr hwnd);
         [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hwnd, int command);
         [DllImport("user32.dll")] private static extern bool BringWindowToTop(IntPtr hwnd);
@@ -93,7 +104,28 @@ namespace _4RTools.Model.Vanilla
             int retryMs = DefaultRetryMs,
             double gameStartX = DefaultGameStartX,
             double gameStartY = DefaultGameStartY,
-            string debugDirectory = null)
+            string debugDirectory = null,
+            Func<VanillaLauncherUpdateProcess, Func<bool>, bool> recoverUpdate = null)
+        {
+            executablePath = RequireLauncher(executablePath);
+            for (int attempt = 0; attempt < 2; attempt++)
+            {
+                try
+                {
+                    return LaunchAttempt(executablePath, arguments, log, cancelled, timeoutMs, retryMs,
+                        gameStartX, gameStartY, debugDirectory, attempt == 0 ? recoverUpdate : null);
+                }
+                catch (UpdateResetCompletedException)
+                {
+                    log?.Invoke("event=update-reset-complete All same-installation clients and patchers exited. Restarting the launcher; direct game launch remains forbidden.");
+                }
+            }
+            throw new InvalidOperationException("Launcher update recovery exceeded its single-reset budget.");
+        }
+
+        private static int? LaunchAttempt(string executablePath, string arguments, Action<string> log,
+            Func<bool> cancelled, int timeoutMs, int retryMs, double gameStartX, double gameStartY,
+            string debugDirectory, Func<VanillaLauncherUpdateProcess, Func<bool>, bool> recoverUpdate)
         {
             if (string.IsNullOrWhiteSpace(executablePath) || !File.Exists(executablePath))
                 throw new FileNotFoundException("The configured Vanilla launcher does not exist.", executablePath);
@@ -102,6 +134,7 @@ namespace _4RTools.Model.Vanilla
             if (gameStartX < 0 || gameStartX > 1 || gameStartY < 0 || gameStartY > 1)
                 throw new ArgumentOutOfRangeException("GAME START coordinates must be normalized to 0..1.");
 
+            if (cancelled != null && cancelled()) throw new OperationCanceledException("Launcher start cancelled.");
             var before = new HashSet<int>(GetVanillaProcessIds());
             var startInfo = new ProcessStartInfo
             {
@@ -118,14 +151,11 @@ namespace _4RTools.Model.Vanilla
                 log?.Invoke("Launcher start requested: exe='" + Path.GetFileName(executablePath) + "', startedPID="
                     + (launched == null ? "none" : launched.Id.ToString()) + ", preExistingVanillaPIDs=[" + string.Join(",", before.OrderBy(v => v))
                     + "], timeout=" + timeoutMs + "ms, retry=" + retryMs + "ms.");
-                if (!IsPatcher(executablePath))
-                {
-                    log?.Invoke("Started configured Vanilla executable directly.");
-                    return launched == null ? (int?)null : launched.Id;
-                }
-
                 log?.Invoke("Started Vanilla launcher; locating GAME START.");
-                DateTime deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+                var clock = Stopwatch.StartNew();
+                TimeSpan deadline = TimeSpan.FromMilliseconds(timeoutMs);
+                var patchWatch = new VanillaLauncherPatchWatch();
+                string lastPatchSignature = null;
                 DateTime nextClick = DateTime.MinValue;
                 string launcherName = Path.GetFileNameWithoutExtension(executablePath);
                 string launcherDirectory = Path.GetDirectoryName(executablePath);
@@ -136,7 +166,7 @@ namespace _4RTools.Model.Vanilla
                 int stableLauncherPid = 0;
                 int noWindowLogs = 0;
 
-                while (DateTime.UtcNow < deadline)
+                while (clock.Elapsed < deadline)
                 {
                     if (cancelled != null && cancelled())
                     {
@@ -144,7 +174,7 @@ namespace _4RTools.Model.Vanilla
                         return null;
                     }
 
-                    int? vanillaPid = FindNewVanillaProcess(before);
+                    int? vanillaPid = FindNewVanillaProcess(before, launcherDirectory);
                     if (vanillaPid.HasValue)
                     {
                         log?.Invoke("Patcher started Vanilla MMO (PID " + vanillaPid.Value + ").");
@@ -189,6 +219,7 @@ namespace _4RTools.Model.Vanilla
                                 {
                                     log?.Invoke("Launcher is visible but Windows foreground activation is not ready; no GAME START action sent. "
                                         + activationEvidence);
+                                    patchWatch.Reset();
                                     nextClick = DateTime.UtcNow.AddMilliseconds(1000);
                                     continue;
                                 }
@@ -197,6 +228,8 @@ namespace _4RTools.Model.Vanilla
                                 clickAttempt++;
                                 if (nativeFound)
                                 {
+                                    patchWatch.Reset();
+                                    if (cancelled != null && cancelled()) throw new OperationCanceledException();
                                     UIntPtr result;
                                     IntPtr sent = SendMessageTimeout(nativeGameStart, BM_CLICK, IntPtr.Zero, IntPtr.Zero, SMTO_ABORTIFHUNG, 2000, out result);
                                     int error = sent == IntPtr.Zero ? Marshal.GetLastWin32Error() : 0;
@@ -212,11 +245,33 @@ namespace _4RTools.Model.Vanilla
                                     {
                                         clickAttempt--;
                                         log?.Invoke("GAME START is not safely detected yet; no fallback coordinate click was sent. " + firstEvidence);
+                                        var frame = ObservePatchFrame(patcherPid.Value, launcherHwnd);
+                                        var blocked = VanillaLauncherUpdateProcess.Read(patcherPid.Value);
+                                        bool stalled = patchWatch.Observe(patcherPid.Value, launcherHwnd, frame, clock.Elapsed, blocked.StartedUtc.Ticks);
+                                        if (frame != null && lastPatchSignature != frame.Signature)
+                                        {
+                                            deadline = TimeSpan.FromMilliseconds(Math.Min(MaximumUpdateWaitMs, clock.ElapsedMilliseconds + timeoutMs));
+                                            log?.Invoke("event=launcher-updating Update progress/status observed; waiting for GAME START (maximum 10 minutes).");
+                                        }
+                                        lastPatchSignature = frame?.Signature;
+                                        if (stalled && recoverUpdate != null)
+                                        {
+                                            bool recovered = recoverUpdate(blocked, () =>
+                                            {
+                                                if (cancelled != null && cancelled()) throw new OperationCanceledException();
+                                                if (FindNewVanillaProcess(before, launcherDirectory).HasValue) return false;
+                                                var fresh = ObservePatchFrame(blocked.Pid, launcherHwnd);
+                                                return fresh != null && fresh.Signature == frame.Signature;
+                                            });
+                                            if (recovered) throw new UpdateResetCompletedException();
+                                            patchWatch.Reset();
+                                        }
                                         nextClick = DateTime.UtcNow.AddMilliseconds(1000);
                                         continue;
                                     }
+                                    patchWatch.Reset();
                                     SleepCancellable(VisualConfirmationDelayMs, cancelled);
-                                    int? startedDuringConfirmation = FindNewVanillaProcess(before);
+                                    int? startedDuringConfirmation = FindNewVanillaProcess(before, launcherDirectory);
                                     if (startedDuringConfirmation.HasValue)
                                     {
                                         log?.Invoke("Patcher started Vanilla MMO (PID " + startedDuringConfirmation.Value + ") during GAME START confirmation.");
@@ -241,14 +296,18 @@ namespace _4RTools.Model.Vanilla
                                         clickAttempt, secondX, secondY, firstEvidence, secondEvidence, inputEvidence, retryMs));
                                 }
                             }
+                            catch (UpdateResetCompletedException) { throw; }
+                            catch (OperationCanceledException) { throw; }
                             catch (Exception ex)
                             {
+                                patchWatch.Reset();
                                 log?.Invoke("Launcher GAME START attempt failed before completion: " + ex.GetType().Name + ": " + ex.Message);
                             }
                             nextClick = DateTime.UtcNow.AddMilliseconds(retryMs);
                         }
                         else
                         {
+                            patchWatch.Reset();
                             stableLauncherPid = 0;
                             launcherWindowStableAt = null;
                             if (sawLauncherWindow)
@@ -271,7 +330,8 @@ namespace _4RTools.Model.Vanilla
                     Thread.Sleep(250);
                 }
 
-                throw new TimeoutException("Vanilla launcher did not start a new Vanilla MMO client within " + (timeoutMs / 1000) + " seconds.");
+                throw new TimeoutException("Vanilla launcher did not start a new Vanilla MMO client within the bounded wait ("
+                    + (int)clock.Elapsed.TotalSeconds + " seconds). No direct-game fallback was used.");
             }
             finally
             {
@@ -531,6 +591,44 @@ namespace _4RTools.Model.Vanilla
             }
         }
 
+        private static VanillaLauncherPatchFrame ObservePatchFrame(int pid, IntPtr hwnd)
+        {
+            try
+            {
+                uint owner;
+                if (!IsWindow(hwnd) || !IsWindowVisible(hwnd) || GetForegroundWindow() != hwnd
+                    || GetWindowThreadProcessId(hwnd, out owner) == 0 || owner != (uint)pid
+                    || !string.Equals(WindowClass(hwnd), "TThorForm", StringComparison.OrdinalIgnoreCase)) return null;
+                RECT rect;
+                if (!GetClientRect(hwnd, out rect)) return null;
+                int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;
+                if (width < 200 || height < 120 || width > 4096 || height > 2160) return null;
+                using (var image = new Bitmap(width, height, PixelFormat.Format24bppRgb))
+                {
+                    bool captured;
+                    using (var graphics = Graphics.FromImage(image))
+                    {
+                        IntPtr dc = graphics.GetHdc();
+                        try { captured = PrintWindow(hwnd, dc, 1); }
+                        finally { graphics.ReleaseHdc(dc); }
+                    }
+                    var frame = captured ? VanillaLauncherPatchFrame.Read(image) : null;
+                    if (frame != null) return frame;
+                    var origin = new POINT();
+                    if (!ClientToScreen(hwnd, ref origin) || GetForegroundWindow() != hwnd) return null;
+                    foreach (int dx in new[] { width / 12, width / 2, width * 11 / 12 })
+                    {
+                        IntPtr at = WindowFromPoint(new POINT { X = origin.X + dx, Y = origin.Y + height * 93 / 100 });
+                        if (at != hwnd && !IsChild(hwnd, at)) return null;
+                    }
+                    using (var graphics = Graphics.FromImage(image))
+                        graphics.CopyFromScreen(origin.X, origin.Y, 0, 0, new Size(width, height));
+                    return GetForegroundWindow() == hwnd ? VanillaLauncherPatchFrame.Read(image) : null;
+                }
+            }
+            catch { return null; } // Failed capture is unknown, never stalled-update evidence.
+        }
+
         private static string ClickTargetedWindowAtPoint(int processId, double x, double y)
         {
             IntPtr main = ResolveLauncherWindow(processId);
@@ -573,7 +671,8 @@ namespace _4RTools.Model.Vanilla
                 string title = WindowTitle(hwnd);
                 string cls = WindowClass(hwnd);
                 if (rows.Count < 16) rows.Add("0x" + hwnd.ToInt64().ToString("X") + ":" + cls + ":'" + Clean(title) + "'");
-                if (found == IntPtr.Zero && title.IndexOf("GAME START", StringComparison.OrdinalIgnoreCase) >= 0)
+                if (found == IntPtr.Zero && IsWindowVisible(hwnd) && IsWindowEnabled(hwnd)
+                    && title.IndexOf("GAME START", StringComparison.OrdinalIgnoreCase) >= 0)
                     found = hwnd;
                 return true;
             }, IntPtr.Zero);
@@ -651,10 +750,19 @@ namespace _4RTools.Model.Vanilla
             finally { foreach (var process in processes) process.Dispose(); }
         }
 
-        private static int? FindNewVanillaProcess(HashSet<int> before)
+        private static int? FindNewVanillaProcess(HashSet<int> before, string directory)
         {
             foreach (int pid in GetVanillaProcessIds())
-                if (!before.Contains(pid)) return pid;
+            {
+                if (before.Contains(pid)) continue;
+                try
+                {
+                    var identity = VanillaLauncherUpdateProcess.Read(pid);
+                    if (identity.Game && string.Equals(Path.GetDirectoryName(identity.Executable),
+                        Path.GetFullPath(directory), StringComparison.OrdinalIgnoreCase)) return pid;
+                }
+                catch { /* Unverified identity never authorizes binding/input. */ }
+            }
             return null;
         }
 
@@ -676,11 +784,11 @@ namespace _4RTools.Model.Vanilla
                         {
                             try
                             {
-                                string candidateDirectory = Path.GetDirectoryName(process.MainModule.FileName);
+                                string candidateDirectory = Path.GetDirectoryName(VanillaLauncherUpdateProcess.Read(process.Id).Executable);
                                 if (!string.Equals(Path.GetFullPath(candidateDirectory), Path.GetFullPath(launcherDirectory), StringComparison.OrdinalIgnoreCase))
                                     continue;
                             }
-                            catch { }
+                            catch { continue; }
                         }
                         DateTime started = process.StartTime;
                         if (best == null || started > bestStart)

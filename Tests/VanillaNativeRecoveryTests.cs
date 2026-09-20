@@ -44,6 +44,11 @@ namespace Vanilla.Diagnostics.Tests
                     { Thread.Sleep(50); child.Refresh(); }
                     if (child.MainWindowHandle == IntPtr.Zero) throw new Exception("Inert child window did not appear.");
                     DateTime start = child.StartTime.ToUniversalTime();
+                    var updateIdentity = VanillaLauncherUpdateProcess.Read(child.Id);
+                    if (updateIdentity.Pid != child.Id || updateIdentity.StartedUtc != start
+                        || !string.Equals(updateIdentity.Executable, Assembly.GetExecutingAssembly().Location, StringComparison.OrdinalIgnoreCase)
+                        || VanillaLauncherUpdateProcess.MetadataAccess != 0x1000)
+                        throw new Exception("Limited-query update identity did not match the inert child.");
                     if (test == "identity")
                     {
                         bool rejected = false;

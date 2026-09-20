@@ -52,6 +52,7 @@
     <Compile Include="ProfileStoreTests.cs" />
     <Compile Include="LegacyProfileTests.cs" />
     <Compile Include="VanillaPatcherLauncherTests.cs" />
+    <Compile Include="VanillaLauncherUpdateTests.cs" />
     <Compile Include="VanillaProxyPatternTests.cs" />
     <Compile Include="VanillaAuthPatternTests.cs" />
     <Compile Include="VanillaSessionLogTests.cs" />
