@@ -185,7 +185,8 @@ namespace Vanilla.Diagnostics.Tests
         {
             foreach (Action<VanillaReconnectAccount> change in new Action<VanillaReconnectAccount>[] {
                 r => r.ProtectedPassword = "configured", r => r.Label = "My description", r => r.Enabled = true,
-                r => r.ProxyNeedsConfiguration = false, r => r.CharacterSlot = 2, r => r.ResumeCtrl = false })
+                r => r.ProxyNeedsConfiguration = false, r => r.CharacterSlot = 2, r => r.ResumeCtrl = false,
+                r => r.CartMaintenanceEnabled = false, r => r.WeightEmailEnabled = false })
             {
                 var orphan = Orphan(); change(orphan);
                 var rows = new List<VanillaReconnectAccount> { Row(""), orphan };
