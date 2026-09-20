@@ -30,7 +30,15 @@ jobs:
       - name: Apply guarded source edits and remove temporary tooling
         shell: powershell
         run: |
-          python scripts/finish-cart-policy.py
+          @'
+          from pathlib import Path
+          path = Path('scripts/finish-cart-policy.py')
+          source = path.read_text(encoding='utf-8-sig')
+          old = "'Cart/full-farming milestone mail is used.'"
+          new = "'use Cart-full / combined DONE milestone mail.'"
+          assert source.count(old) == 1, 'Unexpected patch source'
+          exec(compile(source.replace(old, new), str(path), 'exec'))
+          '@ | python -
           if ($LASTEXITCODE -ne 0) { throw 'Guarded Cart patch failed; no source commit will be pushed.' }
           git rm scripts/finish-cart-policy.py .github/workflows/complete-cart-policy.yml
           if ($LASTEXITCODE -ne 0) { throw 'Temporary tooling removal failed.' }
