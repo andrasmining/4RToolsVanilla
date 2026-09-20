@@ -141,19 +141,9 @@ namespace _4RTools.Model.Vanilla
                             && string.Equals(line.Text.Trim(), "Vanilla MMO", StringComparison.OrdinalIgnoreCase));
                     if (!recognized && service.Height <= 18)
                     {
-                        int agreements = 0;
-                        foreach (VanillaTextPreparation preparation in new[] { VanillaTextPreparation.NearestNeighbor,
-                            VanillaTextPreparation.Contrast, VanillaTextPreparation.BinaryDark,
-                            VanillaTextPreparation.BinaryLight, VanillaTextPreparation.Sharpen })
-                        {
-                            if (VanillaTextRecognition.TryRead(bitmap, service, true, out serviceText, out textEvidence, preparation)
-                                && serviceText.Any(line => line.Confidence >= 70
-                                    && string.Equals(line.Text.Trim(), "Vanilla MMO", StringComparison.OrdinalIgnoreCase)))
-                                agreements++;
-                        }
-                        // A single favorable raster transform is insufficient for low-resolution
-                        // identity evidence. Never substitute similar-looking or partial names.
-                        recognized = agreements >= 2;
+                        recognized = VanillaTextRecognition.TryReadAccurate(bitmap, service, true, out serviceText, out textEvidence)
+                            && serviceText.Any(line => line.Confidence >= 70
+                                && string.Equals(line.Text.Trim(), "Vanilla MMO", StringComparison.OrdinalIgnoreCase));
                     }
                     identities.Add(service, recognized);
                 }

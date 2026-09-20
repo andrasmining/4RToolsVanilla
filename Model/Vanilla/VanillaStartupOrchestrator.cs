@@ -495,6 +495,7 @@ namespace _4RTools.Model.Vanilla
             if (cancelled == null) throw new ArgumentNullException(nameof(cancelled));
             int slot = account.RequiredCharacterSlot();
             long frame = 0;
+            VanillaVisualInputProof proof = null;
             VanillaCharacterSelector.Select(slot, () =>
             {
                 using (Bitmap image = input.CaptureClientBitmap())
@@ -504,9 +505,11 @@ namespace _4RTools.Model.Vanilla
                     if (!VanillaCharacterPattern.TryDetect(image, out observation, out evidence))
                         throw new InvalidOperationException("Character selection is unverified; no further input was sent. " + evidence);
                     observation.FrameId = ++frame;
+                    proof = input.LastCaptureProof;
+                    observation.InputProof = proof;
                     return observation;
                 }
-            }, input.Press, milliseconds => PauseCharacterSelection(cancelled, milliseconds), cancelled);
+            }, key => input.PressFromProof(key, proof), milliseconds => PauseCharacterSelection(cancelled, milliseconds), cancelled);
             string expected = string.IsNullOrWhiteSpace(account.CharacterName) ? "<learn after gameplay>" : account.CharacterName;
             string detail = logPrefix + "character selection verified its detected grid, edge clamps, every keyboard transition and configured slot " + slot
                 + " for '" + expected + "'; awaiting independent gameplay identity.";

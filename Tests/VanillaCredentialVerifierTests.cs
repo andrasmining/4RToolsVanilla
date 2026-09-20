@@ -21,6 +21,8 @@ namespace Vanilla.Diagnostics.Tests
             Test("Manual submit cannot bypass fresh credential verification", SubmitGuard);
             Test("STOP during credentials cancels password and submit", Cancellation);
             Test("Password field is redetected after username entry", MovedForm);
+            Test("Field focus proof cannot combine different windows", ChangedSurface);
+            Test("Credential content proof cannot combine moving controls", ChangingContentGeometry);
             Test("Blink evidence requires changing vertical caret inside the intended field", CaretEvidence);
             Test("Password mask recognizer accepts known repeated glyphs across UI scales", KnownMasks);
             Test("Password mask recognizer tolerates softened mask rendering", SoftenedMasks);
@@ -104,6 +106,20 @@ namespace Vanilla.Diagnostics.Tests
                 b.FillRectangle(Brushes.Black, 90, 14, 14, 13);
                 Assert(!VanillaCredentialPattern.TryDetectCaretBlink(first, second, field, out caret), "Unrelated text changes became caret proof.");
             }
+        }
+
+        private static void ChangedSurface()
+        {
+            var input = new FakeInput { ChangeSurfaceEachCapture = true };
+            Fails(() => new VanillaCredentialVerifier(input).Fill("test", "secret", true));
+            Assert(input.Typed.Count == 0 && input.Submits == 0, "Field focus proof crossed a window replacement.");
+        }
+
+        private static void ChangingContentGeometry()
+        {
+            var input = new FakeInput { MoveAfterMaskCapture = true };
+            Fails(() => new VanillaCredentialVerifier(input).Fill("test", "secret", true));
+            Assert(input.Submits == 0, "Credential confirmations combined shifting controls.");
         }
         private static void KnownMasks()
         {
@@ -221,12 +237,16 @@ namespace Vanilla.Diagnostics.Tests
         {
             internal bool NameMatches = true, MaskMatches = true, FormVisible = true;
             internal bool CancelAfterFirstEntry, MoveAfterFirstEntry;
+            internal bool ChangeSurfaceEachCapture, MoveAfterMaskCapture;
             internal VanillaFieldFocus FocusEvidence = VanillaFieldFocus.Confirmed;
             internal readonly List<string> Typed = new List<string>();
             internal readonly List<Rectangle> Clicks = new List<Rectangle>();
             internal int Submits, NameChecks, MaskChecks;
+            private int captures;
+            public long SurfaceId { get { return ChangeSurfaceEachCapture ? captures : 1; } }
             public Bitmap Capture()
             {
+                captures++;
                 var image = new Bitmap(240, 120);
                 using (Graphics graphics = Graphics.FromImage(image)) graphics.Clear(Color.White);
                 return image;
@@ -234,6 +254,7 @@ namespace Vanilla.Diagnostics.Tests
             public bool Detect(Bitmap image, out VanillaLoginLayout layout)
             {
                 int x = MoveAfterFirstEntry && Typed.Count > 0 ? 40 : 10;
+                if (MoveAfterMaskCapture && Typed.Count >= 2) x += captures % 2;
                 layout = new VanillaLoginLayout
                 {
                     UserName = new Rectangle(x, 10, 150, 20), Password = new Rectangle(x, 40, 150, 20),

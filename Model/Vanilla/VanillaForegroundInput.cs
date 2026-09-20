@@ -36,6 +36,7 @@ namespace _4RTools.Model.Vanilla
         private IntPtr window;
         private string lastResolutionEvidence;
         internal Func<bool> CancellationRequested { get; set; }
+        internal VanillaVisualInputProof LastCaptureProof { get; private set; }
         internal IntPtr Window
         {
             get
@@ -103,6 +104,7 @@ namespace _4RTools.Model.Vanilla
         [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hwnd);
         [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
         [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr hwnd);
+        [DllImport("user32.dll")] private static extern bool IsChild(IntPtr parent, IntPtr child);
         [DllImport("user32.dll", SetLastError = true)] private static extern bool GetClientRect(IntPtr hwnd, out RECT rect);
         [DllImport("user32.dll", SetLastError = true)] private static extern bool ClientToScreen(IntPtr hwnd, ref POINT point);
         [DllImport("user32.dll")] private static extern bool SetForegroundWindow(IntPtr hwnd);
@@ -451,16 +453,128 @@ namespace _4RTools.Model.Vanilla
 
         internal Bitmap CaptureClientBitmap()
         {
-            Activate();
-            RECT rect;
-            if (!GetClientRect(window, out rect)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot read Vanilla client area for visual recognition.");
-            int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;
-            if (width < 200 || height < 120) throw new InvalidOperationException("Vanilla client area is too small for visual recognition: " + width + "x" + height);
-            var origin = new POINT { X = 0, Y = 0 };
-            if (!ClientToScreen(window, ref origin)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot map Vanilla client for visual recognition.");
-            var bitmap = new Bitmap(width, height, PixelFormat.Format24bppRgb);
-            using (Graphics graphics = Graphics.FromImage(bitmap)) graphics.CopyFromScreen(origin.X, origin.Y, 0, 0, new Size(width, height));
-            return bitmap;
+            lock (ForegroundGate)
+            {
+                LastCaptureProof = null;
+                Activate();
+                VerifyForeground();
+                RECT rect;
+                if (!GetClientRect(window, out rect)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot read Vanilla client area for visual recognition.");
+                int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;
+                if (width < 200 || height < 120) throw new InvalidOperationException("Vanilla client area is too small for visual recognition: " + width + "x" + height);
+                var origin = new POINT { X = 0, Y = 0 };
+                if (!ClientToScreen(window, ref origin)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot map Vanilla client for visual recognition.");
+                var proof = new VanillaVisualInputProof(process.Id, window, new Size(width, height),
+                    new Point(origin.X, origin.Y), Stopwatch.GetTimestamp());
+                var bitmap = new Bitmap(width, height, PixelFormat.Format24bppRgb);
+                try
+                {
+                    using (Graphics graphics = Graphics.FromImage(bitmap)) graphics.CopyFromScreen(origin.X, origin.Y, 0, 0, new Size(width, height));
+                    VerifyCaptureProof(proof);
+                    LastCaptureProof = proof;
+                    return bitmap;
+                }
+                catch { bitmap.Dispose(); throw; }
+            }
+        }
+
+        private void VerifyCaptureProof(VanillaVisualInputProof proof)
+        {
+            ThrowIfCancelled();
+            if (proof == null) throw new InvalidOperationException("A fresh captured UI proof is required before input.");
+            VerifyForeground();
+            RECT rectangle;
+            var origin = new POINT();
+            if (!GetClientRect(window, out rectangle) || !ClientToScreen(window, ref origin))
+                throw new InvalidOperationException("The captured client geometry is unavailable; input withheld.");
+            proof.RequireMatches(process.Id, window, GetForegroundWindow(),
+                new Size(rectangle.Right - rectangle.Left, rectangle.Bottom - rectangle.Top),
+                new Point(origin.X, origin.Y), Stopwatch.GetTimestamp());
+        }
+
+        internal void PressFromProof(Keys key, VanillaVisualInputProof proof)
+        {
+            lock (ForegroundGate)
+            {
+                VerifyCaptureProof(proof);
+                VanillaDebugLog.Write("INPUT", "PID=" + process.Id + " verified-capture KEY " + key + ".");
+                DispatchGuardedKey(key, () => VerifyCaptureProof(proof), SendKey, Thread.Sleep);
+            }
+        }
+
+        internal static void DispatchGuardedKey(Keys key, System.Action verify, Action<Keys, bool> send, Action<int> pause)
+        {
+            verify();
+            send(key, false);
+            try { pause(70); }
+            finally { send(key, true); }
+            pause(45);
+        }
+
+        internal void ClickFromProof(Rectangle control, VanillaVisualInputProof proof)
+        {
+            lock (ForegroundGate)
+            {
+                VerifyCaptureProof(proof);
+                Point center = proof.ControlCenter(control);
+                var target = new POINT { X = proof.ClientOrigin.X + center.X, Y = proof.ClientOrigin.Y + center.Y };
+                POINT previous;
+                bool restore = GetCursorPos(out previous);
+                bool held = false;
+                try
+                {
+                    if (!SetCursorPos(target.X, target.Y)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows rejected the mouse position.");
+                    DelayWithCancellation(120);
+                    VerifyCaptureProof(proof);
+                    POINT actual;
+                    if (!GetCursorPos(out actual) || actual.X != target.X || actual.Y != target.Y)
+                        throw new InvalidOperationException("Cursor moved outside the detected control; click withheld.");
+                    IntPtr hit = WindowFromPoint(actual);
+                    if (hit != proof.Window && !IsChild(proof.Window, hit))
+                        throw new InvalidOperationException("Detected control is covered by another window; click withheld.");
+                    SendMouseButton(false);
+                    held = true;
+                    DelayWithCancellation(110);
+                }
+                finally
+                {
+                    try { if (held) SendMouseButton(true); }
+                    finally { if (restore) SetCursorPos(previous.X, previous.Y); }
+                }
+                DelayWithCancellation(130);
+                VanillaDebugLog.Write("INPUT", "PID=" + process.Id + " clicked captured control " + control + ".");
+            }
+        }
+
+        private static void SendMouseButton(bool up)
+        {
+            Send(new[] { new INPUT { type = INPUT_MOUSE,
+                U = new INPUTUNION { mi = new MOUSEINPUT { dwFlags = up ? MOUSEEVENTF_LEFTUP : MOUSEEVENTF_LEFTDOWN } } } });
+        }
+
+        internal void ReplaceFocusedTextFromProof(string text, VanillaVisualInputProof proof, System.Action verifyFieldFocus)
+        {
+            lock (ForegroundGate)
+            {
+                System.Action verify = () =>
+                {
+                    VerifyCaptureProof(proof);
+                    if (verifyFieldFocus != null) verifyFieldFocus();
+                    VerifyCaptureProof(proof);
+                };
+                verify();
+                VanillaDebugLog.Write("INPUT", "PID=" + process.Id + " verified-capture credential replacement: Ctrl+A, Backspace, text; contents omitted.");
+                DispatchGuardedChord(true, false, false, Keys.A, verify, SendKey, Thread.Sleep);
+                DispatchGuardedKey(Keys.Back, verify, SendKey, Thread.Sleep);
+                foreach (char value in text ?? string.Empty)
+                {
+                    verify();
+                    SendUnicode(value, false);
+                    try { Thread.Sleep(22); }
+                    finally { SendUnicode(value, true); }
+                }
+                DelayWithCancellation(80);
+            }
         }
 
         public void Press(Keys key)
@@ -543,21 +657,11 @@ namespace _4RTools.Model.Vanilla
 
         public void ReplaceFocusedText(string text)
         {
-            ReplaceFocusedText(text, null);
-        }
-
-        internal void ReplaceFocusedText(string text, System.Action verifyFieldFocus)
-        {
             lock (ForegroundGate)
             {
-                Activate();
-                VerifyForeground();
-                if (verifyFieldFocus != null) verifyFieldFocus();
                 SelectAll();
-                if (verifyFieldFocus != null) verifyFieldFocus();
                 Press(Keys.Back);
-                if (verifyFieldFocus != null) verifyFieldFocus();
-                TypeTextCore(text ?? string.Empty, verifyFieldFocus);
+                TypeTextCore(text ?? string.Empty);
             }
         }
 
@@ -566,7 +670,7 @@ namespace _4RTools.Model.Vanilla
             lock (ForegroundGate) TypeTextCore(text);
         }
 
-        private void TypeTextCore(string text, System.Action verifyFieldFocus = null)
+        private void TypeTextCore(string text)
         {
             if (text == null) return;
             Activate();
@@ -575,7 +679,6 @@ namespace _4RTools.Model.Vanilla
             foreach (char c in text)
             {
                 VerifyForeground();
-                if (verifyFieldFocus != null) verifyFieldFocus();
                 SendUnicode(c, false);
                 SendUnicode(c, true);
                 Thread.Sleep(22);

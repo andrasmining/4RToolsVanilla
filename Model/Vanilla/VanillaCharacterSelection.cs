@@ -15,11 +15,16 @@ namespace _4RTools.Model.Vanilla
         internal int Columns;
         internal int Selected;
         internal string Evidence;
+        internal VanillaVisualInputProof InputProof;
         internal int Rows { get { return Cards.Length / Columns; } }
 
         internal bool SameLayout(VanillaCharacterSelectionObservation other)
         {
             return other != null && Cards != null && other.Cards != null && Columns == other.Columns
+                && ((InputProof == null && other.InputProof == null)
+                    || (InputProof != null && other.InputProof != null && InputProof.Window == other.InputProof.Window
+                        && InputProof.ProcessId == other.InputProof.ProcessId && InputProof.ClientSize == other.InputProof.ClientSize
+                        && InputProof.ClientOrigin == other.InputProof.ClientOrigin))
                 && Cards.Length == other.Cards.Length && Cards.Zip(other.Cards, (a, b) =>
                     Math.Abs(a.Left - b.Left) <= 3 && Math.Abs(a.Top - b.Top) <= 3
                     && Math.Abs(a.Width - b.Width) <= 3 && Math.Abs(a.Height - b.Height) <= 3).All(v => v);
@@ -40,6 +45,7 @@ namespace _4RTools.Model.Vanilla
             long frame = -1;
             VanillaCharacterSelectionObservation current = Stable(observe, pause, cancelled, ref frame);
             var origin = current;
+            bool moved = false;
             Action<Keys, int> move = (key, expected) =>
             {
                 CheckCancelled(cancelled);
@@ -49,6 +55,7 @@ namespace _4RTools.Model.Vanilla
                 if (!origin.SameLayout(next) || next.Selected != expected)
                     throw new InvalidOperationException("Character selection did not verify " + key
                         + " at slot " + (expected + 1) + "; no confirmation was sent.");
+                moved |= next.Selected != current.Selected;
                 current = next;
             };
             while (current.Selected / current.Columns > 0)
@@ -60,6 +67,14 @@ namespace _4RTools.Model.Vanilla
             int target = oneBasedSlot - 1;
             for (int column = 0; column < target % current.Columns; column++) move(Keys.Right, current.Selected + 1);
             for (int row = 0; row < target / current.Columns; row++) move(Keys.Down, current.Selected + current.Columns);
+            // An already-selected first slot must still prove that this frame follows keyboard
+            // selection. Two unchanged edge keys cannot distinguish an unfocused/static card.
+            if (!moved)
+            {
+                bool horizontal = current.Columns > 1;
+                move(horizontal ? Keys.Right : Keys.Down, current.Selected + (horizontal ? 1 : current.Columns));
+                move(horizontal ? Keys.Left : Keys.Up, target);
+            }
             var confirmed = Stable(observe, pause, cancelled, ref frame, target);
             if (!origin.SameLayout(confirmed) || confirmed.Selected != target)
                 throw new InvalidOperationException("Configured character slot is no longer selected; no confirmation was sent.");

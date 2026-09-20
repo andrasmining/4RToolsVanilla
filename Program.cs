@@ -326,6 +326,9 @@ namespace _4RTools
                 if (!VanillaTextRecognition.TryRead(bitmap, new System.Drawing.Rectangle(0, 0, bitmap.Width, bitmap.Height),
                     true, out lines, out evidence) || !lines.Any(line => line.Text == "Vanilla MMO" && line.Confidence >= 70))
                     throw new InvalidOperationException("Packaged OCR runtime/model check failed: " + evidence);
+                if (!VanillaTextRecognition.TryReadAccurate(bitmap, new System.Drawing.Rectangle(0, 0, bitmap.Width, bitmap.Height),
+                    true, out lines, out evidence) || !lines.Any(line => line.Text == "Vanilla MMO" && line.Confidence >= 70))
+                    throw new InvalidOperationException("Packaged accurate OCR model check failed: " + evidence);
             }
         }
 

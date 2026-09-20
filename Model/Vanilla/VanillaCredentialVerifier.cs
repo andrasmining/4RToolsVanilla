@@ -11,6 +11,7 @@ namespace _4RTools.Model.Vanilla
 
     internal interface IVanillaCredentialInput
     {
+        long SurfaceId { get; }
         Bitmap Capture();
         bool Detect(Bitmap image, out VanillaLoginLayout layout);
         VanillaFieldFocus Focus(VanillaLoginLayout layout, VanillaCredentialField field);
@@ -92,6 +93,7 @@ namespace _4RTools.Model.Vanilla
             Bitmap previous = null;
             Rectangle previousBounds = Rectangle.Empty;
             Rectangle firstCaret = Rectangle.Empty;
+            long previousSurface = 0;
             int transitions = 0, nativeConfirmations = 0;
             try
             {
@@ -105,6 +107,13 @@ namespace _4RTools.Model.Vanilla
                         if (!input.Detect(current, out layout))
                             throw new InvalidOperationException("Login controls changed while checking field focus; no further credentials typed.");
                         Rectangle bounds = field == VanillaCredentialField.UserName ? layout.UserNameControl : layout.PasswordControl;
+                        bool sameSurface = previous != null && previousSurface == input.SurfaceId
+                            && previousBounds == bounds && previous.Size == current.Size;
+                        if (previous != null && !sameSurface)
+                        {
+                            nativeConfirmations = transitions = 0;
+                            firstCaret = Rectangle.Empty;
+                        }
                         VanillaFieldFocus native = input.Focus(layout, field);
                         if (native == VanillaFieldFocus.Contradicted)
                             throw new InvalidOperationException("A different control owns keyboard focus; credential input blocked.");
@@ -116,7 +125,7 @@ namespace _4RTools.Model.Vanilla
                         {
                             nativeConfirmations = 0;
                             Rectangle caret;
-                            if (previous != null && previousBounds == bounds
+                            if (sameSurface
                                 && VanillaCredentialPattern.TryDetectCaretBlink(previous, current, bounds, out caret))
                             {
                                 if (transitions == 0 || firstCaret == caret)
@@ -131,6 +140,7 @@ namespace _4RTools.Model.Vanilla
                         previous = current;
                         current = null;
                         previousBounds = bounds;
+                        previousSurface = input.SurfaceId;
                     }
                     finally { if (current != null) current.Dispose(); }
                     input.Pause(120);
@@ -143,6 +153,9 @@ namespace _4RTools.Model.Vanilla
         private void VerifyContents(string userName, int? passwordLength)
         {
             int confirmations = 0;
+            Rectangle previousUser = Rectangle.Empty, previousPassword = Rectangle.Empty;
+            Size previousSize = Size.Empty;
+            long previousSurface = 0;
             for (int attempt = 0; attempt < 8; attempt++)
             {
                 input.CheckCancelled();
@@ -157,6 +170,13 @@ namespace _4RTools.Model.Vanilla
                         && (!passwordLength.HasValue || input.VerifyPasswordMask(image, layout, passwordLength.Value));
                     if (valid)
                     {
+                        if (layout.UserNameControl != previousUser || layout.PasswordControl != previousPassword
+                            || image.Size != previousSize || previousSurface != input.SurfaceId)
+                            confirmations = 0;
+                        previousUser = layout.UserNameControl;
+                        previousPassword = layout.PasswordControl;
+                        previousSize = image.Size;
+                        previousSurface = input.SurfaceId;
                         if (++confirmations >= 2) return;
                     }
                     else confirmations = 0;
@@ -173,8 +193,15 @@ namespace _4RTools.Model.Vanilla
     {
         private readonly VanillaForegroundInput input;
         private Rectangle focusField;
+        private VanillaVisualInputProof proof;
         internal VanillaCredentialInput(VanillaForegroundInput input) { this.input = input; }
-        public Bitmap Capture() { return input.CaptureClientBitmap(); }
+        public long SurfaceId { get { return proof == null ? 0 : proof.Window.ToInt64(); } }
+        public Bitmap Capture()
+        {
+            Bitmap image = input.CaptureClientBitmap();
+            proof = input.LastCaptureProof;
+            return image;
+        }
         public bool Detect(Bitmap image, out VanillaLoginLayout layout)
         {
             string evidence;
@@ -183,7 +210,7 @@ namespace _4RTools.Model.Vanilla
         public VanillaFieldFocus Focus(VanillaLoginLayout layout, VanillaCredentialField field)
         {
             focusField = field == VanillaCredentialField.UserName ? layout.UserNameControl : layout.PasswordControl;
-            return VanillaCredentialFocus.Observe(input.Window, focusField);
+            return proof == null ? VanillaFieldFocus.Contradicted : VanillaCredentialFocus.Observe(proof.Window, focusField);
         }
         public bool VerifyUserName(Bitmap image, VanillaLoginLayout layout, string expected)
         {
@@ -204,8 +231,9 @@ namespace _4RTools.Model.Vanilla
         }
         public void Click(Rectangle field, Size imageSize)
         {
-            input.ClickNormalized((field.Left + field.Width / 2.0) / imageSize.Width,
-                (field.Top + field.Height / 2.0) / imageSize.Height);
+            if (proof == null || proof.ClientSize != imageSize)
+                throw new InvalidOperationException("Credential control capture no longer matches the input surface.");
+            input.ClickFromProof(field, proof);
         }
         public void Replace(string value)
         {
@@ -213,14 +241,15 @@ namespace _4RTools.Model.Vanilla
             // The callback is scoped to this call, so cancellation/failure cannot leave a
             // credential guard attached to an unrelated later action. A custom-drawn caret
             // retains its just-established blink proof; any native contradiction stops typing.
-            input.ReplaceFocusedText(value, () =>
+            VanillaVisualInputProof currentProof = proof;
+            input.ReplaceFocusedTextFromProof(value, currentProof, () =>
             {
                 CheckCancelled();
-                if (VanillaCredentialFocus.Observe(input.Window, intended) == VanillaFieldFocus.Contradicted)
+                if (currentProof == null || VanillaCredentialFocus.Observe(currentProof.Window, intended) == VanillaFieldFocus.Contradicted)
                     throw new InvalidOperationException("Credential keyboard focus changed during entry; typing stopped.");
             });
         }
-        public void Submit() { input.Press(Keys.Enter); }
+        public void Submit() { input.PressFromProof(Keys.Enter, proof); }
         public void Pause(int milliseconds)
         {
             for (int remaining = milliseconds; remaining > 0; remaining -= 40)

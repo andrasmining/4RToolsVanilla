@@ -22,6 +22,7 @@ namespace Vanilla.Diagnostics.Tests
             Test("Proxy names reject suffixes, unknown services and duplicate identities", RejectAmbiguousNames);
             Test("Service title separates named service rows from arbitrary text", RequireServiceTitle);
             Test("Service recognition rejects multiple actual forms", RejectMultipleForms);
+            Test("Sparse OCR blocks combine only on the same observed row", CombineAlignedBlocks);
             Console.WriteLine("Proxy pattern: {0} passed; {1} failed.", passed, failed);
             return failed;
         }
@@ -87,6 +88,7 @@ namespace Vanilla.Diagnostics.Tests
                 VanillaServiceRow row;
                 string evidence;
                 Assert(VanillaProxyPattern.TryDetect(image, out layout, out evidence), "Softened list rejected: " + evidence);
+                Assert(layout.Services.Length == 8, "Every softened service name must be independently read: " + evidence);
                 Assert(layout.TryFind(VanillaProxyRoute.HongKong, out row) && row.IsHighlighted,
                     "Softened Hong Kong must be recognized and positively selected: " + evidence);
             }
@@ -148,6 +150,29 @@ namespace Vanilla.Diagnostics.Tests
                 string evidence;
                 Assert(!VanillaProxyPattern.TryDetect(two, out layout, out evidence), "Two service forms are ambiguous.");
             }
+        }
+
+        private static void CombineAlignedBlocks()
+        {
+            VanillaTextLine[] blocks = {
+                TextBlock("UAE", new Rectangle(190, 10, 40, 20)),
+                TextBlock("Proxy", new Rectangle(20, 12, 50, 20)),
+                TextBlock("Connection", new Rectangle(80, 12, 100, 20)),
+                TextBlock("Proxy", new Rectangle(20, 46, 50, 20)),
+                TextBlock("Connection", new Rectangle(80, 46, 100, 20)),
+                TextBlock("Tokyo", new Rectangle(190, 44, 50, 20)),
+                TextBlock("unrelated", new Rectangle(700, 10, 80, 20))
+            };
+            VanillaTextLine[] rows = VanillaServiceRecognition.CombineAlignedText(blocks);
+            Assert(rows.Length == 3, "Separate rows/remote columns must remain separate.");
+            Assert(rows.Any(row => row.Text == "Proxy Connection UAE"), "Out-of-order blocks lost the observed UAE row.");
+            Assert(rows.Any(row => row.Text == "Proxy Connection Tokyo"), "Adjacent service row was merged or lost.");
+        }
+
+        private static VanillaTextLine TextBlock(string text, Rectangle bounds)
+        {
+            var word = new VanillaTextWord { Text = text, Bounds = bounds, Confidence = 96 };
+            return new VanillaTextLine { Text = text, Bounds = bounds, Confidence = 96, Words = new[] { word } };
         }
 
         // Fixtures render actual text with several independent Windows fonts and include

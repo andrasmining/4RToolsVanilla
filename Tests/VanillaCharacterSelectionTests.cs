@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
@@ -22,6 +23,8 @@ namespace Vanilla.Diagnostics.Tests
             Test("Stalled navigation never authorizes Enter", StalledNavigation);
             Test("Changed layout and wrong final selection never authorize Enter", ChangedLayout);
             Test("Cancellation and lost input focus stop character selection", Cancellation);
+            Test("Captured input proof rejects window, focus, geometry and age changes", VisualInputProofBinding);
+            Test("Character selection cannot combine evidence from replacement windows", ChangedSurface);
             Test("Character structural detector follows scaled and softened synthetic cards", SyntheticCards);
             Test("Character production OCR recognizes rendered labels and requires unique selection", ProductionOcrSurface);
             Test("Character detector rejects missing identity and ambiguous frames", RejectUnknownSurface);
@@ -31,7 +34,7 @@ namespace Vanilla.Diagnostics.Tests
 
         private sealed class Simulation
         {
-            internal int Position, Columns, Enters, KeysSent;
+            internal int Position, Columns, Enters, KeysSent, Moves;
             internal long Frame;
             internal bool Wrap, Stalled, Cancelled, Stale, ChangeLayout, LoseSelection;
             internal Simulation(int columns, int position) { Columns = columns; Position = position; }
@@ -56,7 +59,9 @@ namespace Vanilla.Diagnostics.Tests
                 else if (key == Keys.Right) column = Math.Min(Columns - 1, column + 1);
                 else if (key == Keys.Down) row = Math.Min(rows - 1, row + 1);
                 else throw new Exception("Unexpected key " + key);
-                Position = row * Columns + column;
+                int next = row * Columns + column;
+                if (Position != next) Moves++;
+                Position = next;
             }
             internal void Run(int target)
             { VanillaCharacterSelector.Select(target, Observe, Press, _ => { }, () => Cancelled); }
@@ -72,6 +77,8 @@ namespace Vanilla.Diagnostics.Tests
                 sim.Run(target);
                 Assert(sim.Position == target - 1 && sim.Enters == 1, "Wrong target/confirmation on observed " + columns + "-column layout.");
                 Assert(sim.Frame >= sim.KeysSent * 2, "Navigation was not freshly verified after every key.");
+                Assert(sim.Moves > 0, "Selection was confirmed without any observed keyboard-driven movement.");
+                if (start == 0 && target == 1) Assert(sim.Moves == 2, "Slot one must verify an outward/return probe.");
             }
         }
 
@@ -108,6 +115,9 @@ namespace Vanilla.Diagnostics.Tests
                 sim = new Simulation(columns, 0) { Stalled = true };
                 Reject(() => sim.Run(15));
                 Assert(sim.Enters == 0, "Stalled outbound navigation authorized Enter.");
+                sim = new Simulation(columns, 0) { Stalled = true };
+                Reject(() => sim.Run(1));
+                Assert(sim.Enters == 0, "A static first-card frame authorized Enter without proving selection response.");
             }
         }
 
@@ -121,7 +131,7 @@ namespace Vanilla.Diagnostics.Tests
             Reject(() => VanillaCharacterSelector.Select(1, () =>
             {
                 observations++;
-                if (observations >= 7) sim.Position = 1; // Target moves before final confirmation.
+                if (observations >= 11) sim.Position = 1; // Target moves after the round-trip probe, before final confirmation.
                 return sim.Observe();
             }, sim.Press, _ => { }, () => false));
             Assert(sim.Enters == 0, "Target changed before final confirmation.");
@@ -157,6 +167,53 @@ namespace Vanilla.Diagnostics.Tests
                     "Synthetic " + columns + " columns x " + scale + " rejected: " + evidence);
                 Assert(result.Columns == columns && result.Selected == 7, "Detected the wrong layout/selection.");
             }
+        }
+
+        private static void ChangedSurface()
+        {
+            var sim = new Simulation(5, 14);
+            Reject(() => VanillaCharacterSelector.Select(1, () =>
+            {
+                var observation = sim.Observe();
+                observation.InputProof = new VanillaVisualInputProof(42, new IntPtr(sim.KeysSent == 0 ? 100 : 200),
+                    new Size(800, 600), Point.Empty, Stopwatch.GetTimestamp());
+                return observation;
+            }, sim.Press, _ => { }, () => false));
+            Assert(sim.KeysSent == 1 && sim.Enters == 0, "Replacement HWND was treated as the same selected character surface.");
+        }
+
+        private static void VisualInputProofBinding()
+        {
+            IntPtr window = new IntPtr(100);
+            var size = new Size(800, 600);
+            var origin = new Point(20, 30);
+            long captured = Stopwatch.Frequency * 10;
+            var proof = new VanillaVisualInputProof(42, window, size, origin, captured);
+            proof.RequireMatches(42, window, window, size, origin, captured);
+            Assert(proof.ControlCenter(new Rectangle(100, 200, 80, 20)) == new Point(140, 210), "Click escaped detected control.");
+            Reject(() => proof.ControlCenter(new Rectangle(790, 200, 80, 20)));
+            for (int failure = 0; failure < 7; failure++)
+            {
+                int condition = failure, sent = 0;
+                Reject(() => VanillaForegroundInput.DispatchGuardedKey(Keys.Enter, () => proof.RequireMatches(
+                    condition == 0 ? 43 : 42,
+                    condition == 1 ? new IntPtr(101) : window,
+                    condition == 2 ? IntPtr.Zero : window,
+                    condition == 3 ? new Size(900, 600) : size,
+                    condition == 4 ? new Point(21, 30) : origin,
+                    condition == 5 ? captured + Stopwatch.Frequency * 6 : condition == 6 ? captured - 1 : captured),
+                    (key, up) => sent++, _ => { }));
+                Assert(sent == 0, "Invalid capture proof emitted keyboard input.");
+            }
+            var events = new List<bool>();
+            bool cancelled = false;
+            try
+            {
+                VanillaForegroundInput.DispatchGuardedKey(Keys.Enter, () => { }, (key, up) => events.Add(up),
+                    _ => { throw new OperationCanceledException(); });
+            }
+            catch (OperationCanceledException) { cancelled = true; }
+            Assert(cancelled && events.SequenceEqual(new[] { false, true }), "Cancellation left a proof-bound key held down.");
         }
 
         private static void RejectUnknownSurface()

@@ -20,6 +20,7 @@ namespace _4RTools.Model.Vanilla
         internal Rectangle Bounds;
         internal VanillaTextLine[] Lines;
         internal VanillaRecognitionPixels Pixels;
+        internal List<Rectangle> CandidateTextAreas;
         internal string Evidence;
     }
 
@@ -77,6 +78,7 @@ namespace _4RTools.Model.Vanilla
             var result = new Detection { Evidence = "no positively recognized Select Service form" };
             var pixels = new VanillaRecognitionPixels(bitmap);
             List<Rectangle> headers = FindHeaders(pixels);
+            var candidateTextAreas = new List<Rectangle>();
             if (trace != null) trace("Header candidates=" + headers.Count + ": " + string.Join("; ", headers));
             if (headers.Count > 16)
             { result.Evidence = "too many possible service forms; no input authorized"; return result; }
@@ -84,6 +86,7 @@ namespace _4RTools.Model.Vanilla
             {
                 Rectangle titleArea;
                 if (!TryTitleTextArea(pixels, header, out titleArea, trace)) continue;
+                candidateTextAreas.Add(titleArea);
                 VanillaTextLine[] title;
                 string ocrEvidence;
                 if (!VanillaTextRecognition.TryRead(bitmap, titleArea, true, out title, out ocrEvidence))
@@ -99,6 +102,7 @@ namespace _4RTools.Model.Vanilla
                 VanillaTextLine[] lines;
                 if (!VanillaTextRecognition.TryRead(bitmap, body, false, out lines, out ocrEvidence))
                 { result.Evidence = ocrEvidence; return result; }
+                lines = CombineAlignedText(lines);
                 if (trace != null) trace("Body crop=" + body + "; " + DescribeLines(lines));
                 if (result.Dialog != null)
                 {
@@ -107,10 +111,46 @@ namespace _4RTools.Model.Vanilla
                     return result;
                 }
                 result.Dialog = new VanillaServiceDialog { Bounds = Rectangle.Union(header, body), Lines = lines,
-                    Pixels = pixels, Evidence = "Select Service title recognized; observed text lines=" + lines.Length };
+                    Pixels = pixels, CandidateTextAreas = candidateTextAreas,
+                    Evidence = "Select Service title recognized; observed text lines=" + lines.Length };
                 result.Evidence = result.Dialog.Evidence;
             }
             return result;
+        }
+
+        internal static VanillaTextLine[] CombineAlignedText(VanillaTextLine[] lines)
+        {
+            // Sparse OCR may split one physical row into several blocks at high DPI.
+            // Reassemble only observed words that share a baseline and a bounded gap.
+            // No expected row count, service order or configured label participates.
+            var groups = new List<List<VanillaTextWord>>();
+            VanillaTextWord[] observed = lines.SelectMany(line => line.Words ?? new VanillaTextWord[0]).Take(513).ToArray();
+            if (observed.Length > 512) return new VanillaTextLine[0];
+            foreach (VanillaTextWord word in observed.OrderBy(word => word.Bounds.Top + word.Bounds.Height / 2.0).ThenBy(word => word.Bounds.Left))
+            {
+                List<VanillaTextWord>[] adjacent = groups.Where(candidate => candidate.Any(other =>
+                {
+                    int overlap = Math.Min(word.Bounds.Bottom, other.Bounds.Bottom) - Math.Max(word.Bounds.Top, other.Bounds.Top);
+                    int gap = Math.Max(word.Bounds.Left - other.Bounds.Right, other.Bounds.Left - word.Bounds.Right);
+                    return overlap >= Math.Min(word.Bounds.Height, other.Bounds.Height) * .5
+                        && gap >= 0 && gap <= Math.Max(24, Math.Max(word.Bounds.Height, other.Bounds.Height) * 3);
+                })).ToArray();
+                if (adjacent.Length == 0) groups.Add(new List<VanillaTextWord> { word });
+                else
+                {
+                    adjacent[0].Add(word);
+                    foreach (List<VanillaTextWord> other in adjacent.Skip(1))
+                    { adjacent[0].AddRange(other); groups.Remove(other); }
+                }
+            }
+            return groups.Select(group =>
+            {
+                VanillaTextWord[] words = group.OrderBy(word => word.Bounds.Left).ToArray();
+                Rectangle bounds = words[0].Bounds;
+                foreach (VanillaTextWord word in words.Skip(1)) bounds = Rectangle.Union(bounds, word.Bounds);
+                return new VanillaTextLine { Text = string.Join(" ", words.Select(word => word.Text)), Bounds = bounds,
+                    Confidence = words.Average(word => word.Confidence), Words = words };
+            }).OrderBy(line => line.Bounds.Top).ToArray();
         }
 
         private static string DescribeLines(VanillaTextLine[] lines)
@@ -274,16 +314,21 @@ namespace _4RTools.Model.Vanilla
             if (!TryDetect(bitmap, out dialog, out evidence)) return false;
             var matches = new List<VanillaServiceRow>();
             foreach (VanillaTextLine line in dialog.Lines)
+                AddServerMatch(dialog, line, matches);
+            if (matches.Count == 0)
             {
-                // Status is optional and semantically distinct from the server identity.
-                // Never accept a substring such as Other Vanilla MMO or Vanilla MMO Test.
-                if (line.Confidence < 65 || !Regex.IsMatch(Normalize(line.Text),
-                    @"^(?:(?:Crowded|Normal|Busy)\s+)?Vanilla\s+MMO$", RegexOptions.IgnoreCase)) continue;
-                VanillaTextWord[] identity = line.Words.Skip(Math.Max(0, line.Words.Length - 2)).ToArray();
-                if (identity.Length != 2 || identity.Any(word => word.Confidence < 55)) continue;
-                Rectangle bounds = Rectangle.Union(identity[0].Bounds, identity[1].Bounds);
-                matches.Add(new VanillaServiceRow { Name = "Vanilla MMO", Bounds = bounds,
-                    IsHighlighted = IsHighlighted(dialog, bounds) });
+                // Use the accurate model only on observed text or selected-strip ink.
+                // This includes tiny text sparse OCR omitted, without inventing a row.
+                Rectangle[] areas = dialog.CandidateTextAreas.Concat(dialog.Lines.Select(line => Rectangle.Intersect(dialog.Bounds,
+                        Rectangle.Inflate(line.Bounds, 2, 2))))
+                    .Where(area => area.Top > dialog.Bounds.Top && dialog.Bounds.Contains(area)).Distinct().Take(24).ToArray();
+                foreach (Rectangle area in areas)
+                {
+                    VanillaTextLine[] accurate;
+                    string accurateEvidence;
+                    if (!VanillaTextRecognition.TryReadAccurate(bitmap, area, true, out accurate, out accurateEvidence)) continue;
+                    foreach (VanillaTextLine line in CombineAlignedText(accurate)) AddServerMatch(dialog, line, matches);
+                }
             }
             if (matches.Count != 1)
             { evidence = "Select Service form has " + matches.Count + " exact Vanilla MMO rows; no selection authorized"; return false; }
@@ -292,6 +337,20 @@ namespace _4RTools.Model.Vanilla
             layout = new VanillaServerLayout { Dialog = dialog.Bounds, ServerName = row.Name,
                 ServerRow = row.Bounds, IsHighlighted = row.IsHighlighted, Evidence = evidence };
             return true;
+        }
+
+        private static void AddServerMatch(VanillaServiceDialog dialog, VanillaTextLine line, List<VanillaServiceRow> matches)
+        {
+            // Status is optional and semantically distinct from the server identity.
+            // Never accept a substring such as Other Vanilla MMO or Vanilla MMO Test.
+            if (line.Confidence < 65 || !Regex.IsMatch(Normalize(line.Text),
+                @"^(?:(?:Crowded|Normal|Busy)\s+)?Vanilla\s+MMO$", RegexOptions.IgnoreCase)) return;
+            VanillaTextWord[] identity = line.Words.Skip(Math.Max(0, line.Words.Length - 2)).ToArray();
+            if (identity.Length != 2 || identity.Any(word => word.Confidence < 55)) return;
+            Rectangle bounds = Rectangle.Union(identity[0].Bounds, identity[1].Bounds);
+            if (matches.Any(match => match.Bounds.IntersectsWith(bounds))) return;
+            matches.Add(new VanillaServiceRow { Name = "Vanilla MMO", Bounds = bounds,
+                IsHighlighted = IsHighlighted(dialog, bounds) });
         }
     }
 }

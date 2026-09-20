@@ -2,7 +2,7 @@ THIRD-PARTY SOFTWARE NOTICES
 4RTools Vanilla
 
 Tesseract .NET wrapper 5.2.0, Copyright 2012-2020 Charles Weld (Apache 2.0).
-Tesseract OCR 5.2.0 and tessdata_fast English data (Apache 2.0).
+Tesseract OCR 5.2.0 and tessdata_fast/tessdata_best English data (Apache 2.0).
 https://github.com/charlesw/tesseract
 https://github.com/tesseract-ocr/tesseract
 https://github.com/tesseract-ocr/tessdata_fast

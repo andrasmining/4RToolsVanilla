@@ -48,21 +48,18 @@ namespace _4RTools.Model.Vanilla
             var services = new List<VanillaServiceRow>();
             foreach (VanillaTextLine line in dialog.Lines)
             {
-                Match match = Regex.Match(VanillaServiceRecognition.Normalize(line.Text),
-                    @"^[\[\(\|]?\s*Proxy\s+Connection(?:\s*[\]\)\|]\s*|\s+)(Global|Manila|Singapore|Tokyo|Hong Kong|Los Angeles|Australia|UAE)$",
-                    RegexOptions.IgnoreCase);
-                if (!match.Success || line.Confidence < 60) continue;
-                string observed = match.Groups[1].Value;
-                string name = Enum.GetValues(typeof(VanillaProxyRoute)).Cast<VanillaProxyRoute>()
-                    .Select(NameForRoute).FirstOrDefault(candidate => string.Equals(candidate, observed, StringComparison.OrdinalIgnoreCase));
-                if (name == null) continue;
-                int wordCount = name.Split(' ').Length;
-                VanillaTextWord[] words = line.Words.Skip(Math.Max(0, line.Words.Length - wordCount)).ToArray();
-                if (words.Length != wordCount || words.Any(word => word.Confidence < 55)) continue;
-                Rectangle bounds = words[0].Bounds;
-                foreach (VanillaTextWord word in words.Skip(1)) bounds = Rectangle.Union(bounds, word.Bounds);
-                services.Add(new VanillaServiceRow { Name = name, Bounds = bounds,
-                    IsHighlighted = VanillaServiceRecognition.IsHighlighted(dialog, bounds) });
+                VanillaServiceRow service;
+                if (TryParseRow(dialog, line, out service)) { services.Add(service); continue; }
+                if (!Regex.IsMatch(VanillaServiceRecognition.Normalize(line.Text),
+                    @"^[\[\(\|]?\s*Proxy\s+Connection(?:\s|[\]\)\|])", RegexOptions.IgnoreCase)) continue;
+                // The fast model sometimes loses a letter in tiny softened text. Re-read
+                // the observed row with the accurate model; no aliases or spelling repair.
+                VanillaTextLine[] accurate;
+                string accurateEvidence;
+                Rectangle crop = Rectangle.Intersect(dialog.Bounds, Rectangle.Inflate(line.Bounds, 2, 2));
+                if (!VanillaTextRecognition.TryReadAccurate(bitmap, crop, true, out accurate, out accurateEvidence)) continue;
+                foreach (VanillaTextLine candidate in VanillaServiceRecognition.CombineAlignedText(accurate))
+                    if (TryParseRow(dialog, candidate, out service)) services.Add(service);
             }
             if (services.Count < 2)
             { evidence = "Select Service form has fewer than two confident named proxy choices"; return false; }
@@ -73,6 +70,27 @@ namespace _4RTools.Model.Vanilla
             evidence = "recognized named proxy choices: " + string.Join(", ", services.Select(service => service.Name
                 + (service.IsHighlighted ? " [selected]" : "")));
             layout = new VanillaProxyLayout { SearchArea = dialog.Bounds, Services = services.ToArray(), Evidence = evidence };
+            return true;
+        }
+
+        private static bool TryParseRow(VanillaServiceDialog dialog, VanillaTextLine line, out VanillaServiceRow service)
+        {
+            service = null;
+            Match match = Regex.Match(VanillaServiceRecognition.Normalize(line.Text),
+                @"^[\[\(\|]?\s*Proxy\s+Connection(?:\s*[\]\)\|]\s*|\s+)(Global|Manila|Singapore|Tokyo|Hong Kong|Los Angeles|Australia|UAE)$",
+                RegexOptions.IgnoreCase);
+            if (!match.Success || line.Confidence < 60) return false;
+            string observed = match.Groups[1].Value;
+            string name = Enum.GetValues(typeof(VanillaProxyRoute)).Cast<VanillaProxyRoute>()
+                .Select(NameForRoute).FirstOrDefault(candidate => string.Equals(candidate, observed, StringComparison.OrdinalIgnoreCase));
+            if (name == null) return false;
+            int wordCount = name.Split(' ').Length;
+            VanillaTextWord[] words = line.Words.Skip(Math.Max(0, line.Words.Length - wordCount)).ToArray();
+            if (words.Length != wordCount || words.Any(word => word.Confidence < 55)) return false;
+            Rectangle bounds = words[0].Bounds;
+            foreach (VanillaTextWord word in words.Skip(1)) bounds = Rectangle.Union(bounds, word.Bounds);
+            service = new VanillaServiceRow { Name = name, Bounds = bounds,
+                IsHighlighted = VanillaServiceRecognition.IsHighlighted(dialog, bounds) };
             return true;
         }
     }

@@ -261,7 +261,7 @@ try {
     Copy-Item -LiteralPath (Join-Path $repositoryRoot 'packaging/README.txt') -Destination $stagingPath
     Copy-Item -LiteralPath (Join-Path $repositoryRoot 'packaging/THIRD-PARTY-NOTICES.txt') -Destination $stagingPath
     Copy-Item -LiteralPath (Join-Path $repositoryRoot 'packaging/licenses') -Destination $stagingPath -Recurse
-    foreach ($folder in @('x86', 'tessdata')) {
+    foreach ($folder in @('x86', 'tessdata', 'tessdata-best')) {
         Copy-Item -LiteralPath (Join-Path $applicationOutput $folder) -Destination $stagingPath -Recurse
     }
     # Ship the official redistributable CRT app-local; users need no developer tools

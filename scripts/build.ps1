@@ -79,7 +79,7 @@ try {
         $applicationOutput = Join-Path $repositoryRoot "bin/$buildConfiguration"
         $testOutput = Join-Path $repositoryRoot "Tests/bin/$buildConfiguration"
         # Native OCR and language data are runtime assets, not Costura resources.
-        foreach ($folder in @('x86', 'x64', 'tessdata')) {
+        foreach ($folder in @('x86', 'x64', 'tessdata', 'tessdata-best')) {
             Copy-Item -LiteralPath (Join-Path $applicationOutput $folder) -Destination $testOutput -Recurse -Force
         }
         Copy-Item -LiteralPath (Join-Path $applicationOutput 'Tesseract.dll') -Destination $testOutput -Force

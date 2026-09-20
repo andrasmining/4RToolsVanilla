@@ -265,14 +265,9 @@ namespace Vanilla.Diagnostics.Tests
                 VanillaTextRecognition.TryRead(image, service, true, out lines, out evidence);
                 Console.WriteLine("Synthetic login candidate {0}: {1}; {2}", service, evidence,
                     string.Join(" | ", lines.Select(line => line.Text + " @" + line.Confidence.ToString("0.0"))));
-                foreach (VanillaTextPreparation preparation in new[] { VanillaTextPreparation.NearestNeighbor,
-                    VanillaTextPreparation.Contrast, VanillaTextPreparation.BinaryDark,
-                    VanillaTextPreparation.BinaryLight, VanillaTextPreparation.Sharpen })
-                {
-                    VanillaTextRecognition.TryRead(image, service, true, out lines, out evidence, preparation);
-                    Console.WriteLine("Synthetic login {0} {1}: {2}; {3}", service, preparation, evidence,
-                        string.Join(" | ", lines.Select(line => line.Text + " @" + line.Confidence.ToString("0.0"))));
-                }
+                VanillaTextRecognition.TryReadAccurate(image, service, true, out lines, out evidence);
+                Console.WriteLine("Synthetic login {0} accurate model: {1}; {2}", service, evidence,
+                    string.Join(" | ", lines.Select(line => line.Text + " @" + line.Confidence.ToString("0.0"))));
                 if (service.Width > 0 && service.Height > 0 && new Rectangle(Point.Empty, image.Size).Contains(service))
                     using (Bitmap crop = image.Clone(service, System.Drawing.Imaging.PixelFormat.Format24bppRgb))
                         SaveLoginFixture(crop, "login-candidate");

@@ -7,7 +7,7 @@ Copyright (c) 2022 4RTools. See LICENSE and THIRD-PARTY-NOTICES.txt.
 Starting the application
 -----------------------
 Extract the entire release folder and run 4RTools-Vanilla.exe. Keep its .config,
-VanillaBuilds, x86 and tessdata folders and the bundled runtime DLLs beside it.
+VanillaBuilds, x86, tessdata and tessdata-best folders and the bundled runtime DLLs beside it.
 Windows with Microsoft .NET Framework 4.7.2
 or a later 4.x runtime is required. The application targets x86, supports x64
 Windows and requests administrator privileges to match elevated game clients.
@@ -171,4 +171,13 @@ place, keeping its slot, password, proxy, enabled state and ID. Ambiguous matche
 are not guessed. Slots remain unmapped; configured slots are preserved and unknown
 slots stay blank. Discovery never guesses slot 1, passwords or proxies.
 
-Character selection is keyboard-driven from a clamped grid origin; fixed character-slot and GAME START coordinates are not used.
+Service selection recognizes the configured name and verifies its highlight before
+submitting. All eight proxy services are available; saved choices keep their meaning.
+Login requires verified field focus, the exact visible username and password masks.
+Recognition runs locally using the included OCR engine and English model.
+
+Character selection detects fifteen cards and their selected frame, then verifies
+keyboard transitions before confirming the configured slot. TESTS uses the same
+selector. Fixed character-slot and GAME START coordinates are not used. Unknown
+layouts, unreadable text and ambiguous selection stop input; the actual character
+screen has not yet been validated live. See RELEASE-NOTES.md for validation limits.

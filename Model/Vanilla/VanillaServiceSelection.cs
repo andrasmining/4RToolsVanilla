@@ -12,10 +12,15 @@ namespace _4RTools.Model.Vanilla
         internal Rectangle Bounds;
         internal Size ImageSize;
         internal bool Highlighted;
+        internal VanillaVisualInputProof InputProof;
 
         internal bool Matches(VanillaServiceObservation other)
         {
             return other != null && string.Equals(Name, other.Name, StringComparison.Ordinal)
+                && ((InputProof == null && other.InputProof == null)
+                    || (InputProof != null && other.InputProof != null && InputProof.Window == other.InputProof.Window
+                        && InputProof.ProcessId == other.InputProof.ProcessId && InputProof.ClientSize == other.InputProof.ClientSize
+                        && InputProof.ClientOrigin == other.InputProof.ClientOrigin))
                 && ImageSize == other.ImageSize && Math.Abs(Bounds.X - other.Bounds.X) <= 3
                 && Math.Abs(Bounds.Y - other.Bounds.Y) <= 3 && Math.Abs(Bounds.Width - other.Bounds.Width) <= 3
                 && Math.Abs(Bounds.Height - other.Bounds.Height) <= 3;
@@ -82,10 +87,12 @@ namespace _4RTools.Model.Vanilla
             string name = proxyRoute.HasValue ? VanillaProxyPattern.NameForRoute(proxyRoute.Value) : "Vanilla MMO";
             if (string.IsNullOrEmpty(name)) throw new InvalidOperationException("Configured proxy is unknown; no input sent.");
             string lastEvidence = null;
+            VanillaVisualInputProof proof = null;
             VanillaServiceSelection.Select(name, () =>
             {
                 using (Bitmap image = input.CaptureClientBitmap())
                 {
+                    proof = input.LastCaptureProof;
                     string evidence;
                     if (proxyRoute.HasValue)
                     {
@@ -95,18 +102,17 @@ namespace _4RTools.Model.Vanilla
                         TraceServiceRecognition(logPrefix, evidence, ref lastEvidence);
                         if (!detected || !layout.TryFind(proxyRoute.Value, out row)) return null;
                         return new VanillaServiceObservation { Name = row.Name, Bounds = row.Bounds,
-                            ImageSize = image.Size, Highlighted = row.IsHighlighted };
+                            ImageSize = image.Size, Highlighted = row.IsHighlighted, InputProof = proof };
                     }
                     VanillaServerLayout server;
                     bool serverDetected = VanillaAuthPattern.TryDetectServerDialog(image, out server, out evidence);
                     TraceServiceRecognition(logPrefix, evidence, ref lastEvidence);
                     if (!serverDetected) return null;
                     return new VanillaServiceObservation { Name = server.ServerName, Bounds = server.ServerRow,
-                        ImageSize = image.Size, Highlighted = server.IsHighlighted };
+                        ImageSize = image.Size, Highlighted = server.IsHighlighted, InputProof = proof };
                 }
-            }, row => input.ClickNormalized((row.Bounds.Left + row.Bounds.Width / 2.0) / row.ImageSize.Width,
-                (row.Bounds.Top + row.Bounds.Height / 2.0) / row.ImageSize.Height),
-                () => input.Press(Keys.Enter), milliseconds =>
+            }, row => input.ClickFromProof(row.Bounds, row.InputProof),
+                () => input.PressFromProof(Keys.Enter, proof), milliseconds =>
                 {
                     if (input.CancellationRequested != null && input.CancellationRequested())
                         throw new OperationCanceledException("Service selection cancelled.");
