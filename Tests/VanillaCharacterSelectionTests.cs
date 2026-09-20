@@ -2,6 +2,9 @@ using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.Drawing.Imaging;
+using System.Drawing.Text;
+using System.IO;
 using System.Linq;
 using System.Windows.Forms;
 using _4RTools.Model.Vanilla;
@@ -20,6 +23,7 @@ namespace Vanilla.Diagnostics.Tests
             Test("Changed layout and wrong final selection never authorize Enter", ChangedLayout);
             Test("Cancellation and lost input focus stop character selection", Cancellation);
             Test("Character structural detector follows scaled and softened synthetic cards", SyntheticCards);
+            Test("Character production OCR recognizes rendered labels and requires unique selection", ProductionOcrSurface);
             Test("Character detector rejects missing identity and ambiguous frames", RejectUnknownSurface);
             Console.WriteLine("Character selector: {0} passed; {1} failed. Synthetic fixtures; no live character layout was validated.", passed, failed);
             return failed;
@@ -179,6 +183,60 @@ namespace Vanilla.Diagnostics.Tests
                 string evidence;
                 Assert(!VanillaCharacterPattern.TryDetect(image, Labels(5, 1), out result, out evidence), "Fourteen cards accepted as fifteen.");
             }
+        }
+
+        private static void ProductionOcrSurface()
+        {
+            foreach (int columns in new[] { 3, 5 })
+            using (Bitmap image = LabeledSurface(columns, 7, "Character Select"))
+            {
+                SaveFixture(image, "character-ocr-" + columns + "-columns-selected");
+                VanillaCharacterSelectionObservation observation;
+                string evidence;
+                Assert(VanillaCharacterPattern.TryDetect(image, out observation, out evidence),
+                    "Production OCR did not recognize rendered character surface: " + evidence);
+                Assert(observation.Columns == columns && observation.Selected == 7,
+                    "Production OCR changed observed card layout or selected slot.");
+            }
+            foreach (int selected in new[] { -1, -2 })
+            using (Bitmap image = LabeledSurface(5, selected, "Character Select"))
+            {
+                SaveFixture(image, selected == -1 ? "character-ocr-no-selection" : "character-ocr-multiple-selection");
+                VanillaCharacterSelectionObservation observation;
+                string evidence;
+                Assert(!VanillaCharacterPattern.TryDetect(image, out observation, out evidence),
+                    "Production OCR accepted missing/ambiguous selection.");
+            }
+            using (Bitmap image = LabeledSurface(5, 7, "Inventory"))
+            {
+                SaveFixture(image, "character-ocr-wrong-title");
+                VanillaCharacterSelectionObservation observation;
+                string evidence;
+                Assert(!VanillaCharacterPattern.TryDetect(image, out observation, out evidence),
+                    "Production OCR accepted cards on an unrelated named screen.");
+            }
+        }
+
+        private static Bitmap LabeledSurface(int columns, int selected, string title)
+        {
+            Bitmap image = Surface(columns, selected);
+            VanillaTextLine[] labels = Labels(columns, 1);
+            using (Graphics graphics = Graphics.FromImage(image))
+            using (var font = new Font("Tahoma", 16, FontStyle.Regular, GraphicsUnit.Pixel))
+            {
+                graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                graphics.DrawString(title, font, Brushes.Black, labels[0].Bounds, StringFormat.GenericTypographic);
+                graphics.DrawString(labels[1].Text, font, Brushes.Black, labels[1].Bounds, StringFormat.GenericTypographic);
+            }
+            return image;
+        }
+
+        private static void SaveFixture(Bitmap image, string name)
+        {
+            if (!string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase)) return;
+            string directory = Path.Combine(Environment.CurrentDirectory, "dist", "recognition");
+            Directory.CreateDirectory(directory);
+            image.Save(Path.Combine(directory, name + ".png"), ImageFormat.Png);
         }
 
         private static Bitmap Surface(int columns, int selected)

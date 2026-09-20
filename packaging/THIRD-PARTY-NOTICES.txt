@@ -36,7 +36,8 @@ Visual Studio REDIST directory under Microsoft's redistribution terms.
 Copyright Microsoft Corporation. All rights reserved.
 
 The upstream application license is supplied separately in LICENSE.
-Managed dependencies are embedded by Costura. The following license terms
+Managed dependencies are embedded by Costura except Tesseract.dll, which is
+distributed beside the executable for its native loader. The following license terms
 apply to the corresponding third-party components; the fork MIT license does
 not replace their terms. Build-only dependencies are identified below.
 

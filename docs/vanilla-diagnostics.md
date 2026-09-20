@@ -245,3 +245,36 @@ Before a live rule can be enabled, its required observations must be positively 
 | Shared rules | A common state-driven scheduler with deterministic clock/cooldown tests, optional field handling, persistent settings, and an adapter to the existing permitted key mechanism |
 
 The console tests validate local state, addressing, failure behavior, and serialization without Vanilla. Live permission, real field meanings, stock key delivery, and lifecycle stability require separate evidence; a green build does not satisfy those gates.
+# Verified login selections
+
+Proxy choices are Global, Manila, Singapore, Tokyo, Hong Kong, Los Angeles,
+Australia and UAE. Existing numeric settings keep their original meaning.
+Startup, recovery and TESTS recognize the `Select Service` form and the exact
+configured name, click inside the observed name, then require two fresh captures
+showing that name highlighted before submitting. List order is not an input.
+The game-server step recognizes `Vanilla MMO`; `Crowded` is status text.
+
+Credential entry recognizes the login service and separate fields, then requires
+native caret evidence or repeated visual caret blinking in the intended field.
+It verifies the exact visible username before password entry, checks repeated
+known password mask glyphs and the expected count, and rechecks before Enter.
+TESTS -> Submit credentials uses the same guards. Credentials and credential
+frames are not sent to OCR services, written to capture files, or logged. OCR is
+local and the English model/native runtime are bundled with the release.
+
+Character selection requires explicit character-screen labels, fifteen detected
+cards and one selected frame. It measures the grid, uses keyboard navigation,
+checks each transition and edge clamp, and confirms the target before Enter.
+TESTS -> Character uses that same path and waits for gameplay identity. Configured
+slot numbering is row-major; existing fresh username/character checks still gate
+Autobattle. No character-grid or GAME START coordinate clicks remain.
+
+Recognition tests use synthetic text/forms with several fonts, DPI scales,
+resolutions, positions, row orders and softened resampling. These are not live
+Vanilla screenshots. The available user captures do not expose the unobscured
+fifteen-slot screen, so its actual card styling and slot numbering remain
+unverified. Unsupported layouts, unreadable text, ambiguous highlights and unknown
+focus stop selection safely; there is no promise of recognition at arbitrary blur
+or with every future skin. Windows CI also runs the packaged OCR engine against a
+generated label from the extracted portable ZIP. It does not interact with a game
+or install an update on the user's PC/VPS.

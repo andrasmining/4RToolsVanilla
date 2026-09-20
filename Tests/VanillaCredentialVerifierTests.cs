@@ -3,13 +3,14 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
+using System.IO;
 using _4RTools.Model.Vanilla;
 
 namespace Vanilla.Diagnostics.Tests
 {
     internal static class VanillaCredentialVerifierTests
     {
-        private static int passed, failed;
+        private static int passed, failed, fixtureNumber;
         internal static int Run()
         {
             Test("Credential entry requires field focus, exact username and masks before submission", VerifiedFlow);
@@ -24,6 +25,7 @@ namespace Vanilla.Diagnostics.Tests
             Test("Password mask recognizer accepts known repeated glyphs across UI scales", KnownMasks);
             Test("Password mask recognizer tolerates softened mask rendering", SoftenedMasks);
             Test("Password mask recognizer rejects plaintext, wrong count and empty content", RejectUnknownMasks);
+            Test("Visible username OCR requires exact content and case at native and softened scales", VisibleUserName);
             Console.WriteLine("Credential verification: {0} passed; {1} failed.", passed, failed);
             return failed;
         }
@@ -110,31 +112,96 @@ namespace Vanilla.Diagnostics.Tests
             {
                 Rectangle field;
                 using (Bitmap image = MaskImage(mask, fontSize, out field))
-                    Assert(VanillaCredentialPattern.VerifyPasswordMask(image, field, 8), "Known mask rejected at font size " + fontSize);
+                {
+                    string evidence;
+                    Assert(VanillaCredentialPattern.VerifyPasswordMask(image, field, 8, out evidence),
+                        "Known mask rejected at font size " + fontSize + ": " + evidence);
+                }
             }
         }
         private static void SoftenedMasks()
         {
-            Rectangle field;
-            using (Bitmap large = MaskImage("********", 18, out field))
-            using (var small = new Bitmap(large.Width * 3 / 4, large.Height * 3 / 4))
-            using (Graphics graphics = Graphics.FromImage(small))
+            foreach (double scale in new[] { .625, .75, .875 })
+            foreach (string mask in new[] { "********", "\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022" })
             {
-                graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                graphics.DrawImage(large, new Rectangle(Point.Empty, small.Size));
-                Rectangle reducedField = Rectangle.FromLTRB(field.Left * 3 / 4, field.Top * 3 / 4,
-                    field.Right * 3 / 4, field.Bottom * 3 / 4);
-                Assert(VanillaCredentialPattern.VerifyPasswordMask(small, reducedField, 8), "Softened masks were rejected.");
+                Rectangle field, reducedField;
+                using (Bitmap large = MaskImage(mask, 18, out field))
+                using (Bitmap small = Resample(large, field, scale, out reducedField))
+                {
+                    SaveFixture(small, "mask-softened");
+                    string evidence;
+                    Assert(VanillaCredentialPattern.VerifyPasswordMask(small, reducedField, 8, out evidence),
+                        "Softened masks were rejected at " + scale + ": " + evidence);
+                }
             }
         }
         private static void RejectUnknownMasks()
         {
-            foreach (string text in new[] { "", "secret12", "aaaaaaaa", "00000000", "*********", "*******" })
+            foreach (string text in new[] { "", "secret12", "aaaaaaaa", "00000000", "xxxxxxxx", "*********", "*******" })
             {
                 Rectangle field;
-                using (Bitmap image = MaskImage(text, 13, out field))
+                using (Bitmap image = MaskImage(text, 18, out field))
+                {
                     Assert(!VanillaCredentialPattern.VerifyPasswordMask(image, field, 8), "Unknown/unmasked/wrong-length content accepted.");
+                    foreach (double scale in new[] { .625, .75, .875 })
+                    {
+                        Rectangle reducedField;
+                        using (Bitmap reduced = Resample(image, field, scale, out reducedField))
+                            Assert(!VanillaCredentialPattern.VerifyPasswordMask(reduced, reducedField, 8),
+                                "Softened unknown/unmasked/wrong-length content accepted at " + scale);
+                    }
+                }
             }
+        }
+
+        private static void VisibleUserName()
+        {
+            const string expected = "sampleuser42";
+            foreach (int fontSize in new[] { 12, 16, 22 })
+            {
+                Rectangle field = new Rectangle(10, 10, 300, fontSize * 2);
+                using (var image = new Bitmap(340, 90))
+                {
+                    using (Graphics graphics = Graphics.FromImage(image))
+                    using (var font = new Font("Tahoma", fontSize, FontStyle.Regular, GraphicsUnit.Pixel))
+                    {
+                        graphics.Clear(Color.White);
+                        graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                        graphics.DrawString(expected, font, Brushes.Black, new PointF(field.Left + 12, field.Top + 3), StringFormat.GenericTypographic);
+                    }
+                    SaveFixture(image, "username");
+                    Assert(VanillaCredentialInput.VerifyVisibleUserName(image, field, expected), "Exact visible username rejected at size " + fontSize);
+                    Assert(!VanillaCredentialInput.VerifyVisibleUserName(image, field, "sampleuser43"), "A different username was accepted.");
+                    Assert(!VanillaCredentialInput.VerifyVisibleUserName(image, field, "Sampleuser42"), "Username case mismatch was accepted.");
+                    Rectangle reducedField;
+                    using (Bitmap reduced = Resample(image, field, .875, out reducedField))
+                    {
+                        SaveFixture(reduced, "username-softened");
+                        Assert(VanillaCredentialInput.VerifyVisibleUserName(reduced, reducedField, expected), "Softened exact username rejected at size " + fontSize);
+                    }
+                }
+            }
+        }
+
+        private static Bitmap Resample(Bitmap source, Rectangle field, double scale, out Rectangle reducedField)
+        {
+            var result = new Bitmap((int)(source.Width * scale), (int)(source.Height * scale));
+            using (Graphics graphics = Graphics.FromImage(result))
+            {
+                graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                graphics.DrawImage(source, new Rectangle(Point.Empty, result.Size));
+            }
+            reducedField = Rectangle.FromLTRB((int)(field.Left * scale), (int)(field.Top * scale),
+                (int)(field.Right * scale), (int)(field.Bottom * scale));
+            return result;
+        }
+
+        private static void SaveFixture(Bitmap image, string name)
+        {
+            if (!string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase)) return;
+            string directory = Path.Combine(Environment.CurrentDirectory, "dist", "recognition");
+            Directory.CreateDirectory(directory);
+            image.Save(Path.Combine(directory, name + "-" + (++fixtureNumber).ToString("D2") + ".png"), System.Drawing.Imaging.ImageFormat.Png);
         }
         private static Bitmap MaskImage(string mask, int fontSize, out Rectangle field)
         {

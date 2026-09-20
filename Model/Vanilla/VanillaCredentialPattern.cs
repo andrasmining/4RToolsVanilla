@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using System.Linq;
 
@@ -10,7 +11,8 @@ namespace _4RTools.Model.Vanilla
     internal static class VanillaCredentialPattern
     {
         private const int Grid = 12;
-        private static readonly Lazy<List<double[]>> MaskGlyphs = new Lazy<List<double[]>>(BuildMaskGlyphs);
+        private sealed class MaskGlyph { internal string Family; internal double[] Shape; }
+        private static readonly Lazy<List<MaskGlyph>> MaskGlyphs = new Lazy<List<MaskGlyph>>(BuildMaskGlyphs);
 
         internal static bool TryDetectCaretBlink(Bitmap first, Bitmap second, Rectangle field, out Rectangle caret)
         {
@@ -44,6 +46,13 @@ namespace _4RTools.Model.Vanilla
 
         internal static bool VerifyPasswordMask(Bitmap image, Rectangle field, int expectedLength)
         {
+            string evidence;
+            return VerifyPasswordMask(image, field, expectedLength, out evidence);
+        }
+
+        internal static bool VerifyPasswordMask(Bitmap image, Rectangle field, int expectedLength, out string evidence)
+        {
+            evidence = "invalid mask region or expected length";
             if (image == null || expectedLength <= 0 || expectedLength > 128
                 || field.Width < 4 || field.Height < 5 || !new Rectangle(Point.Empty, image.Size).Contains(field)) return false;
             // Edge detection may land on either side of a one-pixel border gradient.
@@ -58,23 +67,39 @@ namespace _4RTools.Model.Vanilla
                     && last.Height >= last.Width * 4)
                     components.RemoveAt(components.Count - 1);
             }
-            if (components.Count != expectedLength) return false;
+            if (components.Count != expectedLength) { evidence = "mask component count mismatch"; return false; }
             Rectangle first = components[0];
-            if (first.Height < 3 || first.Width < 3 || first.Height > field.Height * 0.75) return false;
-            double[] sample = Normalize(ink, first);
-            if (!MaskGlyphs.Value.Any(template => Error(sample, template) <= 0.155)) return false;
+            if (first.Height < 3 || first.Width < 3 || first.Height > field.Height * 0.75)
+            { evidence = "mask glyph dimensions are implausible"; return false; }
+            HashSet<string> families = null;
             for (int index = 0; index < components.Count; index++)
             {
                 Rectangle current = components[index];
                 if (Math.Abs(current.Width - first.Width) > 1 || Math.Abs(current.Height - first.Height) > 1
-                    || Math.Abs(current.Top - first.Top) > 1 || Error(sample, Normalize(ink, current)) > 0.14) return false;
+                    || Math.Abs(current.Top - first.Top) > 1)
+                { evidence = "mask glyph sizes or baselines differ"; return false; }
+                double[] sample = Normalize(ink, current);
+                var matches = new HashSet<string>(MaskGlyphs.Value
+                    .Where(template => Error(sample, template.Shape) <= 0.155).Select(template => template.Family));
+                if (families == null) families = matches;
+                else families.IntersectWith(matches);
+                if (families.Count == 0)
+                {
+                    evidence = "glyph did not match one consistent known mask family; minimum error="
+                        + MaskGlyphs.Value.Min(template => Error(sample, template.Shape)).ToString("0.000");
+                    return false;
+                }
                 if (index > 1)
                 {
-                    int gap = current.Left - components[index - 1].Right;
-                    int firstGap = components[1].Left - first.Right;
-                    if (Math.Abs(gap - firstGap) > 1) return false;
+                    // Fractional resampling can change a glyph's ink width by one pixel.
+                    // Verify the symbol advance, not a background gap dependent on that width.
+                    int advance = current.Left - components[index - 1].Left;
+                    int firstAdvance = components[1].Left - first.Left;
+                    if (Math.Abs(advance - firstAdvance) > 1)
+                    { evidence = "mask symbol advances are inconsistent"; return false; }
                 }
             }
+            evidence = "known uniform mask family and expected symbol count confirmed";
             return true;
         }
 
@@ -150,9 +175,9 @@ namespace _4RTools.Model.Vanilla
             return sum / first.Length;
         }
 
-        private static List<double[]> BuildMaskGlyphs()
+        private static List<MaskGlyph> BuildMaskGlyphs()
         {
-            var result = new List<double[]>();
+            var result = new List<MaskGlyph>();
             foreach (string family in new[] { "Arial", "Tahoma", "Verdana", "Segoe UI" })
             foreach (int size in new[] { 9, 11, 13, 15, 18, 24 })
             foreach (string mask in new[] { "*", "\u2022", "\u25cf" })
@@ -165,13 +190,34 @@ namespace _4RTools.Model.Vanilla
                     graphics.Clear(Color.White);
                     graphics.TextRenderingHint = hint;
                     graphics.DrawString(mask, font, Brushes.Black, new PointF(8, 8), StringFormat.GenericTypographic);
-                    bool[,] pixels = ReadInk(glyph, new Rectangle(0, 0, glyph.Width, glyph.Height));
-                    List<Rectangle> parts = ColumnComponents(pixels);
-                    if (parts.Count == 1 && parts[0].Width >= 3 && parts[0].Height >= 3)
-                        result.Add(Normalize(pixels, parts[0]));
+                    AddMaskGlyph(result, glyph, mask);
+                    // Rendering at a low game resolution and stretching the client causes
+                    // different subpixel phases even for identical repeated mask symbols.
+                    // Model those known raster variants instead of relaxing the shape test.
+                    foreach (float scale in new[] { 0.625f, 0.75f, 0.875f })
+                    foreach (float offsetX in new[] { 0f, 0.5f })
+                    foreach (float offsetY in new[] { 0f, 0.5f })
+                    {
+                        using (var scaled = new Bitmap(64, 64))
+                        using (Graphics resize = Graphics.FromImage(scaled))
+                        {
+                            resize.Clear(Color.White);
+                            resize.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                            resize.DrawImage(glyph, new RectangleF(offsetX, offsetY, glyph.Width * scale, glyph.Height * scale));
+                            AddMaskGlyph(result, scaled, mask);
+                        }
+                    }
                 }
             }
             return result;
+        }
+
+        private static void AddMaskGlyph(List<MaskGlyph> result, Bitmap glyph, string mask)
+        {
+            bool[,] pixels = ReadInk(glyph, new Rectangle(0, 0, glyph.Width, glyph.Height));
+            List<Rectangle> parts = ColumnComponents(pixels);
+            if (parts.Count == 1 && parts[0].Width >= 3 && parts[0].Height >= 3)
+                result.Add(new MaskGlyph { Family = mask == "*" ? "asterisk" : "bullet", Shape = Normalize(pixels, parts[0]) });
         }
     }
 }

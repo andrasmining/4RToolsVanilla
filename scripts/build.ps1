@@ -82,6 +82,7 @@ try {
         foreach ($folder in @('x86', 'x64', 'tessdata')) {
             Copy-Item -LiteralPath (Join-Path $applicationOutput $folder) -Destination $testOutput -Recurse -Force
         }
+        Copy-Item -LiteralPath (Join-Path $applicationOutput 'Tesseract.dll') -Destination $testOutput -Force
         Copy-Item -LiteralPath (Join-Path $repositoryRoot 'LICENSE') -Destination $applicationOutput -Force
         $testExecutable = Join-Path $testOutput 'Vanilla.Diagnostics.Tests.exe'
         if (-not (Test-Path -LiteralPath $testExecutable -PathType Leaf)) {

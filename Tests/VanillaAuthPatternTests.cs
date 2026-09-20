@@ -42,10 +42,7 @@ namespace Vanilla.Diagnostics.Tests
                     Assert(layout.UserName.Contains(expectedUser), "Username safe area missed the second bordered field at " + size + ": " + layout.UserName + "; " + evidence);
                     Assert(layout.Password.Contains(expectedPassword), "Password safe area missed the third bordered field at " + size + ": " + layout.Password + "; " + evidence);
                     Assert(layout.UserName.Bottom <= layout.Password.Top, "Username and password safe areas must not overlap.");
-                    Point chosenUser = VanillaAuthPattern.PickInside(layout.UserName, 42);
-                    Point chosenPassword = VanillaAuthPattern.PickInside(layout.Password, 43);
-                    Assert(layout.UserName.Contains(chosenUser), "Random username click escaped safe area.");
-                    Assert(layout.Password.Contains(chosenPassword), "Random password click escaped safe area.");
+
                 }
             }
         }

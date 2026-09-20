@@ -8,11 +8,11 @@ version strings in its native Leptonica DLL; the DLL was not executed.
 Tesseract-Apache-2.0.txt -- Tesseract OCR 5.2.0; also applies to the
 tessdata_fast English language model:
 https://github.com/tesseract-ocr/tesseract/blob/5.2.0/LICENSE
-https://github.com/tesseract-ocr/tessdata_fast/blob/main/LICENSE
+https://github.com/tesseract-ocr/tessdata_fast/blob/87416418657359cb625c412a48b6e1d6d41c29bd/LICENSE
 
 Tesseract-Apache-2.0.txt also contains the identical license supplied with
 the Tesseract .NET wrapper (the duplicate license is included once):
-https://github.com/charlesw/tesseract/blob/5.2.0/LICENSE
+https://github.com/charlesw/tesseract/blob/5.2.0/LICENSE.txt
 
 Leptonica-BSD.txt -- Leptonica 1.82.0:
 https://github.com/DanBloomberg/leptonica/blob/1.82.0/leptonica-license.txt

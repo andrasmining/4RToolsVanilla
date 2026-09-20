@@ -45,6 +45,10 @@ namespace _4RTools.Model.Vanilla
                 || !new Rectangle(Point.Empty, bitmap.Size).Contains(area)) return false;
             try
             {
+                // The wrapper's default loader inspects Assembly.Location before its
+                // application-directory fallback. An embedded assembly can have an empty
+                // location; explicitly bind native dependencies to this portable package.
+                lock (Gate) TesseractEnviornment.CustomSearchPath = AppDomain.CurrentDomain.BaseDirectory;
                 // Small native UI text needs enlargement. Bound both dimensions and total
                 // pixels; a full-screen character scan remains bounded on a 4K desktop.
                 double scale = singleLine ? Math.Min(4, 60.0 / area.Height) : 3.0;

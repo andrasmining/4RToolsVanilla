@@ -187,9 +187,13 @@ namespace _4RTools.Model.Vanilla
         }
         public bool VerifyUserName(Bitmap image, VanillaLoginLayout layout, string expected)
         {
+            return VerifyVisibleUserName(image, layout.UserNameControl, expected);
+        }
+        internal static bool VerifyVisibleUserName(Bitmap image, Rectangle field, string expected)
+        {
             VanillaTextLine[] lines;
             string evidence;
-            Rectangle text = Rectangle.Inflate(layout.UserNameControl, -1, -1);
+            Rectangle text = Rectangle.Inflate(field, -1, -1);
             return VanillaTextRecognition.TryRead(image, text, true, out lines, out evidence)
                 && lines.Length == 1 && lines[0].Confidence >= 80
                 && string.Equals(lines[0].Text.Trim(), expected, StringComparison.Ordinal);

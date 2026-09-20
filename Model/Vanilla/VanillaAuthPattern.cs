@@ -192,21 +192,6 @@ namespace _4RTools.Model.Vanilla
         {
             return VanillaServiceRecognition.TryServer(bitmap, out layout, out evidence);
         }
-        internal static Point PickInside(Rectangle rectangle, int seed)
-        {
-            if (rectangle.Width <= 0 || rectangle.Height <= 0) throw new ArgumentException("Safe click rectangle is empty.");
-            int marginX = Math.Max(1, rectangle.Width / 5);
-            int marginY = Math.Max(1, rectangle.Height / 5);
-            int minX = rectangle.Left + Math.Min(marginX, Math.Max(0, rectangle.Width - 1));
-            int maxX = rectangle.Right - Math.Min(marginX, Math.Max(0, rectangle.Width - 1));
-            int minY = rectangle.Top + Math.Min(marginY, Math.Max(0, rectangle.Height - 1));
-            int maxY = rectangle.Bottom - Math.Min(marginY, Math.Max(0, rectangle.Height - 1));
-            if (maxX <= minX) { minX = rectangle.Left; maxX = rectangle.Right; }
-            if (maxY <= minY) { minY = rectangle.Top; maxY = rectangle.Bottom; }
-            var random = new Random(seed);
-            return new Point(random.Next(minX, Math.Max(minX + 1, maxX)), random.Next(minY, Math.Max(minY + 1, maxY)));
-        }
-
         private static Rectangle SafeInterior(ControlBox box)
         {
             int insetX = Math.Max(2, box.Width / 9);

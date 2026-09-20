@@ -254,7 +254,7 @@ $stagingPath = Join-Path $stagingRoot $releaseName
 New-Item -ItemType Directory -Path $stagingPath | Out-Null
 
 try {
-    foreach ($name in @($applicationName, "$applicationName.config")) {
+    foreach ($name in @($applicationName, "$applicationName.config", 'Tesseract.dll')) {
         Copy-Item -LiteralPath (Join-Path $applicationOutput $name) -Destination $stagingPath
     }
     Copy-Item -LiteralPath (Join-Path $repositoryRoot 'LICENSE') -Destination $stagingPath
