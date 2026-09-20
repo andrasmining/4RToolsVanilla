@@ -351,9 +351,10 @@ internal static class UiLayoutHarness
                 && grid.Columns["SmartTeleportHotkey"].HeaderText == "TP hotkey",
                 name + ": Smart Teleport seconds/hotkey columns are missing.");
             Check(grid.Columns["Label"].HeaderText == "Description" && grid.Columns["CharacterName"].HeaderText == "Character name", name + ": character headers missing.");
-            Check(grid.Rows.Cast<DataGridViewRow>().All(r => Convert.ToString(r.Cells["CartMaintenanceEnabled"].Value) == "Yes"
-                && Convert.ToString(r.Cells["WeightEmailEnabled"].Value) == "Yes"),
-                name + ": default per-character Cart/Mail policies were not rendered.");
+            Check(grid.Rows.Cast<DataGridViewRow>().All(r =>
+                    !string.IsNullOrWhiteSpace(Convert.ToString(r.Cells["CartMaintenanceEnabled"].Value))
+                    && !string.IsNullOrWhiteSpace(Convert.ToString(r.Cells["WeightEmailEnabled"].Value))),
+                name + ": per-character Cart/Mail policies were not rendered.");
             Check(Convert.ToString(grid.Rows[0].Cells["CartMaintenanceEnabled"].Value) == "Yes"
                 && Convert.ToString(grid.Rows[0].Cells["WeightEmailEnabled"].Value) == "No",
                 name + ": first character split Cart/Mail policy did not render.");
