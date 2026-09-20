@@ -26,7 +26,9 @@ namespace Vanilla.Diagnostics.Tests
             failed += Test("Cart milestone mail uses saved SMTP independently of weight-warning switch", MilestoneMailPolicy);
             failed += Test("Weight cart settings validate independent UI automation", WeightCartSettings);
             failed += Test("Legacy Weight settings inherit dedicated Alt+3 Autobattle STOP", WeightCartStopHotkeyMigration);
-            failed += Test("Weight policy is independently switchable per character", WeightPolicyPerCharacter);
+            failed += Test("Cart and e-mail policies are independently switchable per character", WeightPolicyPerCharacter);
+            failed += Test("Legacy combined Weight policy still feeds missing split switches", LegacyWeightPolicyFallback);
+            failed += Test("Mail interpretation changes when Cart maintenance is active", WeightMailMode);
             failed += Test("Inventory vision finds toggled slot panel and occupied slot", InventoryVision);
             failed += Test("Cart first-slot classifier distinguishes empty from occupied and rotates safe destinations", CartFirstSlotClassifier);
             failed += Test("Inventory category rail is detected independent of location and scale", InventoryCategoryRail);
@@ -241,20 +243,58 @@ namespace Vanilla.Diagnostics.Tests
 
         private static void WeightPolicyPerCharacter()
         {
-            var first = new VanillaReconnectAccount { Label = "A", UserName = "user", CharacterName = "char", WeightEnabled = true };
+            var first = new VanillaReconnectAccount
+            {
+                Label = "A", UserName = "user", CharacterName = "char",
+                WeightEnabled = true, CartMaintenanceEnabled = true, WeightEmailEnabled = false
+            };
             var second = first.Clone();
             second.Id = Guid.NewGuid().ToString("N");
             second.CharacterName = "char2";
-            second.WeightEnabled = false;
-            if (!first.WeightEnabled || second.WeightEnabled)
-                throw new Exception("Weight policy must be independent for each character row.");
+            second.CartMaintenanceEnabled = false;
+            second.WeightEmailEnabled = true;
+
+            if (!first.EffectiveCartMaintenanceEnabled || first.EffectiveWeightEmailEnabled
+                || second.EffectiveCartMaintenanceEnabled || !second.EffectiveWeightEmailEnabled)
+                throw new Exception("Cart and e-mail policies must be independent for each character row.");
+
             VanillaReconnectAccount roundTrip = second.Clone();
-            if (roundTrip.WeightEnabled)
-                throw new Exception("Disabled per-character Weight policy was not preserved by serialization/clone.");
+            if (roundTrip.EffectiveCartMaintenanceEnabled || !roundTrip.EffectiveWeightEmailEnabled)
+                throw new Exception("Split per-character policies were not preserved by serialization/clone.");
+
             var identity = new VanillaCharacterIdentity(123, Guid.NewGuid(), DateTimeOffset.UtcNow, "char2", "user");
             VanillaCharacterRoster.FillMissing(roundTrip, identity);
-            if (roundTrip.WeightEnabled)
-                throw new Exception("Identity enrichment must not re-enable Weight for a character.");
+            if (roundTrip.EffectiveCartMaintenanceEnabled || !roundTrip.EffectiveWeightEmailEnabled)
+                throw new Exception("Identity enrichment changed per-character Cart/Mail policy.");
+        }
+
+        private static void LegacyWeightPolicyFallback()
+        {
+            var enabled = JsonConvert.DeserializeObject<VanillaReconnectAccount>(
+                "{\"Id\":\"legacy-on\",\"Label\":\"legacy\",\"WeightEnabled\":true}");
+            var disabled = JsonConvert.DeserializeObject<VanillaReconnectAccount>(
+                "{\"Id\":\"legacy-off\",\"Label\":\"legacy\",\"WeightEnabled\":false}");
+
+            if (!enabled.EffectiveCartMaintenanceEnabled || !enabled.EffectiveWeightEmailEnabled
+                || disabled.EffectiveCartMaintenanceEnabled || disabled.EffectiveWeightEmailEnabled)
+                throw new Exception("Legacy WeightEnabled no longer supplies missing Cart/Mail switches.");
+
+            enabled.CartMaintenanceEnabled = false;
+            enabled.WeightEmailEnabled = true;
+            if (enabled.EffectiveCartMaintenanceEnabled || !enabled.EffectiveWeightEmailEnabled)
+                throw new Exception("Explicit split switches did not override legacy WeightEnabled.");
+        }
+
+        private static void WeightMailMode()
+        {
+            if (VanillaWeightAlertService.ResolveMailMode(false, true, true, true) != VanillaWeightMailMode.None)
+                throw new Exception("Global mail master OFF still produced a mail mode.");
+            if (VanillaWeightAlertService.ResolveMailMode(true, true, false, false) != VanillaWeightMailMode.CarriedWeight)
+                throw new Exception("Mail-only character did not use carried-weight warning mode.");
+            if (VanillaWeightAlertService.ResolveMailMode(true, true, true, true) != VanillaWeightMailMode.CartMilestones)
+                throw new Exception("Cart+Mail character did not switch to Cart milestone mode.");
+            if (VanillaWeightAlertService.ResolveMailMode(true, false, true, true) != VanillaWeightMailMode.None)
+                throw new Exception("Per-character Mail OFF still produced Cart milestone mail.");
         }
 
         private static void InventoryVision()
