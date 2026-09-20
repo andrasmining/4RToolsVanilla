@@ -173,6 +173,9 @@ namespace _4RTools.Model.Vanilla
                 && string.IsNullOrWhiteSpace(row.ProtectedPassword) && row.ProxyNeedsConfiguration && !row.CharacterSlot.HasValue
                 && row.ResumeKey == defaults.ResumeKey && row.ResumeCtrl == defaults.ResumeCtrl
                 && row.ResumeAlt == defaults.ResumeAlt && row.ResumeShift == defaults.ResumeShift
+                && row.WeightEnabled == defaults.WeightEnabled
+                && row.CartMaintenanceEnabled == defaults.CartMaintenanceEnabled
+                && row.WeightEmailEnabled == defaults.WeightEmailEnabled
                 && row.SmartTeleportEnabled == defaults.SmartTeleportEnabled
                 && row.SmartTeleportIdleSeconds == defaults.SmartTeleportIdleSeconds
                 && row.SmartTeleportKey == defaults.SmartTeleportKey
