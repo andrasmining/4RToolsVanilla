@@ -37,12 +37,55 @@ jobs:
           old = "'Cart/full-farming milestone mail is used.'"
           new = "'use Cart-full / combined DONE milestone mail.'"
           assert source.count(old) == 1, 'Unexpected patch source'
-          exec(compile(source.replace(old, new), str(path), 'exec'))
+          source = source.replace(old, new)
+          anchor = '            var left = Newtonsoft.Json.Linq.JObject.FromObject(before);'
+          assert source.count(anchor) == 1, 'Unexpected Mail-only helper'
+          source = source.replace(anchor, '''            // An unchanged Apply is an explicit recovery reset, not a Mail edit.
+                      if (!before.Accounts.Any(previous => after.Accounts.Any(current => current.Id == previous.Id
+                          && current.EffectiveWeightEmailEnabled != previous.EffectiveWeightEmailEnabled))) return false;
+          '''.replace('                      ', '            ').replace('                          ', '                ') + anchor)
+          exec(compile(source, str(path), 'exec'))
+          path = 'Tests/VanillaAutobattleResumeTests.cs'
+          text = load(path)
+          text = replace(text, '            Test("Settings changes release the verification lease and latch failure", WorkerSettingsChange);', '            Test("Settings changes release the verification lease and latch failure", WorkerSettingsChange);\n            Test("Mail-only edits preserve an active input lease but Cart edits still cancel", WorkerMailSettingsChange);')
+          method = '''        private static void WorkerMailSettingsChange()
+                  {
+                      RuntimeCase((supervisor, runtime) =>
+                      {
+                          Field(supervisor, "weightMaintenanceGeneration").SetValue(supervisor, 7);
+                          var settings = supervisor.Settings;
+                          var account = settings.Accounts[0];
+                          account.CartMaintenanceEnabled = account.EffectiveCartMaintenanceEnabled;
+                          account.WeightEmailEnabled = !account.EffectiveWeightEmailEnabled;
+                          account.WeightEnabled = account.EffectiveCartMaintenanceEnabled || account.EffectiveWeightEmailEnabled;
+                          supervisor.Apply(settings, false);
+                          Assert(!IsCancelled(supervisor, runtime) && RuntimeFlag(runtime, "ScriptRunning")
+                              && RuntimeFlag(runtime, "RecoveryOwned") && !RuntimeFlag(runtime, "ResumeVerificationFailed"),
+                              "Mail-only edit cancelled or failed an active input worker.");
+                          Assert((int)Field(supervisor, "weightMaintenanceGeneration").GetValue(supervisor) == 7,
+                              "Mail-only edit invalidated Cart ownership.");
+                          var updated = (VanillaReconnectAccount)runtime.GetType().GetField("Account").GetValue(runtime);
+                          Assert(updated.EffectiveWeightEmailEnabled == account.EffectiveWeightEmailEnabled,
+                              "Mail-only edit was not applied to the live runtime.");
+                          settings = supervisor.Settings;
+                          settings.Accounts[0].CartMaintenanceEnabled = !settings.Accounts[0].EffectiveCartMaintenanceEnabled;
+                          supervisor.Apply(settings, false);
+                          Assert(IsCancelled(supervisor, runtime) && !RuntimeFlag(runtime, "RecoveryOwned"),
+                              "Cart policy edit failed to cancel the input worker.");
+                      });
+                  }
+
+          '''
+          # Remove the YAML/Python literal alignment, retaining normal C# indentation.
+          lines = method.splitlines(True)
+          method = lines[0] + ''.join(line[10:] if line.startswith('          ') else line for line in lines[1:])
+          text = replace(text, '        private static void WorkerSettingsChange()', method + '        private static void WorkerSettingsChange()')
+          save(path, text)
           '@ | python -
           if ($LASTEXITCODE -ne 0) { throw 'Guarded Cart patch failed; no source commit will be pushed.' }
           git rm scripts/finish-cart-policy.py .github/workflows/complete-cart-policy.yml
           if ($LASTEXITCODE -ne 0) { throw 'Temporary tooling removal failed.' }
-          git add AGENTS.md Model/Vanilla/AGENTS.md Model/Vanilla/VanillaMinimalAccountUi.cs Model/Vanilla/VanillaReconnect.cs Model/Vanilla/VanillaWeightAlerts.cs Model/Vanilla/VanillaWeightAlertsPanel.cs Model/Vanilla/VanillaWeightCartAutomation.cs Tests/VanillaMemoryAndWeightTests.cs
+          git add AGENTS.md Model/Vanilla/AGENTS.md Model/Vanilla/VanillaMinimalAccountUi.cs Model/Vanilla/VanillaReconnect.cs Model/Vanilla/VanillaWeightAlerts.cs Model/Vanilla/VanillaWeightAlertsPanel.cs Model/Vanilla/VanillaWeightCartAutomation.cs Tests/VanillaMemoryAndWeightTests.cs Tests/VanillaAutobattleResumeTests.cs
           git -c core.whitespace=cr-at-eol diff --cached --check
           if ($LASTEXITCODE -ne 0) { throw 'Patch whitespace validation failed.' }
           git diff --cached --stat
