@@ -1,77 +1,42 @@
-# 4RTools Vanilla 0.6.65
+# 4RTools Vanilla 0.6.66
 
-## Independent Cart and e-mail policy per character
+## Independent Cart and Mail controls, completed
 
-Cart maintenance and Weight e-mail are no longer one combined per-character switch.
+Each character has independent **Cart** and **Mail** switches in the Recovery roster and character editor. Shared Cart/e-mail masters, thresholds, categories, hotkeys and SMTP configuration remain on the Weight tab.
 
-Each saved character now has two independent policies in **Recovery & relog**:
+| Effective Cart maintenance | Character Mail | Behavior |
+| --- | --- | --- |
+| Off | On | Carried-weight warning at the configured threshold, for example 45%. |
+| On | On | No carried-only or Cart-only warning. One DONE notification when Cart is at least 99% AND carried weight is at least 50%, after verified Autobattle STOP. |
+| On | Off | Cart maintenance without notification. |
+| Off | Off | Neither automatic Cart maintenance nor weight notification. |
 
-- **Cart** — enables UI-only automatic Cart maintenance for that character.
-- **Mail** — enables e-mail notifications for that character.
+The shared e-mail master must also be enabled for automatic mail. Disabling the shared Cart master makes Cart maintenance inactive, so enabled Mail uses the carried-weight threshold instead.
 
-The character list shows compact **Cart** and **Mail** columns, and the character editor exposes separate checkboxes. Existing legacy profiles remain compatible: when the new split fields are absent, both inherit the old combined `WeightEnabled` value. Once the split fields are explicitly saved, they take precedence and are preserved through clone/catalog/discovery/identity enrichment.
+This release removes the early Cart-100%-only e-mail from v0.6.65: a full Cart alone still leaves carried capacity available. Combined completion retains the previously configured farming thresholds, Cart >=99% and carried >=50%; it does not require the character to reach 100% carried weight.
 
-The shared Weight tab still owns common thresholds, category choices, hotkeys and SMTP transport. Its **Cart master** and **E-mail master** remain global kill switches; the matching per-character switch must also be enabled before a character can use that feature.
+Automatic dispatch re-checks the current character binding and Cart/Mail settings immediately before sending. A queued completion cannot rely on a previously enabled Mail switch. DONE mail has a per-character in-flight reservation to prevent duplicate overlapping sends. An SMTP send already in progress cannot be recalled.
 
-## E-mail meaning now follows whether Cart maintenance is active
+Mail-only character edits update the live runtime without cancelling Cart work or recovery. Other input-affecting edits still cancel safely; unchanged explicit settings applications retain their recovery-reset semantics. All Cart start/cancellation/manual-test checks now use the effective Cart switch rather than the legacy combined Weight flag. Existing profiles retain their legacy fallback unless explicit split switches were saved.
 
-The same per-character Mail switch now has the intended interpretation:
+## HP safety and faster dragging retained
 
-- **Cart inactive + Mail ON:** carried-weight warning e-mail at the configured Weight threshold. This supports characters without a Cart, for example a character where you want notification around 45% carried weight.
-- **Cart active + Mail ON:** carried-weight-only warnings are suppressed. E-mail instead follows the Cart/farming state:
-  - exact **Cart 100%** remains the early Cart-full milestone notification;
-  - **Cart >=99% AND carried weight >=50%** is the combined DONE milestone after the verified Autobattle STOP.
-- **Cart ON + Mail OFF:** Cart maintenance runs normally with no e-mail notifications.
-- **Cart OFF + Mail OFF:** neither automatic Cart maintenance nor Weight mail runs for that character.
+One cumulative HP baseline is retained from the beginning of Autobattle STOP verification through the stopped Cart operation. A drop of **more than 10 percentage points** aborts Cart work, including during drag/drop and waits. After verified resume through the shared Autobattle/X/Y routine, panels are closed best-effort, the client is minimized and Cart is retried after about **60 seconds**. Exactly 10 percentage points does not cross the threshold. Unavailable verified HP after STOP also aborts. Failure to verify the emergency resume remains a safety hold, not a false success.
 
-This prevents a Cart-managed character from generating an irrelevant carried-weight-only warning while still preserving useful Cart-full and final combined-full notifications.
+STOP requires five continuous stationary seconds in a ten-second attempt window, with at most three attempts. The HP baseline is not reset between attempts. Farming-complete STOP uses the same damage check before arming its completed hold.
 
-## Compact UI; explanations moved to hover help
+Cursor travel uses **6 steps at approximately 35 ms** (about 210 ms rather than the earlier 1.2 seconds). The existing 250 ms source-position settle, 300 ms destination hold and 500 ms post-release settle remain unchanged.
 
-Long instructional paragraphs have been removed from the Weight/Cart and character-management surfaces.
+## Compact UI and earlier fixes retained
 
-- Weight/Cart uses compact section controls plus small info/help glyphs.
-- Detailed behavior is available through mouse-hover tooltips.
-- Character editor Cart, Mail and Smart Teleport behavior is documented via hover help rather than persistent prose.
-- The Recovery character table remains compact; Cart and Mail states are visible directly.
-- The password-state header was shortened to **Pwd** so the new policy columns still fit narrow/RDP layouts; full cell values remain available through tooltips.
-- The old long Recovery helper paragraph is hidden in the simplified production UI.
+Cart/Mail explanations are hover tooltips or small info glyphs rather than persistent paragraphs. Save status is short. Compact roster policy columns, the Pwd header, HP/SP/Weight/Cart resource display and the draggable character/log divider are preserved.
 
-Active warnings, errors, live state and short status messages remain visible without hovering.
-
-## Existing Cart safety behavior retained
-
-This release preserves the live-hardened Weight/Cart behavior from v0.6.64:
-
-- Autobattle STOP must be verified by **5 continuous seconds of unchanged X/Y** inside a **10-second** window, with at most **3 STOP attempts**.
-- One cumulative HP baseline is retained from the beginning of the STOP sequence through the entire stopped Cart operation.
-- HP dropping by **more than 10 percentage points**, or verified HP becoming unavailable after STOP, aborts Cart work, resumes Autobattle through verified movement, minimizes, and retries Cart maintenance after about **60 seconds**.
-- The HP guard remains active during panel work, waits and mouse drag/drop.
-- Cart precision filling begins at **75% Cart usage**.
-- Mastela Fruit / Use = **3 weight**; Peco Feather / Etc = **1 weight**; Cart capacity = **10000**.
-- Quantity-aware filling never intentionally exceeds remaining Cart capacity.
-- Cart transfers keep deliberate source/drop holds with faster cursor travel (**6 steps x ~35 ms**).
-- A transfer receives up to **3** bounded attempts; pure transfer non-progress resumes Autobattle and retries about a minute later rather than creating a permanent hold.
-- Farming completion remains **Cart >=99% + carried >=50%**.
-- Per-process timestamped debug logs and the **10 MiB** per-file hard cap remain unchanged.
+Cart maintenance retains first-slot inventory classification, verified category changes, safe detected Cart destinations, positive quantity-dialog checks, delayed-progress verification and bounded transfer retries. Precision filling begins at 75% Cart usage, using Mastela Fruit weight 3 and Peco Feather weight 1 within the verified 10000 Cart capacity. Timestamped session logs retain their 10 MiB per-file cap.
 
 ## Validation
 
-Before versioning v0.6.65, the full Windows pipeline passed on the final feature implementation:
+Before versioning, the feature commit 79e724d2ca085815960f5f19deb5d170c9360539 passed all 401 regression checks in both Debug and Release, build-profile validation, portable-package smoke tests, native test-owned recovery checks and all 25 mock-data UI cases. The Weight tab, independent character controls, Full-HD recovery layout and narrow enlarged-text layout screenshots were inspected.
 
-- shipped Vanilla build-profile validation;
-- complete Debug diagnostics/regression suite;
-- Release build/package/smoke tests;
-- native test-owned recovery checks;
-- mock-data UI rendering/layout validation across desktop, RDP-sized and enlarged-text cases.
+Added coverage includes all 16 shared/character Cart/Mail combinations, combined-capacity boundaries and missing/unverified observations, explicit Cart ON over legacy Weight OFF, and runtime Mail-only edits preserving an active input lease while Cart edits still cancel it. Existing cancellation regression tests remain in force.
 
-New regression coverage includes:
-
-- independent Cart/Mail policy persistence per character;
-- legacy combined Weight-policy fallback;
-- Cart/Mail edits surviving discovery/enrichment;
-- adaptive Mail mode selection for Cart vs non-Cart characters;
-- compact visible Cart/Mail character columns;
-- narrow-grid fitting without unnecessary horizontal scrollbars.
-
-The engineering runner cannot reproduce the user's live Vanilla/Gepard/RDP gameplay. The split policy/e-mail routing and UI are validated offline; the next live farming session remains the runtime-validation boundary for real Cart/SMTP behavior.
+The release pipeline repeats validation, downloads and verifies the published ZIP/checksum and source identity, then exercises the installed-version updater. These checks do not reproduce the user's live Vanilla/Gepard client, actual game dragging or real SMTP delivery.
