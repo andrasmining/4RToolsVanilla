@@ -194,7 +194,13 @@ namespace _4RTools.Model.Vanilla
         private readonly VanillaForegroundInput input;
         private Rectangle focusField;
         private VanillaVisualInputProof proof;
-        internal VanillaCredentialInput(VanillaForegroundInput input) { this.input = input; }
+        internal VanillaCredentialInput(VanillaForegroundInput input)
+        {
+            this.input = input;
+            // Build the immutable tiny-label references before any frame starts its input
+            // proof lifetime; cold reference preparation cannot expire a field's capture.
+            VanillaSmallLabelPattern.Prepare();
+        }
         public long SurfaceId { get { return proof == null ? 0 : proof.Window.ToInt64(); } }
         public Bitmap Capture()
         {
@@ -280,7 +286,7 @@ namespace _4RTools.Model.Vanilla
             public IntPtr Active, Focus, Capture, MenuOwner, MoveSize, Caret;
             public Rect CaretRect;
         }
-        [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+        [DllImport("user32.dll", SetLastError = true)] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
         [DllImport("user32.dll", SetLastError = true)] private static extern bool GetGUIThreadInfo(uint thread, ref GuiThreadInfo info);
         [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
         [DllImport("user32.dll")] private static extern bool IsChild(IntPtr parent, IntPtr child);
@@ -292,8 +298,11 @@ namespace _4RTools.Model.Vanilla
             if (window == IntPtr.Zero || GetForegroundWindow() != window) return VanillaFieldFocus.Contradicted;
             uint processId;
             uint thread = GetWindowThreadProcessId(window, out processId);
+            if (thread == 0)
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Cannot query the captured client's UI thread; credential input stopped.");
             var info = new GuiThreadInfo { Size = (uint)Marshal.SizeOf(typeof(GuiThreadInfo)) };
-            if (thread == 0 || !GetGUIThreadInfo(thread, ref info)) return VanillaFieldFocus.Unknown;
+            if (!GetGUIThreadInfo(thread, ref info))
+                throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Cannot read client field-focus information; credential input stopped.");
             if (info.Focus == IntPtr.Zero || (info.Focus != window && !IsChild(window, info.Focus)))
                 return VanillaFieldFocus.Contradicted;
             if (info.Caret == IntPtr.Zero || info.CaretRect.Bottom <= info.CaretRect.Top)
@@ -304,7 +313,7 @@ namespace _4RTools.Model.Vanilla
             {
                 ClearLastError(0);
                 if (MapWindowPoints(info.Caret, window, ref caret, 2) == 0 && Marshal.GetLastWin32Error() != 0)
-                    return VanillaFieldFocus.Unknown;
+                    throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error(), "Cannot map the client caret; credential input stopped.");
             }
             Rectangle observed = Rectangle.FromLTRB(caret.Left, caret.Top, Math.Max(caret.Left + 1, caret.Right), caret.Bottom);
             return field.Contains(observed) ? VanillaFieldFocus.Confirmed : VanillaFieldFocus.Contradicted;

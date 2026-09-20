@@ -125,6 +125,7 @@ namespace _4RTools.Model.Vanilla
             double bestScore = double.MaxValue;
             Rectangle serviceControl = Rectangle.Empty;
             var identities = new Dictionary<Rectangle, bool>();
+            var labelEvidence = new List<string>();
             foreach (var candidate in candidates.OrderBy(value => value.Item2))
             {
                 ControlBox first = candidate.Item1[0];
@@ -141,9 +142,8 @@ namespace _4RTools.Model.Vanilla
                             && string.Equals(line.Text.Trim(), "Vanilla MMO", StringComparison.OrdinalIgnoreCase));
                     if (!recognized && service.Height <= 18)
                     {
-                        recognized = VanillaTextRecognition.TryReadAccurate(bitmap, service, true, out serviceText, out textEvidence)
-                            && serviceText.Any(line => line.Confidence >= 70
-                                && string.Equals(line.Text.Trim(), "Vanilla MMO", StringComparison.OrdinalIgnoreCase));
+                        recognized = VanillaSmallLabelPattern.IsVanillaMmo(bitmap, service, out textEvidence);
+                        labelEvidence.Add(service + ": " + textEvidence);
                     }
                     identities.Add(service, recognized);
                 }
@@ -163,7 +163,8 @@ namespace _4RTools.Model.Vanilla
             }
             if (best == null)
             {
-                evidence = "stacked rectangles found, but the login service identity was not confirmed";
+                evidence = "stacked rectangles found, but the login service identity was not confirmed"
+                    + (labelEvidence.Count == 0 ? "" : "; " + string.Join(" | ", labelEvidence));
                 return false;
             }
 
