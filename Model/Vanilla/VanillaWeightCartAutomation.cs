@@ -58,7 +58,25 @@ namespace _4RTools.Model.Vanilla
             lock (gate)
             {
                 Runtime runtime = runtimes.Values.FirstOrDefault(item => item.ProcessId == pid && item.Account.Enabled);
-                return runtime != null && runtime.Account.WeightEnabled;
+                return runtime != null && runtime.Account.EffectiveWeightPolicyEnabled;
+            }
+        }
+
+        internal bool IsCartMaintenanceEnabledForProcess(int pid)
+        {
+            lock (gate)
+            {
+                Runtime runtime = runtimes.Values.FirstOrDefault(item => item.ProcessId == pid && item.Account.Enabled);
+                return runtime != null && runtime.Account.EffectiveCartMaintenanceEnabled;
+            }
+        }
+
+        internal bool IsWeightEmailEnabledForProcess(int pid)
+        {
+            lock (gate)
+            {
+                Runtime runtime = runtimes.Values.FirstOrDefault(item => item.ProcessId == pid && item.Account.Enabled);
+                return runtime != null && runtime.Account.EffectiveWeightEmailEnabled;
             }
         }
 
@@ -70,7 +88,7 @@ namespace _4RTools.Model.Vanilla
                 if (disposed || !running) { reason = "reconnect supervision is not running"; return false; }
                 Runtime runtime = runtimes.Values.FirstOrDefault(item => item.ProcessId == pid && item.Account.Enabled);
                 if (runtime == null) { reason = "the client is not assigned to an enabled character row"; return false; }
-                if (!runtime.Account.WeightEnabled) { reason = "Weight/Cart is disabled for this character"; return false; }
+                if (!runtime.Account.EffectiveCartMaintenanceEnabled) { reason = "Cart maintenance is disabled for this character"; return false; }
                 if (weightManualHolds.Contains(runtime.Account.Id)) { reason = "the character is waiting for manual cart emptying"; return false; }
                 if (weightCompletedHolds.Contains(runtime.Account.Id)) { reason = "farming is complete for this character; clear the Weight hold before resuming"; return false; }
                 if (runtime.ScriptRunning || runtime.RecoveryOwned || runtime.ClosingForRecovery
