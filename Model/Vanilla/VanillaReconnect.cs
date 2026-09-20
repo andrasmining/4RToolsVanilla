@@ -1120,7 +1120,8 @@ namespace _4RTools.Model.Vanilla
                         },
                         launchCancelled,
                         recoverUpdate: (blocked, stillBlocked) => RecoverLauncherUpdate(runtime, generation,
-                            launchCancelled, blocked, stillBlocked));
+                            launchCancelled, blocked, stillBlocked),
+                        startOwned: start => RunOwnedLauncherStart(runtime, generation, launchCancelled, start));
                     lock (gate)
                     {
                         if (!aborted && running && !disposed && launchedPid.HasValue

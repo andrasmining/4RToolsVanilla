@@ -36,7 +36,7 @@ namespace Vanilla.Diagnostics.Tests
             Test("Close denial never authorizes restart", () => { var h = new H(); h.BeforeClose = () => { throw new InvalidOperationException("denied"); }; Throws<InvalidOperationException>(() => h.Run()); Assert(h.Closed.Count == 0); });
             Test("New process during reset prevents restart", NewProcess);
             Test("Direct-game fallback is refused", RequireLauncher);
-            foreach (string mode in new[] { "success", "stop", "generation", "session", "busy", "cooldown" })
+            foreach (string mode in new[] { "success", "stop", "generation", "session", "busy", "cooldown", "start-stop" })
             { string m = mode; Test("Supervisor update lease: " + m, () => SupervisorCase(m)); }
             Console.WriteLine("Launcher update: {0} passed; {1} failed. Synthetic images and fake process lifecycle only.", passed, failed);
             return failed;
@@ -191,6 +191,21 @@ namespace Vanilla.Diagnostics.Tests
                         Assert((int)Get(supervisor, "launcherUpdateResetSerial") == 1);
                         env.H.Alive.Add(P(10)); env.H.Alive.Add(P(1, true)); Assert(!run() && env.H.Closed.Count == 2);
                     }
+                    if (mode == "start-stop")
+          {
+              bool started = false;
+              Func<System.Diagnostics.Process> start = () => { started = true; return null; };
+              Call(supervisor, "RunOwnedLauncherStart", owner, 7, (Func<bool>)(() => false), start);
+              Assert(started);
+              started = false;
+              Set(owner, "ProcessId", (int?)99);
+              Throws<OperationCanceledException>(() => Call(supervisor, "RunOwnedLauncherStart", owner, 7, (Func<bool>)(() => false), start));
+              Assert(!started);
+              Set(owner, "ProcessId", null);
+              supervisor.Stop();
+              Throws<OperationCanceledException>(() => Call(supervisor, "RunOwnedLauncherStart", owner, 7, (Func<bool>)(() => false), start));
+              Assert(!started);
+          }
                     Assert(!(bool)Get(supervisor, "launcherUpdateResetRunning"));
                 }
             }

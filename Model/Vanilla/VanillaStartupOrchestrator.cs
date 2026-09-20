@@ -394,7 +394,9 @@ namespace _4RTools.Model.Vanilla
                     () => StartupCancelled(generation),
                     debugDirectory: Path.Combine(baseDirectory, "Logs"),
                     recoverUpdate: (blocked, stillBlocked) => RecoverLauncherUpdate(runtime, resumeGeneration,
-                        () => StartupCancelled(generation), blocked, stillBlocked));
+                        () => StartupCancelled(generation), blocked, stillBlocked),
+                    startOwned: start => RunOwnedLauncherStart(runtime, resumeGeneration,
+                        () => StartupCancelled(generation), start));
 
                 if (!pid.HasValue) throw new InvalidOperationException(account.Label + ": launcher did not produce a Vanilla MMO PID.");
                 lock (gate)

@@ -184,6 +184,23 @@ namespace _4RTools.Model.Vanilla
 
     public sealed partial class VanillaReconnectSupervisor
     {
+        // STOP/settings and process creation share the same gate. A delayed launcher
+        // restart cannot slip between a cancellation check and Process.Start.
+        private Process RunOwnedLauncherStart(Runtime owner, int generation, Func<bool> cancelled, Func<Process> start)
+        {
+  lock (gate)
+  {
+      Runtime current;
+      if (disposed || cancelled() || generation != Volatile.Read(ref resumeVerificationGeneration)
+          || !runtimes.TryGetValue(owner.Account.Id, out current) || !ReferenceEquals(current, owner)
+          || !current.Account.Enabled || !current.ScriptRunning || !current.RecoveryOwned
+          || current.ResumeOperationGeneration != generation || current.ProcessId.HasValue
+          || OtherRecoveryOwner(owner) != null)
+          throw new OperationCanceledException("Launcher start ownership changed.");
+      return start();
+  }
+        }
+
         private bool launcherUpdateResetRunning;
         private TimeSpan? nextLauncherUpdateReset;
         private int launcherUpdateResetSerial;

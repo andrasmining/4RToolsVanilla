@@ -105,7 +105,8 @@ namespace _4RTools.Model.Vanilla
             double gameStartX = DefaultGameStartX,
             double gameStartY = DefaultGameStartY,
             string debugDirectory = null,
-            Func<VanillaLauncherUpdateProcess, Func<bool>, bool> recoverUpdate = null)
+            Func<VanillaLauncherUpdateProcess, Func<bool>, bool> recoverUpdate = null,
+            Func<Func<Process>, Process> startOwned = null)
         {
             executablePath = RequireLauncher(executablePath);
             for (int attempt = 0; attempt < 2; attempt++)
@@ -113,7 +114,7 @@ namespace _4RTools.Model.Vanilla
                 try
                 {
                     return LaunchAttempt(executablePath, arguments, log, cancelled, timeoutMs, retryMs,
-                        gameStartX, gameStartY, debugDirectory, attempt == 0 ? recoverUpdate : null);
+                        gameStartX, gameStartY, debugDirectory, attempt == 0 ? recoverUpdate : null, startOwned);
                 }
                 catch (UpdateResetCompletedException)
                 {
@@ -125,7 +126,8 @@ namespace _4RTools.Model.Vanilla
 
         private static int? LaunchAttempt(string executablePath, string arguments, Action<string> log,
             Func<bool> cancelled, int timeoutMs, int retryMs, double gameStartX, double gameStartY,
-            string debugDirectory, Func<VanillaLauncherUpdateProcess, Func<bool>, bool> recoverUpdate)
+            string debugDirectory, Func<VanillaLauncherUpdateProcess, Func<bool>, bool> recoverUpdate,
+            Func<Func<Process>, Process> startOwned)
         {
             if (string.IsNullOrWhiteSpace(executablePath) || !File.Exists(executablePath))
                 throw new FileNotFoundException("The configured Vanilla launcher does not exist.", executablePath);
@@ -147,7 +149,8 @@ namespace _4RTools.Model.Vanilla
             Process launched = null;
             try
             {
-                launched = Process.Start(startInfo);
+                launched = startOwned == null ? Process.Start(startInfo)
+                    : startOwned(() => Process.Start(startInfo));
                 log?.Invoke("Launcher start requested: exe='" + Path.GetFileName(executablePath) + "', startedPID="
                     + (launched == null ? "none" : launched.Id.ToString()) + ", preExistingVanillaPIDs=[" + string.Join(",", before.OrderBy(v => v))
                     + "], timeout=" + timeoutMs + "ms, retry=" + retryMs + "ms.");
