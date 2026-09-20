@@ -337,18 +337,30 @@ internal static class UiLayoutHarness
             DataGridView grid = (DataGridView)Field(recovery, "accounts");
             string[] expectedColumns =
             {
-                "Enabled", "WeightEnabled", "SmartTeleportEnabled", "SmartTeleportSeconds", "SmartTeleportHotkey",
+                "Enabled", "CartMaintenanceEnabled", "WeightEmailEnabled", "SmartTeleportEnabled", "SmartTeleportSeconds", "SmartTeleportHotkey",
                 "Label", "User", "Slot", "CharacterName", "Hotkey", "Secret", "AccountProxy", "RuntimePid", "RuntimeStatus"
             };
-            Check(grid.Columns.Cast<DataGridViewColumn>().OrderBy(c => c.DisplayIndex).Select(c => c.Name).SequenceEqual(expectedColumns), name + ": character column order is wrong.");
-            Check(grid.Columns["Enabled"].HeaderText == "Enabled" && grid.Columns["WeightEnabled"].HeaderText == "Weight"
+            Check(grid.Columns.Cast<DataGridViewColumn>().Where(c => c.Visible).OrderBy(c => c.DisplayIndex)
+                .Select(c => c.Name).SequenceEqual(expectedColumns), name + ": character column order is wrong.");
+            Check(grid.Columns["Enabled"].HeaderText == "Enabled"
+                && grid.Columns["CartMaintenanceEnabled"].HeaderText == "Cart"
+                && grid.Columns["WeightEmailEnabled"].HeaderText == "Mail"
                 && grid.Columns["SmartTeleportEnabled"].HeaderText == "Smart TP",
-                name + ": first three character columns must be Enabled, Weight, Smart TP.");
+                name + ": first character policy columns must be Enabled, Cart, Mail, Smart TP.");
             Check(grid.Columns["SmartTeleportSeconds"].HeaderText == "TP sec"
                 && grid.Columns["SmartTeleportHotkey"].HeaderText == "TP hotkey",
                 name + ": Smart Teleport seconds/hotkey columns are missing.");
             Check(grid.Columns["Label"].HeaderText == "Description" && grid.Columns["CharacterName"].HeaderText == "Character name", name + ": character headers missing.");
-            Check(grid.Rows.Cast<DataGridViewRow>().All(r => Convert.ToString(r.Cells["WeightEnabled"].Value) == "Yes"), name + ": default per-character Weight policy was not rendered.");
+            Check(grid.Rows.Cast<DataGridViewRow>().All(r => Convert.ToString(r.Cells["CartMaintenanceEnabled"].Value) == "Yes"
+                && Convert.ToString(r.Cells["WeightEmailEnabled"].Value) == "Yes"),
+                name + ": default per-character Cart/Mail policies were not rendered.");
+            Check(Convert.ToString(grid.Rows[0].Cells["CartMaintenanceEnabled"].Value) == "Yes"
+                && Convert.ToString(grid.Rows[0].Cells["WeightEmailEnabled"].Value) == "No",
+                name + ": first character split Cart/Mail policy did not render.");
+            if (grid.Rows.Count > 1)
+                Check(Convert.ToString(grid.Rows[1].Cells["CartMaintenanceEnabled"].Value) == "No"
+                    && Convert.ToString(grid.Rows[1].Cells["WeightEmailEnabled"].Value) == "Yes",
+                    name + ": second character split Cart/Mail policy did not render.");
             Check(Convert.ToString(grid.Rows[0].Cells["SmartTeleportEnabled"].Value) == "Yes"
                 && Convert.ToString(grid.Rows[0].Cells["SmartTeleportSeconds"].Value) == "75"
                 && Convert.ToString(grid.Rows[0].Cells["SmartTeleportHotkey"].Value) == "Ctrl+F5",
@@ -488,6 +500,8 @@ internal static class UiLayoutHarness
             Property(account, "CharacterSlot", i % 15 + 1);
             Property(account, "ResumeCtrl", false); Property(account, "ResumeAlt", true);
             Property(account, "WeightEnabled", true);
+            Property(account, "CartMaintenanceEnabled", (bool?)(i == 0));
+            Property(account, "WeightEmailEnabled", (bool?)(i != 0));
             Property(account, "SmartTeleportEnabled", i == 0);
             Property(account, "SmartTeleportIdleSeconds", i == 0 ? 75 : 60);
             if (i == 0)
