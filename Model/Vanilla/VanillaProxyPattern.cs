@@ -49,7 +49,7 @@ namespace _4RTools.Model.Vanilla
             foreach (VanillaTextLine line in dialog.Lines)
             {
                 Match match = Regex.Match(VanillaServiceRecognition.Normalize(line.Text),
-                    @"^[\[\(\|]?\s*Proxy\s+Connection\s*[\]\)\|]?\s+(Global|Manila|Singapore|Tokyo|Hong Kong|Los Angeles|Australia|UAE)$",
+                    @"^[\[\(\|]?\s*Proxy\s+Connection(?:\s*[\]\)\|]\s*|\s+)(Global|Manila|Singapore|Tokyo|Hong Kong|Los Angeles|Australia|UAE)$",
                     RegexOptions.IgnoreCase);
                 if (!match.Success || line.Confidence < 60) continue;
                 string observed = match.Groups[1].Value;

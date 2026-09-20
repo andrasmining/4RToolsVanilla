@@ -10,6 +10,8 @@ using Tesseract;
 
 namespace _4RTools.Model.Vanilla
 {
+    internal enum VanillaTextPreparation { Normal, NearestNeighbor, Contrast, BinaryDark, BinaryLight, Sharpen }
+
     internal sealed class VanillaTextWord
     {
         internal string Text { get; set; }
@@ -38,6 +40,12 @@ namespace _4RTools.Model.Vanilla
         internal static bool TryRead(Bitmap bitmap, Rectangle area, bool singleLine,
             out VanillaTextLine[] lines, out string evidence)
         {
+            return TryRead(bitmap, area, singleLine, out lines, out evidence, VanillaTextPreparation.Normal);
+        }
+
+        internal static bool TryRead(Bitmap bitmap, Rectangle area, bool singleLine,
+            out VanillaTextLine[] lines, out string evidence, VanillaTextPreparation preparation)
+        {
             lines = new VanillaTextLine[0];
             evidence = "OCR region is invalid";
             if (bitmap == null || area.Width < 3 || area.Height < 3
@@ -52,6 +60,14 @@ namespace _4RTools.Model.Vanilla
                 // Small native UI text needs enlargement. Bound both dimensions and total
                 // pixels; a full-screen character scan remains bounded on a 4K desktop.
                 double scale = singleLine ? Math.Min(4, 60.0 / area.Height) : 3.0;
+                if (preparation != VanillaTextPreparation.Normal)
+                {
+                    // Alternative raster preparation is restricted to tiny, already-detected
+                    // text controls. It cannot become an unbounded full-desktop OCR retry.
+                    if (!singleLine || area.Height > 24 || area.Width > 600)
+                    { evidence = "small-text preparation requires a bounded single-line region"; return false; }
+                    scale = Math.Min(8, Math.Max(3, 72 / area.Height));
+                }
                 scale = Math.Min(scale, Math.Min(4096.0 / area.Width, 3072.0 / area.Height));
                 scale = Math.Min(scale, Math.Sqrt(8000000.0 / ((double)area.Width * area.Height)));
                 int width = Math.Max(3, (int)Math.Round(area.Width * scale));
@@ -63,7 +79,8 @@ namespace _4RTools.Model.Vanilla
                     using (var attributes = new ImageAttributes())
                     {
                         graphics.Clear(Color.White);
-                        graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                        graphics.InterpolationMode = preparation == VanillaTextPreparation.NearestNeighbor
+                            ? InterpolationMode.NearestNeighbor : InterpolationMode.HighQualityBicubic;
                         graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
                         // Grayscale removes colored selection/background fringing without
                         // fabricating or substituting any character in the recognized text.
@@ -77,6 +94,8 @@ namespace _4RTools.Model.Vanilla
                         graphics.DrawImage(bitmap, new Rectangle(padding, padding, width, height),
                             area.X, area.Y, area.Width, area.Height, GraphicsUnit.Pixel, attributes);
                     }
+                    if (preparation != VanillaTextPreparation.Normal && preparation != VanillaTextPreparation.NearestNeighbor)
+                        PrepareSmallText(prepared, preparation);
                     using (var stream = new MemoryStream())
                     {
                         prepared.Save(stream, System.Drawing.Imaging.ImageFormat.Png);
@@ -143,6 +162,46 @@ namespace _4RTools.Model.Vanilla
                     + "; native image library=" + File.Exists(Path.Combine(native, "leptonica-1.82.0.dll"));
                 return false;
             }
+        }
+
+        private static void PrepareSmallText(Bitmap bitmap, VanillaTextPreparation preparation)
+        {
+            Rectangle bounds = new Rectangle(Point.Empty, bitmap.Size);
+            BitmapData data = bitmap.LockBits(bounds, ImageLockMode.ReadWrite, PixelFormat.Format24bppRgb);
+            try
+            {
+                int stride = Math.Abs(data.Stride);
+                byte[] pixels = new byte[stride * bitmap.Height];
+                Marshal.Copy(data.Scan0, pixels, 0, pixels.Length);
+                byte[] luminance = new byte[bitmap.Width * bitmap.Height];
+                int minimum = 255;
+                for (int y = 0; y < bitmap.Height; y++)
+                for (int x = 0; x < bitmap.Width; x++)
+                {
+                    int offset = y * stride + x * 3;
+                    byte value = (byte)((pixels[offset] * 11 + pixels[offset + 1] * 59 + pixels[offset + 2] * 30) / 100);
+                    luminance[y * bitmap.Width + x] = value;
+                    minimum = Math.Min(minimum, value);
+                }
+                for (int y = 0; y < bitmap.Height; y++)
+                for (int x = 0; x < bitmap.Width; x++)
+                {
+                    int value = luminance[y * bitmap.Width + x];
+                    if (preparation == VanillaTextPreparation.Sharpen && x > 0 && y > 0 && x < bitmap.Width - 1 && y < bitmap.Height - 1)
+                    {
+                        int adjacent = (luminance[y * bitmap.Width + x - 1] + luminance[y * bitmap.Width + x + 1]
+                            + luminance[(y - 1) * bitmap.Width + x] + luminance[(y + 1) * bitmap.Width + x]) / 4;
+                        value = Math.Max(0, Math.Min(255, value * 2 - adjacent));
+                    }
+                    value = Math.Max(0, Math.Min(255, (value - minimum) * 255 / Math.Max(1, 255 - minimum)));
+                    if (preparation == VanillaTextPreparation.BinaryDark) value = value < 130 ? 0 : 255;
+                    else if (preparation == VanillaTextPreparation.BinaryLight) value = value < 185 ? 0 : 255;
+                    int offset = y * stride + x * 3;
+                    pixels[offset] = pixels[offset + 1] = pixels[offset + 2] = (byte)value;
+                }
+                Marshal.Copy(pixels, 0, data.Scan0, pixels.Length);
+            }
+            finally { bitmap.UnlockBits(data); }
         }
 
         private static VanillaTextLine MakeLine(List<VanillaTextWord> words)

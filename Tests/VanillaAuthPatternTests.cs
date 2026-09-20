@@ -16,6 +16,7 @@ namespace Vanilla.Diagnostics.Tests
         {
             Test("Login pattern distinguishes username and password across resolutions", LoginAcrossResolutions);
             Test("Login pattern tolerates softened rendering", LoginSoftened);
+            Test("Softened login rejects similarly spelled service identities", RejectSimilarLowResolutionServices);
             Test("Login form may move independently from the client dimensions", LoginMoved);
             Test("Three anonymous rectangles do not authorize credential entry", RejectAnonymousFields);
             Test("A central decoy does not hide the recognized moved login form", LoginWithDecoy);
@@ -66,6 +67,25 @@ namespace Vanilla.Diagnostics.Tests
                 if (!detected) DiagnoseSyntheticLogin(reduced, services);
                 Assert(detected, "Softened login failed: " + evidence);
                 Assert(layout.UserName.Bottom <= layout.Password.Top, "Softened username/password regions overlapped.");
+            }
+        }
+
+        private static void RejectSimilarLowResolutionServices()
+        {
+            foreach (string name in new[] { "Vara MMO", "Vania MMO", "Other MMO" })
+            using (Bitmap large = LoginImage(1600, 1000, true, serviceLabel: name))
+            using (var reduced = new Bitmap(1000, 625))
+            {
+                using (Graphics graphics = Graphics.FromImage(reduced))
+                {
+                    graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    graphics.DrawImage(large, new Rectangle(Point.Empty, reduced.Size));
+                }
+                SaveLoginFixture(reduced, "login-wrong-service");
+                VanillaLoginLayout layout;
+                string evidence;
+                Assert(!VanillaAuthPattern.TryDetectLogin(reduced, out layout, out evidence),
+                    "A similar but different service identity was accepted: " + name);
             }
         }
 
@@ -194,7 +214,7 @@ namespace Vanilla.Diagnostics.Tests
             }
         }
 
-        private static Bitmap LoginImage(int width, int height, bool softened, int offsetX = 0, int offsetY = 0, bool serviceName = true)
+        private static Bitmap LoginImage(int width, int height, bool softened, int offsetX = 0, int offsetY = 0, bool serviceName = true, string serviceLabel = "Vanilla MMO")
         {
             var bitmap = new Bitmap(width, height);
             using (Graphics graphics = Graphics.FromImage(bitmap))
@@ -219,7 +239,7 @@ namespace Vanilla.Diagnostics.Tests
                         {
                             using (var font = new Font("Tahoma", Math.Max(11, boxHeight * 0.62f), FontStyle.Regular, GraphicsUnit.Pixel))
                             using (var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
-                                graphics.DrawString("Vanilla MMO", font, ink,
+                                graphics.DrawString(serviceLabel, font, ink,
                                     new Rectangle(box.Left, box.Top, box.Width - box.Height, box.Height), format);
                             int divider = box.Right - box.Height;
                             graphics.DrawLine(pen, divider, box.Top, divider, box.Bottom);
@@ -245,6 +265,14 @@ namespace Vanilla.Diagnostics.Tests
                 VanillaTextRecognition.TryRead(image, service, true, out lines, out evidence);
                 Console.WriteLine("Synthetic login candidate {0}: {1}; {2}", service, evidence,
                     string.Join(" | ", lines.Select(line => line.Text + " @" + line.Confidence.ToString("0.0"))));
+                foreach (VanillaTextPreparation preparation in new[] { VanillaTextPreparation.NearestNeighbor,
+                    VanillaTextPreparation.Contrast, VanillaTextPreparation.BinaryDark,
+                    VanillaTextPreparation.BinaryLight, VanillaTextPreparation.Sharpen })
+                {
+                    VanillaTextRecognition.TryRead(image, service, true, out lines, out evidence, preparation);
+                    Console.WriteLine("Synthetic login {0} {1}: {2}; {3}", service, preparation, evidence,
+                        string.Join(" | ", lines.Select(line => line.Text + " @" + line.Confidence.ToString("0.0"))));
+                }
                 if (service.Width > 0 && service.Height > 0 && new Rectangle(Point.Empty, image.Size).Contains(service))
                     using (Bitmap crop = image.Clone(service, System.Drawing.Imaging.PixelFormat.Format24bppRgb))
                         SaveLoginFixture(crop, "login-candidate");

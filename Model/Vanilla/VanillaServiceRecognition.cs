@@ -83,7 +83,7 @@ namespace _4RTools.Model.Vanilla
             foreach (Rectangle header in headers)
             {
                 Rectangle titleArea;
-                if (!TryTitleTextArea(pixels, header, out titleArea)) continue;
+                if (!TryTitleTextArea(pixels, header, out titleArea, trace)) continue;
                 VanillaTextLine[] title;
                 string ocrEvidence;
                 if (!VanillaTextRecognition.TryRead(bitmap, titleArea, true, out title, out ocrEvidence))
@@ -120,27 +120,50 @@ namespace _4RTools.Model.Vanilla
                 + string.Join(", ", (line.Words ?? new VanillaTextWord[0]).Select(word => word.Text + ":" + word.Confidence.ToString("0.0")))));
         }
 
-        private static bool TryTitleTextArea(VanillaRecognitionPixels pixels, Rectangle header, out Rectangle area)
+        private static bool TryTitleTextArea(VanillaRecognitionPixels pixels, Rectangle header, out Rectangle area, Action<string> trace)
         {
             area = Rectangle.Empty;
-            var columns = new int[header.Width];
-            var rows = new int[header.Height];
+            var ink = new bool[header.Width * header.Height];
             for (int y = header.Top; y < header.Bottom; y++)
                 for (int x = header.Left; x < header.Right; x++)
-                    if (pixels.NeutralInk(x, y)) { columns[x - header.Left]++; rows[y - header.Top]++; }
-            int left = header.Right, right = header.Left - 1, top = header.Bottom, bottom = header.Top - 1;
-            for (int y = header.Top; y < header.Bottom; y++)
-                for (int x = header.Left; x < header.Right; x++)
+                    ink[(y - header.Top) * header.Width + x - header.Left] = pixels.NeutralInk(x, y);
+            var queue = new int[ink.Length];
+            var kept = new List<Rectangle>();
+            for (int seed = 0; seed < ink.Length; seed++)
+            {
+                if (!ink[seed]) continue;
+                int count = 1, next = 0;
+                queue[0] = seed; ink[seed] = false;
+                int left = header.Width, right = -1, top = header.Height, bottom = -1;
+                while (next < count)
                 {
-                    // Text strokes occupy part of a title's height/width. Full-height
-                    // frame edges and long horizontal rules must not become OCR glyphs.
-                    if (columns[x - header.Left] >= header.Height * .8
-                        || rows[y - header.Top] >= header.Width * .6 || !pixels.NeutralInk(x, y)) continue;
-                    left = Math.Min(left, x); right = Math.Max(right, x);
-                    top = Math.Min(top, y); bottom = Math.Max(bottom, y);
+                    int position = queue[next++], x = position % header.Width, y = position / header.Width;
+                    left = Math.Min(left, x); right = Math.Max(right, x); top = Math.Min(top, y); bottom = Math.Max(bottom, y);
+                    for (int dy = -1; dy <= 1; dy++)
+                        for (int dx = -1; dx <= 1; dx++)
+                        {
+                            int nx = x + dx, ny = y + dy;
+                            if (nx < 0 || nx >= header.Width || ny < 0 || ny >= header.Height) continue;
+                            int neighbor = ny * header.Width + nx;
+                            if (!ink[neighbor]) continue;
+                            ink[neighbor] = false; queue[count++] = neighbor;
+                        }
                 }
-            if (right - left < 20 || bottom - top < 4) return false;
-            area = Rectangle.Intersect(header, Rectangle.Inflate(Rectangle.FromLTRB(left, top, right + 1, bottom + 1), 2, 2));
+                var component = new Rectangle(header.Left + left, header.Top + top, right - left + 1, bottom - top + 1);
+                // Resampling breaks borders into fragments, so row/column averages are
+                // insufficient. Exclude connected edge fragments and long frame rules.
+                // All retained glyph bounds must be inside the observed title surface.
+                if (count < 2 || left <= 1 || top <= 1 || right >= header.Width - 2 || bottom >= header.Height - 2
+                    || (component.Height >= header.Height * .75 && component.Height >= component.Width * 3)
+                    || (component.Width >= header.Width * .15 && component.Width >= component.Height * 8)) continue;
+                kept.Add(component);
+            }
+            if (trace != null) trace("Retained title ink components=" + string.Join("; ", kept));
+            if (kept.Count < 2) return false;
+            Rectangle text = kept[0];
+            foreach (Rectangle component in kept.Skip(1)) text = Rectangle.Union(text, component);
+            if (text.Width < 20 || text.Height < 5) return false;
+            area = Rectangle.Intersect(header, Rectangle.Inflate(text, 2, 2));
             return area.Width > 20 && area.Height > 4;
         }
 
