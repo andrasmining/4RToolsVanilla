@@ -267,21 +267,27 @@ namespace _4RTools.Model.Vanilla
                 {
                     if (!observation.Verified || !observation.Percent.HasValue) continue;
                     anyVerified = true;
-                    if (!supervisor.IsWeightEnabledForProcess(observation.ProcessId)) continue;
-                    ProcessFarmingMilestones(current, observation);
-                    ProcessAutoCart(current, observation);
-                    if (current.Enabled) ProcessObservation(current, observation);
+
+                    bool cartEnabled = current.AutoCartEnabled
+                        && supervisor.IsCartMaintenanceEnabledForProcess(observation.ProcessId);
+                    bool mailEnabled = current.Enabled
+                        && supervisor.IsWeightEmailEnabledForProcess(observation.ProcessId);
+
+                    if (cartEnabled)
+                    {
+                        ProcessFarmingMilestones(current, observation, mailEnabled);
+                        ProcessAutoCart(current, observation);
+                    }
+                    else if (mailEnabled)
+                    {
+                        ProcessObservation(current, observation);
+                    }
                 }
                 if (!anyVerified) SetStatus("Weight manager waiting for verified CurrentWeight/MaxWeight mappings. " + ObservationSummary(observations));
-                else if (!current.Enabled && !current.AutoCartEnabled) SetStatus("Weight actions disabled. " + ObservationSummary(observations));
+                else if (!current.Enabled && !current.AutoCartEnabled)
+                    SetStatus("Weight actions disabled. " + ObservationSummary(observations));
                 else
-                {
-                    decimal activeThreshold = current.Enabled && current.AutoCartEnabled
-                        ? Math.Min(current.ThresholdPercent, current.AutoCartThresholdPercent)
-                        : current.AutoCartEnabled ? current.AutoCartThresholdPercent : current.ThresholdPercent;
-                    if (!observations.Any(item => item.Verified && item.Percent >= activeThreshold))
-                        SetStatus("Weight OK. " + ObservationSummary(observations));
-                }
+                    SetStatus("Weight monitor active. " + ObservationSummary(observations));
             }
             catch (Exception ex) { SetStatus("Weight monitor error: " + ex.Message); }
             finally { Interlocked.Exchange(ref polling, 0); }
@@ -305,7 +311,8 @@ namespace _4RTools.Model.Vanilla
             };
         }
 
-        private void ProcessFarmingMilestones(VanillaWeightAlertSettings current, VanillaWeightObservation observation)
+        private void ProcessFarmingMilestones(VanillaWeightAlertSettings current, VanillaWeightObservation observation,
+            bool mailEnabled)
         {
             if (!observation.CartVerified || !observation.CartPercent.HasValue) return;
             string accountId = supervisor.ManagedAccountIdForProcess(observation.ProcessId);
@@ -334,7 +341,7 @@ namespace _4RTools.Model.Vanilla
             }
 
             DateTimeOffset now = DateTimeOffset.UtcNow;
-            bool milestoneMail = MilestoneMailConfigured(current);
+            bool milestoneMail = mailEnabled && MilestoneMailConfigured(current);
             if (cartAtFullMilestone && milestoneMail)
             {
                 bool sendCartFull;
@@ -384,10 +391,6 @@ namespace _4RTools.Model.Vanilla
                 if (milestoneMail) TrySendDoneMail(current, observation, accountId, state);
                 return;
             }
-
-            // Notification can still be useful with Cart automation disabled, but changing
-            // Autobattle state remains governed by the global Auto Cart switch.
-            if (!current.AutoCartEnabled) return;
 
             bool startStop;
             lock (gate)
