@@ -1,0 +1,110 @@
+name: Complete Cart policy
+
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/complete-cart-policy.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+concurrency:
+  group: complete-cart-policy
+  cancel-in-progress: false
+
+jobs:
+  complete:
+    runs-on: windows-2022
+    timeout-minutes: 30
+    steps:
+      - name: Checkout current main
+        uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Apply guarded source edits and remove temporary tooling
+        shell: powershell
+        run: |
+          python scripts/finish-cart-policy.py
+          if ($LASTEXITCODE -ne 0) { throw 'Guarded Cart patch failed; no source commit will be pushed.' }
+          git rm scripts/finish-cart-policy.py .github/workflows/complete-cart-policy.yml
+          if ($LASTEXITCODE -ne 0) { throw 'Temporary tooling removal failed.' }
+          git add AGENTS.md Model/Vanilla/AGENTS.md Model/Vanilla/VanillaMinimalAccountUi.cs Model/Vanilla/VanillaReconnect.cs Model/Vanilla/VanillaWeightAlerts.cs Model/Vanilla/VanillaWeightAlertsPanel.cs Model/Vanilla/VanillaWeightCartAutomation.cs Tests/VanillaMemoryAndWeightTests.cs
+          git -c core.whitespace=cr-at-eol diff --cached --check
+          if ($LASTEXITCODE -ne 0) { throw 'Patch whitespace validation failed.' }
+          git diff --cached --stat
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'fix: complete independent Cart and combined-capacity mail policy'
+          if ($LASTEXITCODE -ne 0) { throw 'Source commit failed.' }
+
+      - name: Restore NuGet packages
+        shell: powershell
+        run: |
+          nuget restore 4RTools.sln -NonInteractive
+          if ($LASTEXITCODE -ne 0) { throw 'NuGet restore failed.' }
+
+      - name: Validate shipped Vanilla build profiles
+        shell: powershell
+        run: '& .\scripts\validate-vanilla-build-profiles.ps1'
+
+      - name: Build and test Debug
+        shell: powershell
+        run: '& .\scripts\build.ps1 -Configuration Debug -VanillaRelease'
+
+      - name: Build, test, package and smoke-test Release
+        shell: powershell
+        run: |
+          $text = Get-Content 'Properties/AssemblyInfo.cs' -Raw
+          $match = [regex]::Match($text, 'AssemblyFileVersion\("([0-9]+\.[0-9]+\.[0-9]+)\.0"\)')
+          if (-not $match.Success) { throw 'Release version is unavailable.' }
+          & .\scripts\build-release.ps1 -Version $match.Groups[1].Value
+
+      - name: Native test-owned process recovery checks
+        shell: powershell
+        run: '& .\scripts\test-recovery-native.ps1'
+
+      - name: Render and validate mock-data UI
+        shell: powershell
+        run: '& .\scripts\test-ui-layout.ps1'
+
+      - name: Push tested source without rewriting concurrent work
+        shell: powershell
+        run: |
+          git push origin HEAD:main
+          if ($LASTEXITCODE -ne 0) { throw 'Source push failed; preserve evidence and reconcile concurrent work.' }
+          $local = (git rev-parse HEAD).Trim()
+          $remote = (git ls-remote origin refs/heads/main).Split()[0]
+          if ($local -ne $remote) { throw 'Main verification failed.' }
+          Write-Host "Verified tested source on main: $local"
+
+      - name: Export validation evidence
+        if: always()
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Path dist/cart-policy-evidence -Force | Out-Null
+          git bundle create dist/cart-policy-evidence/source.bundle --all
+          git rev-parse HEAD | Out-File dist/cart-policy-evidence/source-commit.txt -Encoding utf8
+          $cache = Join-Path $env:LOCALAPPDATA '4RTools-Engineering'
+          foreach ($folder in @('builds', 'portable-tests')) {
+            $source = Join-Path $cache $folder
+            if (Test-Path $source) { Copy-Item $source dist/cart-policy-evidence -Recurse -Force }
+          }
+
+      - name: Upload source, test and UI evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: cart-policy-evidence-${{ github.run_id }}
+          path: |
+            dist/cart-policy-evidence/**
+            dist/ui-layout/*.png
+            dist/ui-layout/*.txt
+            dist/native-recovery.log
+          if-no-files-found: error
+          retention-days: 14
