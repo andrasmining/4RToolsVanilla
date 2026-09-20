@@ -1,111 +1,77 @@
-# 4RTools Vanilla 0.6.64
+# 4RTools Vanilla 0.6.65
 
-## Weight/Cart: HP damage guard while Autobattle is stopped
+## Independent Cart and e-mail policy per character
 
-The live v0.6.63 test showed an important edge case: a character can satisfy the new stationary X/Y STOP check while standing in range of a monster such as a Geographer. In that situation the character may be stationary because Autobattle really stopped, but continuing to lose HP makes opening Inventory/Cart unsafe.
+Cart maintenance and Weight e-mail are no longer one combined per-character switch.
 
-This release adds a cumulative HP safety guard to the complete stopped phase.
+Each saved character now has two independent policies in **Recovery & relog**:
 
-### STOP verification now checks HP as well as X/Y
+- **Cart** — enables UI-only automatic Cart maintenance for that character.
+- **Mail** — enables e-mail notifications for that character.
 
-The first fresh verified HP percentage observed at the beginning of the STOP sequence becomes the damage baseline.
+The character list shows compact **Cart** and **Mail** columns, and the character editor exposes separate checkboxes. Existing legacy profiles remain compatible: when the new split fields are absent, both inherit the old combined `WeightEnabled` value. Once the split fields are explicitly saved, they take precedence and are preserved through clone/catalog/discovery/identity enrichment.
 
-During the existing STOP verification:
+The shared Weight tab still owns common thresholds, category choices, hotkeys and SMTP transport. Its **Cart master** and **E-mail master** remain global kill switches; the matching per-character switch must also be enabled before a character can use that feature.
 
-- STOP still requires **5 continuous seconds of unchanged X/Y** inside each **10-second** attempt;
-- STOP still has at most **3 attempts**;
-- the original HP baseline is retained across all STOP retries;
-- if HP falls by **more than 10 percentage points** from that baseline, STOP verification aborts immediately;
-- Inventory and Cart are not opened after that damage signal.
+## E-mail meaning now follows whether Cart maintenance is active
 
-Exactly a 10-point drop does not cross the guard; the abort condition is strictly greater than 10 percentage points.
+The same per-character Mail switch now has the intended interpretation:
 
-### HP remains guarded throughout Cart maintenance
+- **Cart inactive + Mail ON:** carried-weight warning e-mail at the configured Weight threshold. This supports characters without a Cart, for example a character where you want notification around 45% carried weight.
+- **Cart active + Mail ON:** carried-weight-only warnings are suppressed. E-mail instead follows the Cart/farming state:
+  - exact **Cart 100%** remains the early Cart-full milestone notification;
+  - **Cart >=99% AND carried weight >=50%** is the combined DONE milestone after the verified Autobattle STOP.
+- **Cart ON + Mail OFF:** Cart maintenance runs normally with no e-mail notifications.
+- **Cart OFF + Mail OFF:** neither automatic Cart maintenance nor Weight mail runs for that character.
 
-After STOP is verified, the same original HP baseline remains active for the entire period in which Autobattle is intentionally OFF.
+This prevents a Cart-managed character from generating an irrelevant carried-weight-only warning while still preserving useful Cart-full and final combined-full notifications.
 
-Fresh verified HP is re-checked during:
+## Compact UI; explanations moved to hover help
 
-- panel opening/detection;
-- category selection and confirmation waits;
-- first-slot classification;
-- quantity-dialog waits;
-- Cart-weight verification waits;
-- retry pauses;
-- mouse source hold;
-- cursor movement;
-- destination/drop hold;
-- post-release settle;
-- panel closing.
+Long instructional paragraphs have been removed from the Weight/Cart and character-management surfaces.
 
-The guard is therefore active even in the middle of drag-and-drop.
+- Weight/Cart uses compact section controls plus small info/help glyphs.
+- Detailed behavior is available through mouse-hover tooltips.
+- Character editor Cart, Mail and Smart Teleport behavior is documented via hover help rather than persistent prose.
+- The Recovery character table remains compact; Cart and Mail states are visible directly.
+- The password-state header was shortened to **Pwd** so the new policy columns still fit narrow/RDP layouts; full cell values remain available through tooltips.
+- The old long Recovery helper paragraph is hidden in the simplified production UI.
 
-If HP falls by more than 10 percentage points, or fresh verified HP becomes unavailable after STOP:
+Active warnings, errors, live state and short status messages remain visible without hovering.
 
-1. further Cart input is cancelled;
-2. the mouse is safely released if a drag was in progress;
-3. 4RTools switches the input cancellation policy back to normal supervisor ownership;
-4. Autobattle is resumed through the shared verified ResumeHotkey/X/Y routine;
-5. any open Inventory/Cart panels are closed best-effort after resume;
-6. the client is minimized;
-7. Cart maintenance is re-armed for another attempt after about **60 seconds**.
+## Existing Cart safety behavior retained
 
-Pure HP danger therefore behaves like a transient farming condition, not like a permanent Cart error/manual hold. If the emergency Autobattle resume itself cannot be verified, the client still fails closed for manual inspection rather than pretending it is safe.
+This release preserves the live-hardened Weight/Cart behavior from v0.6.64:
 
-### Farming-complete STOP uses the same HP guard
-
-The final STOP used for the completed-farming hold is also HP-protected.
-
-If HP drops by more than 10 percentage points while trying to stop at the DONE threshold, Autobattle is resumed and the completed hold is **not** armed. Another farming-complete STOP is delayed for about **60 seconds** rather than being retried immediately.
-
-The DONE threshold remains:
-
-- Cart **>=99%**
-- carried weight **>=50%**
-
-## Faster cursor travel, same deliberate grab/drop
-
-The previous Cart hardening made the cursor movement itself unnecessarily slow. The live issue was reliability of the initial grab and final drop, not the transit across the screen.
-
-The deliberate Cart drag now keeps the proven source/drop timing but accelerates only the travel phase:
-
-- source hold before mouse-down: **250 ms** (unchanged);
-- cursor travel: **6 deterministic steps x 35 ms** (about 210 ms total, down from 12 x 100 ms / about 1.2 s);
-- destination hold before mouse-up: **300 ms** (unchanged);
-- post-release settle: **500 ms** (unchanged).
-
-Cancellation/HP checks also run during these holds and movement slices, so faster travel does not weaken the stopped-HP safety guard.
-
-## Existing Cart behavior retained
-
-- precision item-weight filling begins at **75% Cart usage**;
-- Mastela Fruit / Use = **3 weight**;
-- Peco Feather / Etc = **1 weight**;
-- Cart maximum = **10000**;
-- precision quantity is calculated from verified remaining Cart capacity;
-- up to three slow/reliable transfer attempts remain available;
-- pure transfer non-progress resumes Autobattle and retries after about 60 seconds;
-- exact Cart 100% remains the Cart-full e-mail milestone;
-- per-process timestamped debug files and the 10 MiB per-file hard log cap remain in place.
+- Autobattle STOP must be verified by **5 continuous seconds of unchanged X/Y** inside a **10-second** window, with at most **3 STOP attempts**.
+- One cumulative HP baseline is retained from the beginning of the STOP sequence through the entire stopped Cart operation.
+- HP dropping by **more than 10 percentage points**, or verified HP becoming unavailable after STOP, aborts Cart work, resumes Autobattle through verified movement, minimizes, and retries Cart maintenance after about **60 seconds**.
+- The HP guard remains active during panel work, waits and mouse drag/drop.
+- Cart precision filling begins at **75% Cart usage**.
+- Mastela Fruit / Use = **3 weight**; Peco Feather / Etc = **1 weight**; Cart capacity = **10000**.
+- Quantity-aware filling never intentionally exceeds remaining Cart capacity.
+- Cart transfers keep deliberate source/drop holds with faster cursor travel (**6 steps x ~35 ms**).
+- A transfer receives up to **3** bounded attempts; pure transfer non-progress resumes Autobattle and retries about a minute later rather than creating a permanent hold.
+- Farming completion remains **Cart >=99% + carried >=50%**.
+- Per-process timestamped debug logs and the **10 MiB** per-file hard cap remain unchanged.
 
 ## Validation
 
-Before versioning this release, the full Windows pipeline passed:
+Before versioning v0.6.65, the full Windows pipeline passed on the final feature implementation:
 
 - shipped Vanilla build-profile validation;
 - complete Debug diagnostics/regression suite;
 - Release build/package/smoke tests;
 - native test-owned recovery checks;
-- mock-data UI rendering/layout validation.
+- mock-data UI rendering/layout validation across desktop, RDP-sized and enlarged-text cases.
 
-New deterministic regressions cover:
+New regression coverage includes:
 
-- HP damage >10 percentage points aborting STOP verification immediately;
-- exactly 10 percentage points remaining below the abort boundary;
-- one cumulative HP baseline surviving across STOP retries;
-- Cart HP threshold semantics;
-- faster cursor-travel bounds while preserving deliberate source/destination holds;
-- existing 5-second stationary STOP / 10-second attempts / 3-attempt budget;
-- 75% precision filling, 99%+50% DONE threshold and one-minute retry policies.
+- independent Cart/Mail policy persistence per character;
+- legacy combined Weight-policy fallback;
+- Cart/Mail edits surviving discovery/enrichment;
+- adaptive Mail mode selection for Cart vs non-Cart characters;
+- compact visible Cart/Mail character columns;
+- narrow-grid fitting without unnecessary horizontal scrollbars.
 
-The engineering runner cannot reproduce the user's live Vanilla/Gepard/RDP combat timing. The next VPS Weight/Cart pass remains the live validation boundary for the HP-danger recovery path and the faster drag travel.
+The engineering runner cannot reproduce the user's live Vanilla/Gepard/RDP gameplay. The split policy/e-mail routing and UI are validated offline; the next live farming session remains the runtime-validation boundary for real Cart/SMTP behavior.
