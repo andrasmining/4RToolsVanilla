@@ -346,6 +346,8 @@ namespace _4RTools.Model.Vanilla
             accounts.ShowCellToolTips = true;
             accounts.Columns["Enabled"].HeaderText = "Enabled";
             if (accounts.Columns.Contains("WeightEnabled")) accounts.Columns["WeightEnabled"].HeaderText = "Weight";
+            if (accounts.Columns.Contains("CartMaintenanceEnabled")) accounts.Columns["CartMaintenanceEnabled"].HeaderText = "Cart";
+            if (accounts.Columns.Contains("WeightEmailEnabled")) accounts.Columns["WeightEmailEnabled"].HeaderText = "Mail";
             if (accounts.Columns.Contains("SmartTeleportEnabled")) accounts.Columns["SmartTeleportEnabled"].HeaderText = "Smart TP";
             if (accounts.Columns.Contains("SmartTeleportSeconds")) accounts.Columns["SmartTeleportSeconds"].HeaderText = "TP sec";
             if (accounts.Columns.Contains("SmartTeleportHotkey")) accounts.Columns["SmartTeleportHotkey"].HeaderText = "TP hotkey";
@@ -371,6 +373,8 @@ namespace _4RTools.Model.Vanilla
             {
                 case "Enabled": standard = 52; break;
                 case "WeightEnabled": standard = 48; break;
+                case "CartMaintenanceEnabled": standard = 38; break;
+                case "WeightEmailEnabled": standard = 38; break;
                 case "SmartTeleportEnabled": standard = 58; break;
                 case "SmartTeleportSeconds": standard = 48; break;
                 case "SmartTeleportHotkey": standard = 68; break;
