@@ -70,6 +70,7 @@ namespace Vanilla.Diagnostics.Tests
             Test("Account status exposes verification and retry progress", StatusProgress);
             Test("STOP invalidates a worker even when its PID is retained", WorkerStop);
             Test("Settings changes release the verification lease and latch failure", WorkerSettingsChange);
+            Test("Mail-only edits preserve an active input lease but Cart edits still cancel", WorkerMailSettingsChange);
             Test("Normal supervision has no automatic resume queue after a failed diagnostic", WorkerFailureLatch);
             Test("A new operation cannot be completed by the old worker", WorkerReplacement);
             Test("Guarded chord releases every held key", ChordSuccess);
@@ -223,6 +224,33 @@ namespace Vanilla.Diagnostics.Tests
                 Assert(IsCancelled(supervisor, runtime), "Same PID revived an old worker.");
             });
         }
+        private static void WorkerMailSettingsChange()
+        {
+  RuntimeCase((supervisor, runtime) =>
+  {
+      Field(supervisor, "weightMaintenanceGeneration").SetValue(supervisor, 7);
+      var settings = supervisor.Settings;
+      var account = settings.Accounts[0];
+      account.CartMaintenanceEnabled = account.EffectiveCartMaintenanceEnabled;
+      account.WeightEmailEnabled = !account.EffectiveWeightEmailEnabled;
+      account.WeightEnabled = account.EffectiveCartMaintenanceEnabled || account.EffectiveWeightEmailEnabled;
+      supervisor.Apply(settings, false);
+      Assert(!IsCancelled(supervisor, runtime) && RuntimeFlag(runtime, "ScriptRunning")
+          && RuntimeFlag(runtime, "RecoveryOwned") && !RuntimeFlag(runtime, "ResumeVerificationFailed"),
+          "Mail-only edit cancelled or failed an active input worker.");
+      Assert((int)Field(supervisor, "weightMaintenanceGeneration").GetValue(supervisor) == 7,
+          "Mail-only edit invalidated Cart ownership.");
+      var updated = (VanillaReconnectAccount)runtime.GetType().GetField("Account").GetValue(runtime);
+      Assert(updated.EffectiveWeightEmailEnabled == account.EffectiveWeightEmailEnabled,
+          "Mail-only edit was not applied to the live runtime.");
+      settings = supervisor.Settings;
+      settings.Accounts[0].CartMaintenanceEnabled = !settings.Accounts[0].EffectiveCartMaintenanceEnabled;
+      supervisor.Apply(settings, false);
+      Assert(IsCancelled(supervisor, runtime) && !RuntimeFlag(runtime, "RecoveryOwned"),
+          "Cart policy edit failed to cancel the input worker.");
+  });
+        }
+
         private static void WorkerSettingsChange()
         {
             RuntimeCase((supervisor, runtime) =>

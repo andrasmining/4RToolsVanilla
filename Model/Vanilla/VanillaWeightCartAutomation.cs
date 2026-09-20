@@ -113,7 +113,7 @@ namespace _4RTools.Model.Vanilla
                 Runtime runtime;
                 return disposed || !running || token.Generation != weightMaintenanceGeneration
                     || !runtimes.TryGetValue(token.AccountId, out runtime) || runtime.ProcessId != token.ProcessId
-                    || !runtime.Account.Enabled || !runtime.Account.WeightEnabled || CharacterOwnershipChanged(runtime, token.ProcessId);
+                    || !runtime.Account.Enabled || !runtime.Account.EffectiveCartMaintenanceEnabled || CharacterOwnershipChanged(runtime, token.ProcessId);
             }
         }
 

@@ -194,7 +194,7 @@ namespace _4RTools.Model.Vanilla
             table.Controls.Add(buttons, 1, 10); Controls.Add(table); AcceptButton = save; CancelButton = cancel;
             help.SetToolTip(enabled, "Enable at most two character profiles. Multiple rows may use the same login account.");
             help.SetToolTip(cartMaintenance, "Enable UI-only Cart maintenance for this character. Shared Cart thresholds, category choices and hotkeys are configured on the Weight tab.");
-            help.SetToolTip(weightEmail, "Enable e-mail for this character. If Cart maintenance is inactive, use the carried-weight threshold. If this character's Cart switch and the shared Cart master are both active, suppress carried-only warnings and use Cart-full / combined DONE milestone mail.");
+            help.SetToolTip(weightEmail, "Enable e-mail for this character. If Cart maintenance is inactive, use the carried-weight threshold. If this character's Cart switch and the shared Cart master are both active, suppress carried-only warnings and mail waits for BOTH Cart >=99% and carried weight >=50%, after verified Autobattle STOP.");
             help.SetToolTip(label, "Your description; it is not used to identify the running character.");
             help.SetToolTip(character, "Saved expected character. The list contains freshly verified running character names.");
             help.SetToolTip(user, "Filled automatically only from verified memory. Without a verified username mapping, the saved username remains editable.");

@@ -187,6 +187,33 @@ namespace _4RTools.Model.Vanilla
                 ? VanillaWeightMailMode.CartMilestones
                 : VanillaWeightMailMode.CarriedWeight;
         }
+        internal static bool IsCombinedCapacityReached(VanillaWeightObservation observation)
+        {
+            return observation != null && observation.Verified && observation.CartVerified
+                && observation.Percent.HasValue && observation.CartPercent.HasValue
+                && VanillaWeightCartAutomation.IsFarmingComplete(
+                    observation.CartPercent.Value, observation.Percent.Value);
+        }
+
+        // Resolve policy again immediately before dispatch. A queued completion must not
+        // reuse Mail/Cart switches or SMTP settings captured before the user edited them.
+        private bool TryGetAutomaticMailSettings(int processId, string accountId,
+            VanillaWeightMailMode expectedMode, out VanillaWeightAlertSettings current)
+        {
+            current = null;
+            lock (gate)
+            {
+                if (disposed || timer == null) return false;
+                current = settings.Clone();
+            }
+            if (string.IsNullOrWhiteSpace(accountId)
+                || !string.Equals(accountId, supervisor.ManagedAccountIdForProcess(processId),
+                    StringComparison.OrdinalIgnoreCase)) return false;
+            return ResolveMailMode(current.Enabled, supervisor.IsWeightEmailEnabledForProcess(processId),
+                current.AutoCartEnabled, supervisor.IsCartMaintenanceEnabledForProcess(processId)) == expectedMode
+                && MilestoneMailConfigured(current);
+        }
+
         internal const int PrecisionCartRetrySeconds = 60;
         private readonly VanillaWeightAlertStore store;
         private readonly VanillaFleetMonitor fleetMonitor;
@@ -252,8 +279,8 @@ namespace _4RTools.Model.Vanilla
             try
             {
                 var probe = value.Clone();
-                // Cart-full and DONE mails are independent of the optional carried-weight
-                // warning switch. They only require a valid saved SMTP transport.
+                // Transport validation is separate from authorization. Every automatic
+                // dispatch must also pass the current shared and per-character Mail policy.
                 probe.Enabled = true;
                 probe.Validate(true);
                 return true;
@@ -335,17 +362,13 @@ namespace _4RTools.Model.Vanilla
             if (string.IsNullOrWhiteSpace(accountId)) return;
             string key = "FARM:" + accountId;
             AlertState state;
-            bool cartAtFullMilestone = observation.CartPercent.Value >= VanillaWeightCartAutomation.CartFullPercent;
             bool cartAtDoneThreshold = observation.CartPercent.Value >= VanillaWeightCartAutomation.FarmingDoneCartPercent;
             lock (gate)
             {
                 if (!states.TryGetValue(key, out state)) states[key] = state = new AlertState();
 
-                // Exact 100% remains the Cart-full mail milestone. Farming completion is
-                // intentionally >=99% Cart plus >=50% carried weight.
-                if (!cartAtFullMilestone)
-                    state.CartFullNotified = false;
-
+                // Only the combined capacity threshold is a mail event. A full Cart
+                // alone still leaves carried capacity available and must not send mail.
                 if (!cartAtDoneThreshold)
                 {
                     state.DoneNotified = false;
@@ -356,47 +379,8 @@ namespace _4RTools.Model.Vanilla
                 }
             }
 
-            DateTimeOffset now = DateTimeOffset.UtcNow;
+            if (!IsCombinedCapacityReached(observation)) return;
             bool milestoneMail = mailEnabled && MilestoneMailConfigured(current);
-            if (cartAtFullMilestone && milestoneMail)
-            {
-                bool sendCartFull;
-                lock (gate) sendCartFull = !state.CartFullNotified && now >= state.NextMilestoneMailAt;
-                if (sendCartFull)
-                {
-                    try
-                    {
-                        string carried = observation.Percent.HasValue
-                            ? observation.Percent.Value.ToString("0.0", CultureInfo.InvariantCulture) + "%"
-                            : "unavailable";
-                        SendMail(current, "Cart full: " + observation.CharacterName,
-                            "Character: " + observation.CharacterName + Environment.NewLine
-                            + "Cart: " + observation.CurrentCartWeight + " / " + observation.MaxCartWeight + " (100%)" + Environment.NewLine
-                            + "Carried weight: " + observation.CurrentWeight + " / " + observation.MaxWeight + " (" + carried + ")" + Environment.NewLine
-                            + "Farming continues until carried weight reaches "
-                            + VanillaWeightCartAutomation.FarmingDoneCarryPercent.ToString("0.#", CultureInfo.InvariantCulture) + "%." + Environment.NewLine
-                            + "Observed: " + DateTimeOffset.Now.ToString("u", CultureInfo.InvariantCulture));
-                        lock (gate)
-                        {
-                            state.CartFullNotified = true;
-                            state.NextMilestoneMailAt = DateTimeOffset.MinValue;
-                        }
-                        VanillaDebugLog.Write("WEIGHT", "event=cart-full-email-sent accountId=" + accountId
-                            + " pid=" + observation.ProcessId + " character='" + observation.CharacterName + "'.");
-                        SetStatus("Cart full notification sent for " + observation.CharacterName + ".");
-                    }
-                    catch (Exception ex)
-                    {
-                        lock (gate) state.NextMilestoneMailAt = now + TimeSpan.FromMinutes(5);
-                        VanillaDebugLog.Write("WEIGHT", "event=cart-full-email-failed accountId=" + accountId
-                            + " pid=" + observation.ProcessId + " reason='" + ex.Message + "'.");
-                    }
-                }
-            }
-
-            if (!observation.Percent.HasValue
-                || observation.Percent.Value < VanillaWeightCartAutomation.FarmingDoneCarryPercent)
-                return;
 
             bool alreadyDone;
             lock (gate) alreadyDone = state.FarmingDone;
@@ -446,11 +430,17 @@ namespace _4RTools.Model.Vanilla
         private void TrySendDoneMail(VanillaWeightAlertSettings current, VanillaWeightObservation observation,
             string accountId, AlertState state)
         {
-            bool sendDone;
-            lock (gate) sendDone = !state.DoneNotified && DateTimeOffset.UtcNow >= state.NextMilestoneMailAt;
-            if (!sendDone) return;
+            lock (gate)
+            {
+                if (state.DoneNotified || state.Sending || DateTimeOffset.UtcNow < state.NextMilestoneMailAt) return;
+                state.Sending = true;
+            }
             try
             {
+                if (!IsCombinedCapacityReached(observation)
+                    || !supervisor.IsWeightCompletedHold(accountId)
+                    || !TryGetAutomaticMailSettings(observation.ProcessId, accountId,
+                        VanillaWeightMailMode.CartMilestones, out current)) return;
                 SendMail(current, "DONE: " + observation.CharacterName,
                     "DONE" + Environment.NewLine
                     + "Character: " + observation.CharacterName + Environment.NewLine
@@ -475,6 +465,7 @@ namespace _4RTools.Model.Vanilla
                 VanillaDebugLog.Write("WEIGHT", "event=farming-done-email-failed accountId=" + accountId
                     + " pid=" + observation.ProcessId + " reason='" + ex.Message + "'.");
             }
+            finally { lock (gate) state.Sending = false; }
         }
 
         private void ProcessAutoCart(VanillaWeightAlertSettings current, VanillaWeightObservation observation)
@@ -560,8 +551,8 @@ namespace _4RTools.Model.Vanilla
             string reason;
             if (!supervisor.TryResolveOnlineManagedCharacter(accountId, out pid, out account, out reason))
                 throw new InvalidOperationException(reason);
-            if (!account.WeightEnabled)
-                throw new InvalidOperationException("Weight/Cart is disabled for this character.");
+            if (!account.EffectiveCartMaintenanceEnabled)
+                throw new InvalidOperationException("Cart maintenance is disabled for this character.");
 
             VanillaWeightAlertSettings current;
             lock (gate)
@@ -630,9 +621,10 @@ namespace _4RTools.Model.Vanilla
                 state.CartArmed = true;
                 state.FarmingDone = false;
                 state.CompletionStopping = false;
-                state.CartFullNotified = false;
                 state.DoneNotified = false;
                 state.NextCartAttemptAt = DateTimeOffset.MinValue;
+                state.NextCompletionAttemptAt = DateTimeOffset.MinValue;
+                state.NextMilestoneMailAt = DateTimeOffset.MinValue;
             }
             supervisor.ClearWeightManualHolds();
             SetStatus("Weight manual holds cleared. Automatic cart maintenance can run again after the threshold is reached.");
@@ -659,6 +651,9 @@ namespace _4RTools.Model.Vanilla
             }
             try
             {
+                if (!TryGetAutomaticMailSettings(observation.ProcessId, accountId,
+                    VanillaWeightMailMode.CarriedWeight, out current)
+                    || observation.Percent.Value < current.ThresholdPercent) return;
                 string percent = observation.Percent.Value.ToString("0.0", CultureInfo.InvariantCulture);
                 string subject = "Weight warning: " + observation.CharacterName + " " + percent + "%";
                 string body = "Character: " + observation.CharacterName + Environment.NewLine
@@ -743,7 +738,6 @@ namespace _4RTools.Model.Vanilla
             public bool CartArmed = true;
             public bool CartRunning;
             public bool ManualHold;
-            public bool CartFullNotified;
             public bool DoneNotified;
             public bool FarmingDone;
             public bool CompletionStopping;

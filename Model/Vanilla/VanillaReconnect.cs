@@ -673,38 +673,71 @@ namespace _4RTools.Model.Vanilla
             }
         }
 
+        internal static bool IsMailOnlySettingsChange(VanillaReconnectSettings before, VanillaReconnectSettings after)
+        {
+            if (before == null || after == null || before.Accounts == null || after.Accounts == null) return false;
+            // An unchanged Apply is an explicit recovery reset, not a Mail edit.
+            if (!before.Accounts.Any(previous => after.Accounts.Any(current => current.Id == previous.Id
+                && current.EffectiveWeightEmailEnabled != previous.EffectiveWeightEmailEnabled))) return false;
+            var left = Newtonsoft.Json.Linq.JObject.FromObject(before);
+            var right = Newtonsoft.Json.Linq.JObject.FromObject(after);
+            foreach (var snapshot in new[] { left, right })
+            {
+                foreach (var row in snapshot["Accounts"])
+                {
+                    bool cart = (bool?)row["CartMaintenanceEnabled"] ?? (bool?)row["WeightEnabled"] ?? true;
+                    row["WeightEnabled"] = cart;
+                    row["CartMaintenanceEnabled"] = cart;
+                    row["WeightEmailEnabled"] = null;
+                }
+            }
+            return Newtonsoft.Json.Linq.JToken.DeepEquals(left, right);
+        }
+
         public void Apply(VanillaReconnectSettings value, bool save)
         {
             if (value == null) throw new ArgumentNullException(nameof(value));
             var copy = value.Clone(); copy.Validate();
             lock (gate)
             {
-                Interlocked.Increment(ref resumeVerificationGeneration);
-                Interlocked.Increment(ref diagnosticGeneration);
-                Interlocked.Increment(ref hardenedStartupGeneration);
-                Interlocked.Increment(ref weightMaintenanceGeneration);
-                Interlocked.Increment(ref smartTeleportGeneration);
-                hardenedStartupRunning = false;
-                foreach (var active in runtimes.Values.Where(r => r.ScriptRunning))
+                if (IsMailOnlySettingsChange(settings, copy))
                 {
-                    active.ScriptRunning = false;
-                    active.RecoveryOwned = false;
-                    active.ResumeVerificationFailed = true;
-                    active.ResumeFailureDetail = "Settings changed during startup/recovery; no further input sent";
-                    SetStage(active, VanillaReconnectStage.Error, active.ResumeFailureDetail);
+                    // Mail is observational: changing it must not cancel a drag, recovery
+                    // or sibling operation. All input-affecting edits use the normal path.
+                    settings = copy;
+                    foreach (Runtime runtime in runtimes.Values)
+                        runtime.Account = copy.Accounts.Single(account => account.Id == runtime.Account.Id);
+                    if (save) store.Save(settings);
                 }
-                foreach (var runtime in runtimes.Values)
+                else
                 {
-                    runtime.ClosingForRecovery = runtime.RecoveryOwned = false;
-                    runtime.MovementRecoveryPending = false;
-                    runtime.NonMinimizedSince = null;
-                    runtime.MovementWatchdog.Reset();
-                    ResetTerminalEvidence(runtime);
+                    Interlocked.Increment(ref resumeVerificationGeneration);
+                    Interlocked.Increment(ref diagnosticGeneration);
+                    Interlocked.Increment(ref hardenedStartupGeneration);
+                    Interlocked.Increment(ref weightMaintenanceGeneration);
+                    Interlocked.Increment(ref smartTeleportGeneration);
+                    hardenedStartupRunning = false;
+                    foreach (var active in runtimes.Values.Where(r => r.ScriptRunning))
+                    {
+                        active.ScriptRunning = false;
+                        active.RecoveryOwned = false;
+                        active.ResumeVerificationFailed = true;
+                        active.ResumeFailureDetail = "Settings changed during startup/recovery; no further input sent";
+                        SetStage(active, VanillaReconnectStage.Error, active.ResumeFailureDetail);
+                    }
+                    foreach (var runtime in runtimes.Values)
+                    {
+                        runtime.ClosingForRecovery = runtime.RecoveryOwned = false;
+                        runtime.MovementRecoveryPending = false;
+                        runtime.NonMinimizedSince = null;
+                        runtime.MovementWatchdog.Reset();
+                        ResetTerminalEvidence(runtime);
+                    }
+                    settings = copy;
+                    RebuildRuntimes();
+                    if (save) store.Save(settings);
+                    RecreateTimer();
                 }
-                settings = copy;
-                RebuildRuntimes();
-                if (save) store.Save(settings);
-                RecreateTimer();
             }
             RaiseUpdated();
         }

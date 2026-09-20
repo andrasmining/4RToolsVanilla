@@ -122,7 +122,7 @@ namespace _4RTools.Model.Vanilla
 
             help.SetToolTip(enabled,
                 "Global e-mail master. A character also needs its own Mail switch. If Cart maintenance is inactive, mail uses the carried-weight threshold. "
-                + "If that character's Cart switch and the Cart master are active, carried-only warnings are suppressed and Cart-full / combined DONE milestone mail is used.");
+                + "When Cart maintenance is active, mail waits for BOTH Cart >=99% and carried weight >=50%, after verified Autobattle STOP. No carried-only or Cart-only warning is sent.");
             help.SetToolTip(threshold,
                 "Carried-weight warning threshold for Mail-enabled characters whose Cart switch is OFF.");
             help.SetToolTip(rearm, "Re-arm carried-weight warning mail below this percentage.");
@@ -173,7 +173,7 @@ namespace _4RTools.Model.Vanilla
             var mailHelp = new Label { AutoSize = true, Text = "ⓘ", Cursor = Cursors.Help, Margin = new Padding(6, 8, 0, 0) };
             help.SetToolTip(mailHelp,
                 "Per-character Mail behavior: Cart OFF = carried-weight warning at the configured threshold. "
-                + "Cart ON = no carried-only warning; exact Cart 100% and combined Cart>=99% + carried>=50% milestones use this SMTP transport.");
+                + "Cart ON = one DONE notification only when Cart>=99% AND carried>=50%, after verified STOP. Cart-full alone does not notify.");
             settings.Controls.Add(mailHelp, 2, 6);
             group.Controls.Add(settings); return group;
         }
@@ -218,8 +218,7 @@ namespace _4RTools.Model.Vanilla
             VanillaWeightAlertSettings value = ReadSettings(); value.Validate(false); if (value.Enabled) value.Validate(true);
             service.ApplySettings(value, true); loaded = service.Settings; smtpPassword.Clear();
             bool milestoneMail = VanillaWeightAlertService.MilestoneMailConfigured(value);
-            status.Text = "Saved. Character Cart/Mail switches control who uses these shared settings"
-                + (milestoneMail ? "; SMTP ready." : "; SMTP not configured.");
+            status.Text = milestoneMail ? "Saved. SMTP ready." : "Saved. SMTP not configured.";
         }
 
         private enum HotkeyTarget { AutobattleStop, Inventory, Cart }

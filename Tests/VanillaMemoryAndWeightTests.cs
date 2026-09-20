@@ -23,12 +23,14 @@ namespace Vanilla.Diagnostics.Tests
             failed += Test("Known farming loot weights support capacity-safe Cart fill", CartCapacityRules);
             failed += Test("Weight alert thresholds enforce re-arm hysteresis", WeightThresholds);
             failed += Test("Enabled weight e-mail alerts require SMTP transport", WeightMailValidation);
-            failed += Test("Cart milestone mail uses saved SMTP independently of weight-warning switch", MilestoneMailPolicy);
+            failed += Test("SMTP transport validation does not authorize automatic mail", MilestoneMailPolicy);
             failed += Test("Weight cart settings validate independent UI automation", WeightCartSettings);
             failed += Test("Legacy Weight settings inherit dedicated Alt+3 Autobattle STOP", WeightCartStopHotkeyMigration);
             failed += Test("Cart and e-mail policies are independently switchable per character", WeightPolicyPerCharacter);
             failed += Test("Legacy combined Weight policy still feeds missing split switches", LegacyWeightPolicyFallback);
             failed += Test("Mail interpretation changes when Cart maintenance is active", WeightMailMode);
+            failed += Test("Cart mail waits for BOTH verified capacity limits", CombinedCapacityMail);
+            failed += Test("Mail-only edits preserve input ownership without masking Cart or identity edits", MailOnlySettingsEdits);
             failed += Test("Inventory vision finds toggled slot panel and occupied slot", InventoryVision);
             failed += Test("Cart first-slot classifier distinguishes empty from occupied and rotates safe destinations", CartFirstSlotClassifier);
             failed += Test("Inventory category rail is detected independent of location and scale", InventoryCategoryRail);
@@ -287,14 +289,71 @@ namespace Vanilla.Diagnostics.Tests
 
         private static void WeightMailMode()
         {
-            if (VanillaWeightAlertService.ResolveMailMode(false, true, true, true) != VanillaWeightMailMode.None)
-                throw new Exception("Global mail master OFF still produced a mail mode.");
-            if (VanillaWeightAlertService.ResolveMailMode(true, true, false, false) != VanillaWeightMailMode.CarriedWeight)
-                throw new Exception("Mail-only character did not use carried-weight warning mode.");
-            if (VanillaWeightAlertService.ResolveMailMode(true, true, true, true) != VanillaWeightMailMode.CartMilestones)
-                throw new Exception("Cart+Mail character did not switch to Cart milestone mode.");
-            if (VanillaWeightAlertService.ResolveMailMode(true, false, true, true) != VanillaWeightMailMode.None)
-                throw new Exception("Per-character Mail OFF still produced Cart milestone mail.");
+            foreach (bool masterMail in new[] { false, true })
+            foreach (bool rowMail in new[] { false, true })
+            foreach (bool masterCart in new[] { false, true })
+            foreach (bool rowCart in new[] { false, true })
+            {
+                var expected = !masterMail || !rowMail ? VanillaWeightMailMode.None
+                    : masterCart && rowCart ? VanillaWeightMailMode.CartMilestones : VanillaWeightMailMode.CarriedWeight;
+                if (VanillaWeightAlertService.ResolveMailMode(masterMail, rowMail, masterCart, rowCart) != expected)
+                    throw new Exception("Cart/Mail master and row truth table failed.");
+            }
+            var explicitCart = JsonConvert.DeserializeObject<VanillaReconnectAccount>(
+                "{\"WeightEnabled\":false,\"CartMaintenanceEnabled\":true,\"WeightEmailEnabled\":false}");
+            if (!explicitCart.Clone().EffectiveCartMaintenanceEnabled || explicitCart.EffectiveWeightEmailEnabled)
+                throw new Exception("Explicit Cart ON did not override legacy Weight OFF.");
+        }
+
+        private static void CombinedCapacityMail()
+        {
+            var observation = new VanillaWeightObservation { Verified = true, CartVerified = true, CartPercent = 100m, Percent = 45m };
+            if (VanillaWeightAlertService.IsCombinedCapacityReached(observation)) throw new Exception("Cart-full alone notified.");
+            observation.CartPercent = 98.99m; observation.Percent = 100m;
+            if (VanillaWeightAlertService.IsCombinedCapacityReached(observation)) throw new Exception("Carried-full alone notified.");
+            observation.CartPercent = 99m; observation.Percent = 50m;
+            if (!VanillaWeightAlertService.IsCombinedCapacityReached(observation)) throw new Exception("Exact combined boundary rejected.");
+            observation.Percent = 49.99m;
+            if (VanillaWeightAlertService.IsCombinedCapacityReached(observation)) throw new Exception("Below carried boundary notified.");
+            observation.Percent = 50m; observation.CartVerified = false;
+            if (VanillaWeightAlertService.IsCombinedCapacityReached(observation)) throw new Exception("Unverified Cart notified.");
+            observation.CartVerified = true; observation.Verified = false;
+            if (VanillaWeightAlertService.IsCombinedCapacityReached(observation)) throw new Exception("Unverified carried weight notified.");
+            observation.Verified = true; observation.CartPercent = null;
+            if (VanillaWeightAlertService.IsCombinedCapacityReached(observation)) throw new Exception("Missing Cart notified.");
+            observation.CartPercent = 100m; observation.Percent = null;
+            if (VanillaWeightAlertService.IsCombinedCapacityReached(observation)
+                || VanillaWeightAlertService.IsCombinedCapacityReached(null)) throw new Exception("Missing carried weight notified.");
+        }
+
+        private static void MailOnlySettingsEdits()
+        {
+            var before = VanillaReconnectSettings.CreateDefault();
+            before.Accounts[0].CartMaintenanceEnabled = false;
+            before.Accounts[0].WeightEmailEnabled = true;
+            before.Accounts[0].WeightEnabled = true;
+            string original = JsonConvert.SerializeObject(before);
+            var after = before.Clone();
+            after.Accounts[0].WeightEmailEnabled = false;
+            after.Accounts[0].WeightEnabled = false;
+            if (!VanillaReconnectSupervisor.IsMailOnlySettingsChange(before, after))
+                throw new Exception("Mail-only change would interrupt Cart/recovery ownership.");
+            after.Accounts[1].WeightEmailEnabled = false;
+            if (!VanillaReconnectSupervisor.IsMailOnlySettingsChange(before, after))
+                throw new Exception("Sibling Mail edit invalidated input ownership.");
+            var changed = after.Clone(); changed.Accounts[0].CartMaintenanceEnabled = true;
+            if (VanillaReconnectSupervisor.IsMailOnlySettingsChange(before, changed)) throw new Exception("Cart change was ignored.");
+            changed = after.Clone(); changed.Accounts[0].Enabled = false;
+            if (VanillaReconnectSupervisor.IsMailOnlySettingsChange(before, changed)) throw new Exception("Disable was ignored.");
+            changed = after.Clone(); changed.Accounts[0].CharacterName = "another character";
+            if (VanillaReconnectSupervisor.IsMailOnlySettingsChange(before, changed)) throw new Exception("Identity change was ignored.");
+            changed = after.Clone(); changed.Accounts[0].ResumeAlt = !changed.Accounts[0].ResumeAlt;
+            if (VanillaReconnectSupervisor.IsMailOnlySettingsChange(before, changed)) throw new Exception("Hotkey change was ignored.");
+            changed = after.Clone(); changed.MovementRestartSeconds++;
+            if (VanillaReconnectSupervisor.IsMailOnlySettingsChange(before, changed)) throw new Exception("Global setting change was ignored.");
+            changed = after.Clone(); changed.Accounts.RemoveAt(1);
+            if (VanillaReconnectSupervisor.IsMailOnlySettingsChange(before, changed)) throw new Exception("Removed row was ignored.");
+            if (JsonConvert.SerializeObject(before) != original) throw new Exception("Comparison changed persisted settings.");
         }
 
         private static void InventoryVision()
