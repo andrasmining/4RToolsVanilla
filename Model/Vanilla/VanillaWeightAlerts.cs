@@ -14,6 +14,13 @@ using _4RTools.Utils;
 
 namespace _4RTools.Model.Vanilla
 {
+    internal enum VanillaWeightMailMode
+    {
+        None,
+        CarriedWeight,
+        CartMilestones
+    }
+
     public sealed class VanillaWeightAlertSettings
     {
         public int Version { get; set; } = 1;
@@ -172,6 +179,14 @@ namespace _4RTools.Model.Vanilla
 
     public sealed class VanillaWeightAlertService : IDisposable
     {
+        internal static VanillaWeightMailMode ResolveMailMode(bool globalMailEnabled, bool characterMailEnabled,
+            bool globalCartEnabled, bool characterCartEnabled)
+        {
+            if (!globalMailEnabled || !characterMailEnabled) return VanillaWeightMailMode.None;
+            return globalCartEnabled && characterCartEnabled
+                ? VanillaWeightMailMode.CartMilestones
+                : VanillaWeightMailMode.CarriedWeight;
+        }
         internal const int PrecisionCartRetrySeconds = 60;
         private readonly VanillaWeightAlertStore store;
         private readonly VanillaFleetMonitor fleetMonitor;
@@ -268,17 +283,18 @@ namespace _4RTools.Model.Vanilla
                     if (!observation.Verified || !observation.Percent.HasValue) continue;
                     anyVerified = true;
 
-                    bool cartEnabled = current.AutoCartEnabled
-                        && supervisor.IsCartMaintenanceEnabledForProcess(observation.ProcessId);
-                    bool mailEnabled = current.Enabled
-                        && supervisor.IsWeightEmailEnabledForProcess(observation.ProcessId);
+                    bool characterCart = supervisor.IsCartMaintenanceEnabledForProcess(observation.ProcessId);
+                    bool characterMail = supervisor.IsWeightEmailEnabledForProcess(observation.ProcessId);
+                    bool cartEnabled = current.AutoCartEnabled && characterCart;
+                    VanillaWeightMailMode mailMode = ResolveMailMode(
+                        current.Enabled, characterMail, current.AutoCartEnabled, characterCart);
 
                     if (cartEnabled)
                     {
-                        ProcessFarmingMilestones(current, observation, mailEnabled);
+                        ProcessFarmingMilestones(current, observation, mailMode == VanillaWeightMailMode.CartMilestones);
                         ProcessAutoCart(current, observation);
                     }
-                    else if (mailEnabled)
+                    else if (mailMode == VanillaWeightMailMode.CarriedWeight)
                     {
                         ProcessObservation(current, observation);
                     }
