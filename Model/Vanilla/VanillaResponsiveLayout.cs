@@ -353,6 +353,8 @@ namespace _4RTools.Model.Vanilla
             if (accounts.Columns.Contains("SmartTeleportHotkey")) accounts.Columns["SmartTeleportHotkey"].HeaderText = "TP hotkey";
             accounts.Columns["Slot"].HeaderText = "Slot";
             accounts.Columns["Hotkey"].HeaderText = "Resume";
+            accounts.Columns["Secret"].HeaderText = "Pwd";
+            accounts.Columns["Secret"].HeaderCell.ToolTipText = "Protected password state (Encrypted / Not set).";
             foreach (DataGridViewColumn column in accounts.Columns)
             {
                 column.AutoSizeMode = DataGridViewAutoSizeColumnMode.None;
@@ -383,7 +385,7 @@ namespace _4RTools.Model.Vanilla
                 case "User": standard = 78; break;
                 case "Slot": standard = 38; break;
                 case "Hotkey": standard = 58; break;
-                case "Secret": standard = 62; break;
+                case "Secret": standard = 42; break;
                 case "AccountProxy": standard = 58; break;
                 case "RuntimePid": standard = 48; break;
                 case "RuntimeStatus": standard = 88; break;
