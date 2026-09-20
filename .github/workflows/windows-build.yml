@@ -22,6 +22,25 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Export exact source evidence
+        shell: powershell
+        run: |
+          New-Item -ItemType Directory -Path dist/source-evidence -Force | Out-Null
+          git bundle create dist/source-evidence/source.bundle --all
+          if ($LASTEXITCODE -ne 0) { throw 'Source evidence export failed.' }
+          git rev-parse HEAD | Out-File dist/source-evidence/source-commit.txt -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { throw 'Source identity export failed.' }
+
+      - name: Upload source evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: source-evidence-${{ github.sha }}
+          path: dist/source-evidence/*
+          if-no-files-found: error
+          retention-days: 14
 
       - name: Restore NuGet packages
         shell: powershell
