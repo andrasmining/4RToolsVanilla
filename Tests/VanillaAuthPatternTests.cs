@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Drawing;
 using System.Drawing.Drawing2D;
 using System.IO;
@@ -29,6 +30,14 @@ namespace Vanilla.Diagnostics.Tests
             return failed;
         }
 
+        private static void PrepareFixedLabelReferences()
+        {
+            Stopwatch watch = Stopwatch.StartNew();
+            VanillaSmallLabelPattern.Prepare();
+            watch.Stop();
+            Console.WriteLine("Fixed-label cold preparation: {0} ms (before any captured input proof).", watch.ElapsedMilliseconds);
+        }
+
         private static void LoginAcrossResolutions()
         {
             foreach (Size size in new[] { new Size(800, 600), new Size(1280, 720), new Size(1920, 1080), new Size(2560, 1440) })
@@ -53,6 +62,7 @@ namespace Vanilla.Diagnostics.Tests
 
         private static void LoginSoftened()
         {
+            PrepareFixedLabelReferences();
             using (Bitmap large = LoginImage(1600, 1000, true))
             using (Bitmap reduced = new Bitmap(1000, 625))
             using (Graphics graphics = Graphics.FromImage(reduced))
@@ -63,10 +73,22 @@ namespace Vanilla.Diagnostics.Tests
                 VanillaLoginLayout layout;
                 string evidence;
                 List<Rectangle> services;
+                Stopwatch watch = Stopwatch.StartNew();
                 bool detected = VanillaAuthPattern.TryDetectLogin(reduced, out layout, out evidence, out services);
+                watch.Stop();
+                long firstElapsed = watch.ElapsedMilliseconds;
                 if (!detected) DiagnoseSyntheticLogin(reduced, services);
                 Assert(detected, "Softened login failed: " + evidence);
                 Assert(layout.UserName.Bottom <= layout.Password.Top, "Softened username/password regions overlapped.");
+                watch.Restart();
+                bool secondDetected = VanillaAuthPattern.TryDetectLogin(reduced, out layout, out evidence);
+                watch.Stop();
+                Console.WriteLine("Cached softened login detection: first={0} ms; second={1} ms; proof maximum={2} ms.",
+                    firstElapsed, watch.ElapsedMilliseconds, VanillaVisualInputProof.MaximumAgeMs);
+                Assert(secondDetected, "Repeated softened login detection changed result: " + evidence);
+                Assert(firstElapsed < VanillaVisualInputProof.MaximumAgeMs - 500
+                    && watch.ElapsedMilliseconds < VanillaVisualInputProof.MaximumAgeMs - 500,
+                    "Cached login recognition did not leave enough of the captured-input lifetime for safe dispatch.");
             }
         }
 

@@ -78,6 +78,7 @@ namespace _4RTools.Model.Vanilla
                     VanillaTextRecognition.TryReadPixelPreservingLine(bitmap, area, out accurate, out evidence);
                     report.AppendLine("Nearest-neighbor accurate crop=" + area + "; " + evidence + "; " + DescribeLines(accurate));
                 }
+                report.Append(VanillaProxyPattern.DescribeSyntheticSuffixes(bitmap, detection.Dialog));
             }
             report.AppendLine("Result: " + detection.Evidence);
             return report.ToString();

@@ -263,6 +263,10 @@ frames are not sent to OCR services, written to capture files, or logged. OCR is
 local and both English models/native runtime are bundled with the release. The
 accurate model is restricted to bounded detected text controls when the fast
 model cannot establish the exact identity.
+For the fixed `Vanilla MMO` login label at tiny sizes, an additional raster
+matcher compares the full glyph shape, dimensions and local detail against
+rendered references and similar-name negatives. This fallback is restricted to
+the independently detected login service control; it never matches credentials.
 
 Character selection requires explicit character-screen labels, fifteen detected
 cards and one selected frame. It measures the grid, uses keyboard navigation,

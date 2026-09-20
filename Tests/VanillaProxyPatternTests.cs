@@ -111,13 +111,14 @@ namespace Vanilla.Diagnostics.Tests
         private static void RejectAmbiguousNames()
         {
             using (Bitmap image = ServiceImage(new Size(1280, 720), 1f, "Tahoma",
-                new[] { "Global", "Tokyo Experimental", "Singapore", "Unknown" }, "Tokyo Experimental", false))
+                new[] { "Global", "Tokyo Experimental", "Singapore", "Unknown", "Manda", "Manila Test" }, "Tokyo Experimental", false))
             {
                 VanillaProxyLayout layout;
                 VanillaServiceRow row;
                 string evidence;
                 bool detected = VanillaProxyPattern.TryDetect(image, out layout, out evidence);
                 Assert(!detected || !layout.TryFind(VanillaProxyRoute.Tokyo, out row), "Substring is not exact Tokyo identity.");
+                Assert(!detected || !layout.TryFind(VanillaProxyRoute.Manila, out row), "Unknown names/suffixes are not exact Manila identity.");
             }
             using (Bitmap image = ServiceImage(new Size(1280, 720), 1f, "Tahoma",
                 new[] { "Global", "Tokyo", "Tokyo", "Singapore" }, "Tokyo", false))
