@@ -96,6 +96,7 @@ namespace _4RTools.Model.Vanilla
             RemoveButton("COPY FULL DEBUG LOG");
             RemoveButton("Run login now (selected)");
 
+            HideLegacyLongHelp();
             InstallAccountColumns();
             InstallMinimalAccountButtons();
             SynchronizeDerivedUiValues();
@@ -104,6 +105,25 @@ namespace _4RTools.Model.Vanilla
             InstallCharacterDiscovery();
             supervisor.Updated += AccountRuntimeUpdated;
             ShowSaveToast("Auto-save on", false);
+        }
+
+        private void HideLegacyLongHelp()
+        {
+            foreach (Control control in Controls.Cast<Control>().SelectMany(AllControls).ToArray())
+            {
+                var label = control as Label;
+                if (label == null || string.IsNullOrWhiteSpace(label.Text)) continue;
+                if (label.Text.StartsWith("Passwords are encrypted with Windows DPAPI", StringComparison.Ordinal))
+                    label.Visible = false;
+            }
+        }
+
+        private static IEnumerable<Control> AllControls(Control root)
+        {
+            yield return root;
+            foreach (Control child in root.Controls)
+                foreach (Control nested in AllControls(child))
+                    yield return nested;
         }
 
         private void InstallAccountColumns()
@@ -121,14 +141,26 @@ namespace _4RTools.Model.Vanilla
                     FillWeight = 70
                 });
             }
-            if (!accounts.Columns.Contains("WeightEnabled"))
+            if (accounts.Columns.Contains("WeightEnabled"))
+                accounts.Columns["WeightEnabled"].Visible = false;
+            if (!accounts.Columns.Contains("CartMaintenanceEnabled"))
             {
                 accounts.Columns.Add(new DataGridViewTextBoxColumn
                 {
-                    Name = "WeightEnabled",
-                    HeaderText = "Weight",
+                    Name = "CartMaintenanceEnabled",
+                    HeaderText = "Cart",
                     ReadOnly = true,
-                    FillWeight = 45
+                    FillWeight = 42
+                });
+            }
+            if (!accounts.Columns.Contains("WeightEmailEnabled"))
+            {
+                accounts.Columns.Add(new DataGridViewTextBoxColumn
+                {
+                    Name = "WeightEmailEnabled",
+                    HeaderText = "Mail",
+                    ReadOnly = true,
+                    FillWeight = 42
                 });
             }
             if (!accounts.Columns.Contains("SmartTeleportEnabled"))
@@ -183,7 +215,7 @@ namespace _4RTools.Model.Vanilla
             }
             string[] order =
             {
-                "Enabled", "WeightEnabled", "SmartTeleportEnabled", "SmartTeleportSeconds", "SmartTeleportHotkey",
+                "Enabled", "CartMaintenanceEnabled", "WeightEmailEnabled", "SmartTeleportEnabled", "SmartTeleportSeconds", "SmartTeleportHotkey",
                 "Label", "User", "Slot", "CharacterName", "Hotkey", "Secret", "AccountProxy", "RuntimePid", "RuntimeStatus"
             };
             for (int i = 0; i < order.Length; i++)
@@ -196,7 +228,7 @@ namespace _4RTools.Model.Vanilla
                 }
 
             help.SetToolTip(accounts,
-                "One row per character. The first columns show whether supervision, Weight/Cart and Smart Teleport are enabled; Smart Teleport seconds/hotkey are visible directly in the list. Detailed Weight settings remain on the Weight tab. Double-click a row to edit character-specific settings.");
+                "One row per character. Cart and Mail are independent per-character switches; hover their cells for behavior. Shared thresholds/hotkeys/SMTP remain on the Weight tab. Double-click a row to edit.");
         }
 
         private void AccountRuntimeUpdated()
@@ -273,10 +305,19 @@ namespace _4RTools.Model.Vanilla
                 string id = row.Tag as string;
                 if (string.IsNullOrWhiteSpace(id)) continue;
                 var profile = accountCatalog.FirstOrDefault(a => a.Id == id);
-                if (accounts.Columns.Contains("WeightEnabled"))
+                if (accounts.Columns.Contains("CartMaintenanceEnabled"))
                 {
-                    row.Cells["WeightEnabled"].Value = profile != null && profile.WeightEnabled ? "Yes" : "No";
-                    row.Cells["WeightEnabled"].ToolTipText = "Per-character Weight policy. Detailed Weight/Cart settings are configured on the Weight tab.";
+                    row.Cells["CartMaintenanceEnabled"].Value = profile != null && profile.EffectiveCartMaintenanceEnabled ? "Yes" : "No";
+                    row.Cells["CartMaintenanceEnabled"].ToolTipText =
+                        "Cart maintenance for this character. Uses the shared Cart threshold/categories/hotkeys from the Weight tab.";
+                }
+                if (accounts.Columns.Contains("WeightEmailEnabled"))
+                {
+                    row.Cells["WeightEmailEnabled"].Value = profile != null && profile.EffectiveWeightEmailEnabled ? "Yes" : "No";
+                    row.Cells["WeightEmailEnabled"].ToolTipText =
+                        profile != null && profile.EffectiveCartMaintenanceEnabled
+                            ? "E-mail for this Cart character: Cart-full and combined DONE milestones; no carried-weight-only warning."
+                            : "E-mail without Cart: warn from this character's carried-weight threshold.";
                 }
                 if (accounts.Columns.Contains("SmartTeleportEnabled"))
                 {
