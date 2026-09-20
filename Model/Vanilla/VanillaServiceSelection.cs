@@ -29,7 +29,7 @@ namespace _4RTools.Model.Vanilla
     internal static class VanillaServiceSelection
     {
         internal static void Select(string expectedName, Func<VanillaServiceObservation> observe,
-            Action<VanillaServiceObservation> click, Action submit, Action<int> pause,
+            Action<VanillaServiceObservation> click, System.Action submit, Action<int> pause,
             Func<bool> cancelled, int timeoutMs = 45000)
         {
             var watch = Stopwatch.StartNew();
