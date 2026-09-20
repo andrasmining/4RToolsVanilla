@@ -194,12 +194,13 @@ namespace _4RTools
                         }
                     }
                     form.AssertSmokeBackgroundServicesInactive();
+                    VerifyPackagedOcr();
                     // Capture actual state before Close() disposes the services.
                     var report = new
                     {
                         Success = true, Version = VanillaUpdater.CurrentVersionText, PointerBytes = IntPtr.Size,
                         ObserverContext = ProcessObservationContext.Current.ToString(),
-                        MainUi = "Container", OriginalFeatureForms = featureForms,
+                        MainUi = "Container", OriginalFeatureForms = featureForms, PackagedOcr = true,
                         FeatureForms = originalForms,
                         AutomationEnabled = form.AutomationEnabled,
                         VanillaPollingEnabled = form.VanillaPollingEnabled,
@@ -310,6 +311,22 @@ namespace _4RTools
                 }
             }
             catch (Exception ex) { Console.Error.WriteLine(ex); Environment.ExitCode = 1; }
+        }
+
+        private static void VerifyPackagedOcr()
+        {
+            using (var bitmap = new System.Drawing.Bitmap(320, 64))
+            using (var graphics = System.Drawing.Graphics.FromImage(bitmap))
+            using (var font = new System.Drawing.Font("Arial", 24, System.Drawing.FontStyle.Regular, System.Drawing.GraphicsUnit.Pixel))
+            {
+                graphics.Clear(System.Drawing.Color.White);
+                graphics.DrawString("Vanilla MMO", font, System.Drawing.Brushes.Black, 12, 12);
+                VanillaTextLine[] lines;
+                string evidence;
+                if (!VanillaTextRecognition.TryRead(bitmap, new System.Drawing.Rectangle(0, 0, bitmap.Width, bitmap.Height),
+                    true, out lines, out evidence) || !lines.Any(line => line.Text == "Vanilla MMO" && line.Confidence >= 70))
+                    throw new InvalidOperationException("Packaged OCR runtime/model check failed: " + evidence);
+            }
         }
 
         private static void Discover(string[] args)

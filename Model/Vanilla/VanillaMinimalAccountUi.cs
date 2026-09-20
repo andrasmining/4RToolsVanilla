@@ -139,6 +139,8 @@ namespace _4RTools.Model.Vanilla
                 .Select(i => i.CharacterName).Distinct(StringComparer.Ordinal)) character.Items.Add(name);
             character.Text = account.CharacterName;
             character.SelectionChangeCommitted += (s, e) => FillSelectedIdentity();
+            proxy.FormattingEnabled = true;
+            proxy.Format += (s, e) => { if (e.ListItem is VanillaProxyRoute) e.Value = VanillaProxyPattern.NameForRoute((VanillaProxyRoute)e.ListItem); };
             proxy.DataSource = Enum.GetValues(typeof(VanillaProxyRoute));
             if (account.ProxyNeedsConfiguration) proxy.SelectedIndex = -1; else proxy.SelectedItem = proxyRoute;
             key = account.ResumeKey; ctrl = account.ResumeCtrl; alt = account.ResumeAlt; shift = account.ResumeShift;

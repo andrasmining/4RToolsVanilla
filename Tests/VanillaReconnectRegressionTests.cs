@@ -37,34 +37,8 @@ namespace Vanilla.Diagnostics.Tests
             Test("Fleet strip stays minimal across common desktop heights", ResponsiveFleetHeight);
             Test("Account table reserves four rows plus one blank-row worth of breathing room", ResponsiveAccountRows);
             Test("Saved account catalog keeps extra profiles but limits enabled clients", SavedAccountCatalog);
-            Test("Character selection reaches every configured slot without coordinates", CharacterSelectionKeyboardPlan);
             Console.WriteLine("Reconnect regressions: {0} passed; {1} failed. No live process was controlled.", passed, failed);
             return failed;
-        }
-
-        private static void CharacterSelectionKeyboardPlan()
-        {
-            for (int target = 1; target <= 15; target++)
-            {
-                var plan = VanillaReconnectSupervisor.CharacterSelectionKeyPlan(target);
-                Assert(plan.Length >= 7 && plan.Last() == System.Windows.Forms.Keys.Enter,
-                    "Selection plan must finish with Enter and contain its clamp sequence.");
-                for (int start = 1; start <= 15; start++)
-                {
-                    int position = start - 1;
-                    int row = position / 5, col = position % 5;
-                    foreach (var key in plan.Take(plan.Length - 1))
-                    {
-                        if (key == System.Windows.Forms.Keys.Up) row = Math.Max(0, row - 1);
-                        else if (key == System.Windows.Forms.Keys.Down) row = Math.Min(2, row + 1);
-                        else if (key == System.Windows.Forms.Keys.Left) col = Math.Max(0, col - 1);
-                        else if (key == System.Windows.Forms.Keys.Right) col = Math.Min(4, col + 1);
-                        else throw new Exception("Unexpected character-selection key: " + key);
-                    }
-                    int reached = row * 5 + col + 1;
-                    Assert(reached == target, "Start slot " + start + " reached " + reached + " instead of " + target + ".");
-                }
-            }
         }
 
         private static void FreshDefaults()

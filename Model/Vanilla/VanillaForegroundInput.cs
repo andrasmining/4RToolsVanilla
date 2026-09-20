@@ -543,9 +543,22 @@ namespace _4RTools.Model.Vanilla
 
         public void ReplaceFocusedText(string text)
         {
-            SelectAll();
-            Press(Keys.Back);
-            TypeText(text ?? string.Empty);
+            ReplaceFocusedText(text, null);
+        }
+
+        internal void ReplaceFocusedText(string text, System.Action verifyFieldFocus)
+        {
+            lock (ForegroundGate)
+            {
+                Activate();
+                VerifyForeground();
+                if (verifyFieldFocus != null) verifyFieldFocus();
+                SelectAll();
+                if (verifyFieldFocus != null) verifyFieldFocus();
+                Press(Keys.Back);
+                if (verifyFieldFocus != null) verifyFieldFocus();
+                TypeTextCore(text ?? string.Empty, verifyFieldFocus);
+            }
         }
 
         public void TypeText(string text)
@@ -553,7 +566,7 @@ namespace _4RTools.Model.Vanilla
             lock (ForegroundGate) TypeTextCore(text);
         }
 
-        private void TypeTextCore(string text)
+        private void TypeTextCore(string text, System.Action verifyFieldFocus = null)
         {
             if (text == null) return;
             Activate();
@@ -562,6 +575,7 @@ namespace _4RTools.Model.Vanilla
             foreach (char c in text)
             {
                 VerifyForeground();
+                if (verifyFieldFocus != null) verifyFieldFocus();
                 SendUnicode(c, false);
                 SendUnicode(c, true);
                 Thread.Sleep(22);

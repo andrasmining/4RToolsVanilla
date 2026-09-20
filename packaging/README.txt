@@ -6,8 +6,9 @@ Copyright (c) 2022 4RTools. See LICENSE and THIRD-PARTY-NOTICES.txt.
 
 Starting the application
 -----------------------
-Extract the entire release folder and run 4RTools-Vanilla.exe. Keep its .config
-and VanillaBuilds folder beside it. Windows with Microsoft .NET Framework 4.7.2
+Extract the entire release folder and run 4RTools-Vanilla.exe. Keep its .config,
+VanillaBuilds, x86 and tessdata folders and the bundled runtime DLLs beside it.
+Windows with Microsoft .NET Framework 4.7.2
 or a later 4.x runtime is required. The application targets x86, supports x64
 Windows and requests administrator privileges to match elevated game clients.
 No Visual Studio, Git, NuGet, SDK or source tree is needed to run the package.

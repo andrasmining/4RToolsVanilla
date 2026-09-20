@@ -1,0 +1,41 @@
+Native OCR dependency license sources
+====================================
+
+These files accompany the unmodified native DLLs supplied by the Tesseract
+5.2.0 NuGet package. Library versions below were checked against embedded
+version strings in its native Leptonica DLL; the DLL was not executed.
+
+Tesseract-Apache-2.0.txt -- Tesseract OCR 5.2.0; also applies to the
+tessdata_fast English language model:
+https://github.com/tesseract-ocr/tesseract/blob/5.2.0/LICENSE
+https://github.com/tesseract-ocr/tessdata_fast/blob/main/LICENSE
+
+Tesseract-Apache-2.0.txt also contains the identical license supplied with
+the Tesseract .NET wrapper (the duplicate license is included once):
+https://github.com/charlesw/tesseract/blob/5.2.0/LICENSE
+
+Leptonica-BSD.txt -- Leptonica 1.82.0:
+https://github.com/DanBloomberg/leptonica/blob/1.82.0/leptonica-license.txt
+
+libjpeg-turbo-LICENSE.md -- libjpeg-turbo 2.1.4 license summary and BSD text:
+https://github.com/libjpeg-turbo/libjpeg-turbo/blob/2.1.4/LICENSE.md
+
+libjpeg-turbo-README.ijg -- unaltered upstream IJG documentation and license:
+https://github.com/libjpeg-turbo/libjpeg-turbo/blob/2.1.4/README.ijg
+
+libjpeg-turbo-SIMD.txt -- complete copyright/license comment from lines 1-27
+of the upstream x86 SIMD common declarations (no executable source included):
+https://github.com/libjpeg-turbo/libjpeg-turbo/blob/2.1.4/simd/nasm/jsimdext.inc
+
+libpng-LICENSE.txt -- libpng 1.6.37:
+https://github.com/pnggroup/libpng/blob/v1.6.37/LICENSE
+
+zlib-LICENSE.txt -- zlib 1.2.13:
+https://github.com/madler/zlib/blob/v1.2.13/LICENSE
+
+libtiff-COPYRIGHT.txt -- libtiff 4.4.0:
+https://gitlab.com/libtiff/libtiff/-/blob/v4.4.0/COPYRIGHT
+
+License files are reproduced from these official projects without changing
+their terms; trailing whitespace/blank EOF lines are normalized. The root
+THIRD-PARTY-NOTICES.txt lists additional dependencies.

@@ -1,6 +1,40 @@
 THIRD-PARTY SOFTWARE NOTICES
 4RTools Vanilla
 
+Tesseract .NET wrapper 5.2.0, Copyright 2012-2020 Charles Weld (Apache 2.0).
+Tesseract OCR 5.2.0 and tessdata_fast English data (Apache 2.0).
+https://github.com/charlesw/tesseract
+https://github.com/tesseract-ocr/tesseract
+https://github.com/tesseract-ocr/tessdata_fast
+Leptonica 1.82.0, Copyright (C) 2001-2020 Leptonica (BSD 2-Clause).
+https://github.com/DanBloomberg/leptonica
+
+The native Leptonica DLL distributed with the Tesseract 5.2.0 NuGet package
+also incorporates these image-format and compression libraries:
+
+libjpeg-turbo 2.1.4 (IJG, BSD 3-Clause and zlib-style SIMD licenses).
+Copyright (C) 1991-2022 The libjpeg-turbo Project and many others.
+This software is based in part on the work of the Independent JPEG Group.
+https://github.com/libjpeg-turbo/libjpeg-turbo/tree/2.1.4
+
+libpng 1.6.37 (PNG Reference Library License version 2).
+Copyright (c) 1995-2019 The PNG Reference Library Authors.
+https://github.com/pnggroup/libpng/tree/v1.6.37
+
+zlib 1.2.13 (zlib license).
+Copyright (C) 1995-2022 Jean-loup Gailly and Mark Adler.
+https://github.com/madler/zlib/tree/v1.2.13
+
+libtiff 4.4.0 (libtiff permission notice).
+Copyright (c) 1988-1997 Sam Leffler.
+Copyright (c) 1991-1997 Silicon Graphics, Inc.
+https://gitlab.com/libtiff/libtiff/-/tree/v4.4.0
+
+Full license texts and upstream source references are included in licenses/.
+Microsoft Visual C++ runtime DLLs are redistributed unmodified from the
+Visual Studio REDIST directory under Microsoft's redistribution terms.
+Copyright Microsoft Corporation. All rights reserved.
+
 The upstream application license is supplied separately in LICENSE.
 Managed dependencies are embedded by Costura. The following license terms
 apply to the corresponding third-party components; the fork MIT license does

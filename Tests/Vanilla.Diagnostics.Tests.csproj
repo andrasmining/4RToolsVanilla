@@ -54,6 +54,9 @@
     <Compile Include="VanillaPatcherLauncherTests.cs" />
     <Compile Include="VanillaLauncherUpdateTests.cs" />
     <Compile Include="VanillaProxyPatternTests.cs" />
+    <Compile Include="VanillaServiceSelectionTests.cs" />
+    <Compile Include="VanillaCredentialVerifierTests.cs" />
+    <Compile Include="VanillaCharacterSelectionTests.cs" />
     <Compile Include="VanillaAuthPatternTests.cs" />
     <Compile Include="VanillaSessionLogTests.cs" />
     <Compile Include="VanillaReconnectRegressionTests.cs" />

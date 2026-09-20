@@ -78,6 +78,10 @@ try {
 
         $applicationOutput = Join-Path $repositoryRoot "bin/$buildConfiguration"
         $testOutput = Join-Path $repositoryRoot "Tests/bin/$buildConfiguration"
+        # Native OCR and language data are runtime assets, not Costura resources.
+        foreach ($folder in @('x86', 'x64', 'tessdata')) {
+            Copy-Item -LiteralPath (Join-Path $applicationOutput $folder) -Destination $testOutput -Recurse -Force
+        }
         Copy-Item -LiteralPath (Join-Path $repositoryRoot 'LICENSE') -Destination $applicationOutput -Force
         $testExecutable = Join-Path $testOutput 'Vanilla.Diagnostics.Tests.exe'
         if (-not (Test-Path -LiteralPath $testExecutable -PathType Leaf)) {

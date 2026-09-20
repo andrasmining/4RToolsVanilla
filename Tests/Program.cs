@@ -64,6 +64,9 @@ namespace Vanilla.Diagnostics.Tests
             failed += VanillaPatcherLauncherTests.Run();
             failed += VanillaLauncherUpdateTests.Run();
             failed += VanillaProxyPatternTests.Run();
+            failed += VanillaServiceSelectionTests.Run();
+            failed += VanillaCredentialVerifierTests.Run();
+            failed += VanillaCharacterSelectionTests.Run();
             failed += VanillaAuthPatternTests.Run();
             failed += VanillaSessionLogTests.Run();
             failed += VanillaReconnectRegressionTests.Run();

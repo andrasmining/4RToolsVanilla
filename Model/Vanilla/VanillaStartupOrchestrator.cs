@@ -18,12 +18,7 @@ namespace _4RTools.Model.Vanilla
         private int hardenedStartupGeneration;
         private bool hardenedStartupRunning;
 
-        private sealed class ProxyReady
-        {
-            public Bitmap Image;
-            public VanillaProxyLayout Layout;
-            public string Evidence;
-        }
+
 
         public bool IsHardenedStartupRunning
         {
@@ -493,40 +488,28 @@ namespace _4RTools.Model.Vanilla
             }
         }
 
-        internal static Keys[] CharacterSelectionKeyPlan(int oneBasedSlot)
-        {
-            if (oneBasedSlot < 1 || oneBasedSlot > 15)
-                throw new ArgumentOutOfRangeException(nameof(oneBasedSlot));
-            int zero = oneBasedSlot - 1;
-            int row = zero / 5, column = zero % 5;
-            var keys = new System.Collections.Generic.List<Keys>();
-            // Character selection owns keyboard focus. Clamp to the top-left card first,
-            // then navigate from a known origin. This is independent of resolution/DPI.
-            keys.Add(Keys.Up); keys.Add(Keys.Up);
-            for (int i = 0; i < 4; i++) keys.Add(Keys.Left);
-            for (int i = 0; i < column; i++) keys.Add(Keys.Right);
-            for (int i = 0; i < row; i++) keys.Add(Keys.Down);
-            keys.Add(Keys.Enter);
-            return keys.ToArray();
-        }
-
         private void SelectConfiguredCharacterWithoutCoordinates(VanillaForegroundInput input, int pid,
             VanillaReconnectAccount account, Func<bool> cancelled, string logPrefix)
         {
             if (input == null) throw new ArgumentNullException(nameof(input));
             if (cancelled == null) throw new ArgumentNullException(nameof(cancelled));
             int slot = account.RequiredCharacterSlot();
-            Keys[] plan = CharacterSelectionKeyPlan(slot);
-            input.Activate();
-            for (int i = 0; i < plan.Length; i++)
+            long frame = 0;
+            VanillaCharacterSelector.Select(slot, () =>
             {
-                if (cancelled()) throw new OperationCanceledException("Character selection cancelled before input.");
-                input.Press(plan[i]);
-                if (i + 1 < plan.Length) PauseCharacterSelection(cancelled, 70);
-            }
+                using (Bitmap image = input.CaptureClientBitmap())
+                {
+                    VanillaCharacterSelectionObservation observation;
+                    string evidence;
+                    if (!VanillaCharacterPattern.TryDetect(image, out observation, out evidence))
+                        throw new InvalidOperationException("Character selection is unverified; no further input was sent. " + evidence);
+                    observation.FrameId = ++frame;
+                    return observation;
+                }
+            }, input.Press, milliseconds => PauseCharacterSelection(cancelled, milliseconds), cancelled);
             string expected = string.IsNullOrWhiteSpace(account.CharacterName) ? "<learn after gameplay>" : account.CharacterName;
-            string detail = logPrefix + "character selection used keyboard-only navigation to configured slot " + slot
-                + " for '" + expected + "'; no character-grid or GAME START coordinates were clicked.";
+            string detail = logPrefix + "character selection verified its detected grid, edge clamps, every keyboard transition and configured slot " + slot
+                + " for '" + expected + "'; awaiting independent gameplay identity.";
             Log(detail);
             VanillaDebugLog.Write("STARTUP", "PID=" + pid + "; " + detail);
         }
@@ -542,16 +525,11 @@ namespace _4RTools.Model.Vanilla
                 if (cancelled()) throw new OperationCanceledException(context + ": character selection cancelled.");
                 using (Bitmap image = input.CaptureClientBitmap())
                 {
-                    VanillaLoginLayout login;
-                    VanillaServerLayout server;
-                    VanillaProxyLayout proxyLayout;
+                    VanillaCharacterSelectionObservation observation;
                     string evidence;
-                    bool loginVisible = VanillaAuthPattern.TryDetectLogin(image, out login, out evidence);
-                    bool serverVisible = VanillaAuthPattern.TryDetectServerDialog(image, out server, out evidence);
-                    bool proxyVisible = VanillaProxyPattern.TryDetect(image, out proxyLayout, out evidence);
-                    bool interactive = IsInteractiveFrame(image);
-                    last = "login=" + loginVisible + ", server=" + serverVisible + ", proxy=" + proxyVisible + ", interactive=" + interactive;
-                    if (!loginVisible && !serverVisible && !proxyVisible && interactive && watch.ElapsedMilliseconds >= 450)
+                    bool recognized = VanillaCharacterPattern.TryDetect(image, out observation, out evidence);
+                    last = evidence;
+                    if (recognized && watch.ElapsedMilliseconds >= 450)
                     {
                         consecutive++;
                         if (consecutive >= 3)
@@ -585,129 +563,13 @@ namespace _4RTools.Model.Vanilla
         private void SelectProxyWhenVisible(VanillaForegroundInput input, int pid, VanillaReconnectAccount account,
             VanillaReconnectSettings config, int generation)
         {
-            ProxyReady ready = WaitForProxyReady(input, generation, 45000);
-            using (ready.Image)
-            {
-                VanillaProxyRoute route = VanillaAccountProxyPreferences.Get(account.Id, config.Proxy);
-                int routeIndex = (int)route;
-                if (routeIndex < 0 || routeIndex >= ready.Layout.Rows.Length)
-                    throw new InvalidOperationException(account.Label + ": configured proxy route is outside detected list.");
-
-                Rectangle safe = ready.Layout.Rows[routeIndex];
-                var random = new Random(unchecked(Environment.TickCount ^ pid ^ (routeIndex * 7919)));
-                int marginX = Math.Max(1, safe.Width / 4), marginY = Math.Max(1, safe.Height / 4);
-                int px = random.Next(safe.Left + marginX, Math.Max(safe.Left + marginX + 1, safe.Right - marginX));
-                int py = random.Next(safe.Top + marginY, Math.Max(safe.Top + marginY + 1, safe.Bottom - marginY));
-
-                input.Activate();
-                BriefPause(generation, 150);
-                input.ClickNormalized((px + 0.5) / ready.Image.Width, (py + 0.5) / ready.Image.Height);
-                for (int i = 0; i < 8; i++) { input.Press(Keys.Up); BriefPause(generation, 25); }
-                for (int i = 0; i < routeIndex; i++) { input.Press(Keys.Down); BriefPause(generation, 35); }
-                input.Activate();
-                input.Press(Keys.Enter);
-                Log(account.Label + ": account proxy " + route + " selected after two stable visual detections.");
-                VanillaDebugLog.Write("STARTUP", account.Label + ": proxy=" + route + "; " + ready.Evidence);
-            }
-        }
-
-        private ProxyReady WaitForProxyReady(VanillaForegroundInput input, int generation, int timeoutMs)
-        {
-            Stopwatch watch = Stopwatch.StartNew();
-            int consecutive = 0;
-            string last = "not sampled";
-            while (watch.ElapsedMilliseconds < timeoutMs)
-            {
-                if (StartupCancelled(generation)) throw new OperationCanceledException("Sequential startup cancelled.");
-                Bitmap image = null;
-                try
-                {
-                    image = input.CaptureClientBitmap();
-                    VanillaProxyLayout layout;
-                    string evidence;
-                    if (VanillaProxyPattern.TryDetect(image, out layout, out evidence))
-                    {
-                        consecutive++;
-                        last = evidence;
-                        if (consecutive >= 2)
-                        {
-                            VanillaDebugLog.Write("STARTUP", "Proxy screen stable after " + watch.ElapsedMilliseconds + " ms.");
-                            return new ProxyReady { Image = image, Layout = layout, Evidence = evidence };
-                        }
-                    }
-                    else
-                    {
-                        consecutive = 0;
-                        last = evidence;
-                    }
-                }
-                finally { if (consecutive < 2 && image != null) image.Dispose(); }
-                Thread.Sleep(150);
-            }
-            throw new InvalidOperationException("Proxy screen was not stably detected. Client was left running; later clients were NOT started. Last detector: " + last);
+            if (StartupCancelled(generation)) throw new OperationCanceledException("Sequential startup cancelled.");
+            SelectNamedService(input, VanillaAccountProxyPreferences.Get(account.Id, config.Proxy), account.Label + ": ");
         }
 
         private void WaitForCharacterSurface(VanillaForegroundInput input, int pid, int generation)
         {
-            Stopwatch watch = Stopwatch.StartNew();
-            int consecutive = 0;
-            string last = "not sampled";
-            while (watch.ElapsedMilliseconds < 30000)
-            {
-                if (StartupCancelled(generation)) throw new OperationCanceledException("Sequential startup cancelled.");
-                using (Bitmap image = input.CaptureClientBitmap())
-                {
-                    VanillaLoginLayout login;
-                    VanillaServerLayout server;
-                    VanillaProxyLayout proxyLayout;
-                    string evidence;
-                    bool loginVisible = VanillaAuthPattern.TryDetectLogin(image, out login, out evidence);
-                    bool serverVisible = VanillaAuthPattern.TryDetectServerDialog(image, out server, out evidence);
-                    bool proxyVisible = VanillaProxyPattern.TryDetect(image, out proxyLayout, out evidence);
-                    bool interactive = IsInteractiveFrame(image);
-                    last = "login=" + loginVisible + ", server=" + serverVisible + ", proxy=" + proxyVisible + ", interactive=" + interactive;
-                    if (!loginVisible && !serverVisible && !proxyVisible && interactive && watch.ElapsedMilliseconds >= 450)
-                    {
-                        consecutive++;
-                        if (consecutive >= 3)
-                        {
-                            try
-                            {
-                                string path = Path.Combine(baseDirectory, "Logs", "character-screen-ready.png");
-                                Directory.CreateDirectory(Path.GetDirectoryName(path));
-                                image.Save(path);
-                            }
-                            catch { }
-                            VanillaDebugLog.Write("STARTUP", "Character surface PID=" + pid + " stable after " + watch.ElapsedMilliseconds + " ms; " + last + ".");
-                            return;
-                        }
-                    }
-                    else consecutive = 0;
-                }
-                Thread.Sleep(160);
-            }
-            throw new InvalidOperationException("Character surface was not safely detected. Client was left running; later clients were NOT started. Last state: " + last);
-        }
-
-        private static bool IsInteractiveFrame(Bitmap image)
-        {
-            if (image == null || image.Width < 320 || image.Height < 240) return false;
-            long sum = 0, sumSquares = 0;
-            int count = 0;
-            int stepX = Math.Max(8, image.Width / 48), stepY = Math.Max(8, image.Height / 32);
-            for (int y = stepY / 2; y < image.Height; y += stepY)
-            for (int x = stepX / 2; x < image.Width; x += stepX)
-            {
-                Color c = image.GetPixel(x, y);
-                int lum = (c.R * 299 + c.G * 587 + c.B * 114) / 1000;
-                sum += lum;
-                sumSquares += lum * lum;
-                count++;
-            }
-            if (count == 0) return false;
-            double mean = sum / (double)count;
-            double variance = sumSquares / (double)count - mean * mean;
-            return mean >= 18 && variance >= 180;
+            WaitForCharacterSurfaceCancellable(input, pid, () => StartupCancelled(generation), 30000, "Sequential startup");
         }
 
         private void WaitForGameplayStable(VanillaForegroundInput input, int pid, int generation, int timeoutMs, string context)

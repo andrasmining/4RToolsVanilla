@@ -337,7 +337,7 @@ namespace _4RTools.Model.Vanilla
                 if (accounts.Columns.Contains("AccountProxy"))
                 {
                     row.Cells["AccountProxy"].Value = profile != null && profile.ProxyNeedsConfiguration ? "Not set"
-                        : VanillaAccountProxyPreferences.Ensure(id, settings.Proxy).ToString();
+                        : VanillaProxyPattern.NameForRoute(VanillaAccountProxyPreferences.Ensure(id, settings.Proxy));
                 }
                 var character = accountCatalog.FirstOrDefault(a => a.Id == id);
                 var observed = character == null ? null : VanillaCharacterRoster.FindUnique(character, supervisor.ObservedCharacters(),

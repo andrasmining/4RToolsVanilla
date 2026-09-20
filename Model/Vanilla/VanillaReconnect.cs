@@ -14,7 +14,8 @@ using Newtonsoft.Json;
 
 namespace _4RTools.Model.Vanilla
 {
-    public enum VanillaProxyRoute { Global = 0, Singapore = 1, Tokyo = 2, LosAngeles = 3 }
+    // Values 0..3 are persisted by older releases. New choices must never renumber them.
+    public enum VanillaProxyRoute { Global = 0, Singapore = 1, Tokyo = 2, LosAngeles = 3, Manila = 4, HongKong = 5, Australia = 6, UAE = 7 }
     public enum VanillaVisualState { Unknown, Gameplay, LoginShell, ModalDialog, LoggingOut, Disconnected }
     public enum VanillaReconnectStage
     {
@@ -1232,29 +1233,7 @@ namespace _4RTools.Model.Vanilla
                     {
                         Thread.Sleep(config.GepardWaitMs);
                         input.Activate();
-                        using (Bitmap proxyImage = input.CaptureClientBitmap())
-                        {
-                            VanillaProxyLayout proxyLayout;
-                            string proxyDetection;
-                            if (!VanillaProxyPattern.TryDetect(proxyImage, out proxyLayout, out proxyDetection))
-                                throw new InvalidOperationException("Proxy list was not detected confidently; no proxy input was sent. " + proxyDetection);
-                            string proxyCapture = Path.Combine(baseDirectory, "Logs", "proxy-screen-last.png");
-                            try { Directory.CreateDirectory(Path.GetDirectoryName(proxyCapture)); proxyImage.Save(proxyCapture, ImageFormat.Png); } catch { }
-                            VanillaProxyRoute route = VanillaAccountProxyPreferences.Get(account.Id, config.Proxy);
-                            int routeIndex = (int)route;
-                            Rectangle safe = proxyLayout.Rows[routeIndex];
-                            var random = new Random(unchecked(Environment.TickCount ^ pid ^ (routeIndex * 7919)));
-                            int marginX = Math.Max(1, safe.Width / 4), marginY = Math.Max(1, safe.Height / 4);
-                            int px = random.Next(safe.Left + marginX, Math.Max(safe.Left + marginX + 1, safe.Right - marginX));
-                            int py = random.Next(safe.Top + marginY, Math.Max(safe.Top + marginY + 1, safe.Bottom - marginY));
-                            double x = (px + 0.5) / proxyImage.Width;
-                            double y = (py + 0.5) / proxyImage.Height;
-                            input.ClickNormalized(x, y);
-                            for (int i = 0; i < 8; i++) { input.Press(Keys.Up); Thread.Sleep(55); }
-                            for (int i = 0; i < routeIndex; i++) { input.Press(Keys.Down); Thread.Sleep(70); }
-                            input.Press(Keys.Enter);
-                            Log(account.Label + ": proxy " + route + " selected from detected safe row " + safe + " at verified-inside point (" + px + "," + py + "); " + proxyDetection);
-                        }
+                        SelectNamedService(input, VanillaAccountProxyPreferences.Get(account.Id, config.Proxy), account.Label + ": ");
                         Thread.Sleep(config.StageDelayMs);
                     }
 
@@ -1331,130 +1310,15 @@ namespace _4RTools.Model.Vanilla
         private void FillDetectedCredentials(VanillaForegroundInput input, VanillaReconnectAccount account, string password,
             int pid, bool submit, string logPrefix)
         {
-            if (string.IsNullOrWhiteSpace(account.UserName) || string.IsNullOrEmpty(password))
-                throw new InvalidOperationException("Username/password is missing.");
-
-            VanillaLoginLayout layout;
-            string evidence;
-            using (Bitmap image = WaitForLoginUi(input, 15000, out layout, out evidence))
-            {
-                SaveUiCapture(image, "login-screen-last.png");
-                Point userPoint = VanillaAuthPattern.PickInside(layout.UserName, unchecked(Environment.TickCount ^ pid ^ 0x41A7));
-                Point passwordPoint = VanillaAuthPattern.PickInside(layout.Password, unchecked(Environment.TickCount ^ pid ^ 0x6D2B));
-                input.ClickNormalized((userPoint.X + 0.5) / image.Width, (userPoint.Y + 0.5) / image.Height);
-                Thread.Sleep(160);
-                input.ReplaceFocusedText(account.UserName);
-                Thread.Sleep(140);
-                input.ClickNormalized((passwordPoint.X + 0.5) / image.Width, (passwordPoint.Y + 0.5) / image.Height);
-                Thread.Sleep(160);
-                input.ReplaceFocusedText(password);
-                Log(logPrefix + "credentials filled by two separately detected fields; usernamePoint=" + userPoint
-                    + "; passwordPoint=" + passwordPoint + "; " + evidence + ". Password was not logged.");
-            }
-            if (submit)
-            {
-                Thread.Sleep(180);
-                input.Press(Keys.Enter);
-            }
+            new VanillaCredentialVerifier(new VanillaCredentialInput(input)).Fill(account.UserName, password, submit);
+            Log(logPrefix + "credential fields and keyboard focus verified; exact username and password masking confirmed"
+                + (submit ? "; login submitted." : "; login left ready for explicit submission.")
+                + " Credential captures and secret contents were not saved.");
         }
 
         private void SelectDetectedGameServer(VanillaForegroundInput input, int pid, int stageDelayMs, string logPrefix)
         {
-            VanillaServerLayout layout;
-            string evidence;
-            using (Bitmap image = WaitForServerUi(input, 15000, out layout, out evidence))
-            {
-                SaveUiCapture(image, "server-screen-last.png");
-                Point rowPoint = VanillaAuthPattern.PickInside(layout.ServerRow, unchecked(Environment.TickCount ^ pid ^ 0x27D4));
-                input.ClickNormalized((rowPoint.X + 0.5) / image.Width, (rowPoint.Y + 0.5) / image.Height);
-                Thread.Sleep(160);
-                // The Vanilla list owns keyboard focus after the verified row click. Home clamps to
-                // the only/first game server without relying on a fixed coordinate, then Enter confirms.
-                input.Press(Keys.Home);
-                Thread.Sleep(90);
-                input.Press(Keys.Enter);
-                Log(logPrefix + "game server selected from detected first-row safe area at " + rowPoint + "; " + evidence);
-            }
-
-            int settle = Math.Max(900, Math.Min(stageDelayMs, 3000));
-            Thread.Sleep(settle);
-            using (Bitmap verify = input.CaptureClientBitmap())
-            {
-                VanillaServerLayout stillThere;
-                string verifyEvidence;
-                if (VanillaAuthPattern.TryDetectServerDialog(verify, out stillThere, out verifyEvidence))
-                {
-                    SaveUiCapture(verify, "server-screen-still-open.png");
-                    Point retryPoint = VanillaAuthPattern.PickInside(stillThere.ServerRow, unchecked(Environment.TickCount ^ pid ^ 0x51F3));
-                    input.ClickNormalized((retryPoint.X + 0.5) / verify.Width, (retryPoint.Y + 0.5) / verify.Height);
-                    Thread.Sleep(140);
-                    input.Press(Keys.Enter);
-                    Thread.Sleep(Math.Max(700, settle / 2));
-                    using (Bitmap secondVerify = input.CaptureClientBitmap())
-                    {
-                        VanillaServerLayout finalDialog;
-                        string finalEvidence;
-                        if (VanillaAuthPattern.TryDetectServerDialog(secondVerify, out finalDialog, out finalEvidence))
-                        {
-                            SaveUiCapture(secondVerify, "server-screen-failed.png");
-                            throw new InvalidOperationException("Server dialog remained after two verified row selections; no further input was sent. " + finalEvidence);
-                        }
-                    }
-                    Log(logPrefix + "server dialog required one verified retry and then closed.");
-                }
-            }
-        }
-
-        private Bitmap WaitForLoginUi(VanillaForegroundInput input, int timeoutMs, out VanillaLoginLayout layout, out string evidence)
-        {
-            Stopwatch watch = Stopwatch.StartNew();
-            string last = "not sampled";
-            Bitmap lastImage = null;
-            try
-            {
-                while (watch.ElapsedMilliseconds < timeoutMs)
-                {
-                    if (lastImage != null) { lastImage.Dispose(); lastImage = null; }
-                    lastImage = input.CaptureClientBitmap();
-                    if (VanillaAuthPattern.TryDetectLogin(lastImage, out layout, out evidence))
-                    {
-                        Bitmap result = lastImage;
-                        lastImage = null;
-                        return result;
-                    }
-                    last = evidence;
-                    Thread.Sleep(250);
-                }
-                if (lastImage != null) SaveUiCapture(lastImage, "login-screen-not-detected.png");
-                throw new InvalidOperationException("Login username/password controls were not detected confidently; no credentials were typed. " + last);
-            }
-            finally { if (lastImage != null) lastImage.Dispose(); }
-        }
-
-        private Bitmap WaitForServerUi(VanillaForegroundInput input, int timeoutMs, out VanillaServerLayout layout, out string evidence)
-        {
-            Stopwatch watch = Stopwatch.StartNew();
-            string last = "not sampled";
-            Bitmap lastImage = null;
-            try
-            {
-                while (watch.ElapsedMilliseconds < timeoutMs)
-                {
-                    if (lastImage != null) { lastImage.Dispose(); lastImage = null; }
-                    lastImage = input.CaptureClientBitmap();
-                    if (VanillaAuthPattern.TryDetectServerDialog(lastImage, out layout, out evidence))
-                    {
-                        Bitmap result = lastImage;
-                        lastImage = null;
-                        return result;
-                    }
-                    last = evidence;
-                    Thread.Sleep(250);
-                }
-                if (lastImage != null) SaveUiCapture(lastImage, "server-screen-not-detected.png");
-                throw new InvalidOperationException("The single-server dialog was not detected confidently; no server-selection input was sent. " + last);
-            }
-            finally { if (lastImage != null) lastImage.Dispose(); }
+            SelectNamedService(input, null, logPrefix);
         }
 
         private void SaveUiCapture(Bitmap image, string fileName)
@@ -1829,6 +1693,8 @@ namespace _4RTools.Model.Vanilla
             opts.Controls.Add(new Label { Text = "Arguments", AutoSize = true, Margin = new Padding(0, 8, 8, 0) });
             opts.Controls.Add(launchArgs);
             opts.Controls.Add(new Label { Text = "Proxy", AutoSize = true, Margin = new Padding(12, 8, 8, 0) });
+            proxy.FormattingEnabled = true;
+            proxy.Format += (s, e) => { if (e.ListItem is VanillaProxyRoute) e.Value = VanillaProxyPattern.NameForRoute((VanillaProxyRoute)e.ListItem); };
             proxy.DataSource = Enum.GetValues(typeof(VanillaProxyRoute));
             opts.Controls.Add(proxy);
             opts.Controls.Add(new Label { Text = "Clients", AutoSize = true, Margin = new Padding(12, 8, 8, 0) });

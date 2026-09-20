@@ -470,6 +470,19 @@ produce useful captures/logs.
 
 ## Resolution-agnostic character selection
 
+Service/login selection must use recognized names and independently verified
+selection/focus evidence. Offer all eight known proxy services while preserving
+the persisted numeric identities of the original four. Never substitute list
+ordinal, guessed dialog percentages or an unverified Enter for named service
+selection. Automatic and TESTS paths must share the same guarded selector.
+Character navigation requires positive screen and selected-slot evidence before
+input and feedback after each key; an assumed keyboard clamp is not evidence.
+
+When the user is working on this PC and requests background-only development,
+perform all executable/UI/build validation on the existing Windows GitHub Actions
+runners. Do not launch local applications, observe live clients, or manipulate
+the desktop in that session. This does not waive CI/release verification.
+
 Never select a Vanilla character or GAME START by fixed/normalized grid coordinates.
 Character-select automation must use focus-verified keyboard navigation from a
 clamped known origin, driven by the configured one-based slot, and the existing

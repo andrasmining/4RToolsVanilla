@@ -118,13 +118,14 @@ function New-PortableArchive([string] $Root, [string] $ArchivePath, [DateTime] $
 
 function Assert-PortableSmokeResult([object] $Report) {
     if ($null -eq $Report) { throw 'Portable smoke report is empty.' }
-    foreach ($requiredField in @('Success', 'MainUi', 'AutomationEnabled', 'GameplayAttached', 'InputSent', 'OriginalFeatureForms',
+    foreach ($requiredField in @('Success', 'MainUi', 'PackagedOcr', 'AutomationEnabled', 'GameplayAttached', 'InputSent', 'OriginalFeatureForms',
         'VanillaPollingEnabled', 'FleetPollingEnabled', 'FleetPollCount', 'RecoveryRunning', 'WeightAlertsRunning', 'UpdateCheckRunning')) {
         if ($null -eq $Report.PSObject.Properties[$requiredField]) {
             throw "Portable smoke report is missing $requiredField."
         }
     }
     if ($Report.Success -isnot [bool] -or -not $Report.Success) { throw 'Portable smoke test reported failure.' }
+    if ($Report.PackagedOcr -isnot [bool] -or -not $Report.PackagedOcr) { throw 'Portable OCR runtime/model validation failed.' }
     if ($Report.MainUi -cne 'Container') { throw 'Portable smoke test did not validate the original 4RTools main window.' }
     foreach ($inactiveField in @('AutomationEnabled', 'GameplayAttached', 'InputSent', 'VanillaPollingEnabled',
         'FleetPollingEnabled', 'RecoveryRunning', 'WeightAlertsRunning', 'UpdateCheckRunning')) {
@@ -259,6 +260,23 @@ try {
     Copy-Item -LiteralPath (Join-Path $repositoryRoot 'LICENSE') -Destination $stagingPath
     Copy-Item -LiteralPath (Join-Path $repositoryRoot 'packaging/README.txt') -Destination $stagingPath
     Copy-Item -LiteralPath (Join-Path $repositoryRoot 'packaging/THIRD-PARTY-NOTICES.txt') -Destination $stagingPath
+    Copy-Item -LiteralPath (Join-Path $repositoryRoot 'packaging/licenses') -Destination $stagingPath -Recurse
+    foreach ($folder in @('x86', 'tessdata')) {
+        Copy-Item -LiteralPath (Join-Path $applicationOutput $folder) -Destination $stagingPath -Recurse
+    }
+    # Ship the official redistributable CRT app-local; users need no developer tools
+    # or system-wide VC runtime install to load the x86 OCR libraries.
+    $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+    $vsInstall = (& $vswhere -latest -products '*' -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1)
+    if (-not $vsInstall) { throw 'Visual C++ REDIST directory was not found for portable OCR.' }
+    $crt = Get-ChildItem -LiteralPath (Join-Path $vsInstall 'VC/Redist/MSVC') -Directory |
+        Where-Object { $_.Name -match '^14\.' } | Sort-Object { [version]$_.Name } -Descending |
+        ForEach-Object { Get-ChildItem -Path (Join-Path $_.FullName 'x86/Microsoft.VC*.CRT') -Directory } | Select-Object -First 1
+    if (-not $crt) { throw 'The x86 redistributable CRT payload is unavailable.' }
+    foreach ($required in @('msvcp140.dll', 'vcruntime140.dll')) {
+        if (-not (Test-Path -LiteralPath (Join-Path $crt.FullName $required))) { throw "Missing redistributable $required." }
+    }
+    Get-ChildItem -LiteralPath $crt.FullName -Filter '*.dll' -File | Copy-Item -Destination $stagingPath
 
     # Profiles are defaults owned by the repository, never the user's live data.
     if ($trackedBuildProfiles.Count -gt 0) {

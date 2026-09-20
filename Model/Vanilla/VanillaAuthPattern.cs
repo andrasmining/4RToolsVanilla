@@ -11,6 +11,9 @@ namespace _4RTools.Model.Vanilla
     {
         public Rectangle UserName { get; set; }
         public Rectangle Password { get; set; }
+        public Rectangle ServiceControl { get; set; }
+        public Rectangle UserNameControl { get; set; }
+        public Rectangle PasswordControl { get; set; }
         public string Evidence { get; set; }
     }
 
@@ -18,6 +21,8 @@ namespace _4RTools.Model.Vanilla
     {
         public Rectangle Dialog { get; set; }
         public Rectangle ServerRow { get; set; }
+        public string ServerName { get; set; }
+        public bool IsHighlighted { get; set; }
         public string Evidence { get; set; }
     }
 
@@ -48,19 +53,19 @@ namespace _4RTools.Model.Vanilla
 
             byte[] gray = Gray(bitmap);
             int width = bitmap.Width, height = bitmap.Height;
-            Rectangle search = Rectangle.FromLTRB((int)(width * 0.30), (int)(height * 0.50), (int)(width * 0.68), (int)(height * 0.78));
+            // Locate the form itself. UI scale and window size are independent in Vanilla.
+            Rectangle search = new Rectangle(2, 2, width - 4, height - 4);
             List<EdgeLine> lines = FindHorizontalLines(gray, width, height, search,
-                Math.Max(45, (int)(width * 0.045)), Math.Max(110, (int)(width * 0.18)), 0.35, 0.62);
+                55, Math.Min(width - 8, 600), 0.0, 1.0);
             List<ControlBox> boxes = BuildControlBoxes(lines, width,
-                Math.Max(7, (int)(height * 0.006)), Math.Max(34, (int)(height * 0.040)));
-            if (boxes.Count < 3)
+                7, 70);
+            if (boxes.Count < 3 || boxes.Count > 160)
             {
                 evidence = "found " + lines.Count + " candidate edges but only " + boxes.Count + " plausible login rectangles in " + search;
                 return false;
             }
 
-            ControlBox[] best = null;
-            double bestScore = double.MaxValue;
+            var candidates = new List<Tuple<ControlBox[], double>>();
             for (int a = 0; a < boxes.Count - 2; a++)
             for (int b = a + 1; b < boxes.Count - 1; b++)
             for (int c = b + 1; c < boxes.Count; c++)
@@ -84,13 +89,13 @@ namespace _4RTools.Model.Vanilla
 
                 int inter1 = second.Top.Y - first.Bottom.Y;
                 int inter2 = third.Top.Y - second.Bottom.Y;
-                int maxInter = Math.Max(14, (int)(height * 0.022));
+                int maxInter = Math.Max(14, (int)(meanHeight * 0.85));
                 if (inter1 < -3 || inter2 < -3 || inter1 > maxInter || inter2 > maxInter) continue;
 
                 double topGap1 = second.Top.Y - first.Top.Y;
                 double topGap2 = third.Top.Y - second.Top.Y;
                 double topGapMean = (topGap1 + topGap2) / 2.0;
-                if (topGapMean < Math.Max(10, height * 0.012) || topGapMean > height * 0.060) continue;
+                if (topGapMean < 10 || topGapMean > 100) continue;
                 double spacingError = Math.Abs(topGap1 - topGap2) / topGapMean;
                 if (spacingError > 0.38) continue;
 
@@ -99,15 +104,50 @@ namespace _4RTools.Model.Vanilla
                 double score = spacingError * 3.0 + widthSpread * 2.0 + heightSpread
                     + Math.Abs(meanX / width - 0.49) * 2.0
                     + Math.Abs(meanY / height - 0.65);
-                if (score < bestScore)
+                candidates.Add(Tuple.Create(new[] { first, second, third }, score));
+            }
+            if (candidates.Count == 0 || candidates.Count > 256)
+            {
+                evidence = "no bounded, unambiguous set of stacked login controls matched among " + boxes.Count + " rectangles";
+                return false;
+            }
+
+            ControlBox[] best = null;
+            double bestScore = double.MaxValue;
+            Rectangle serviceControl = Rectangle.Empty;
+            var identities = new Dictionary<Rectangle, bool>();
+            foreach (var candidate in candidates.OrderBy(value => value.Item2))
+            {
+                ControlBox first = candidate.Item1[0];
+                Rectangle service = LoginServiceTextInterior(first, gray, width);
+                bool recognized;
+                if (!identities.TryGetValue(service, out recognized))
                 {
-                    bestScore = score;
-                    best = new[] { first, second, third };
+                    if (identities.Count >= 24) { evidence = "too many distinct candidate login services"; return false; }
+                    VanillaTextLine[] serviceText;
+                    string textEvidence;
+                    recognized = VanillaTextRecognition.TryRead(bitmap, service, true, out serviceText, out textEvidence)
+                        && serviceText.Any(line => line.Confidence >= 70
+                            && string.Equals(line.Text.Trim(), "Vanilla MMO", StringComparison.OrdinalIgnoreCase));
+                    identities.Add(service, recognized);
                 }
+                if (!recognized) continue;
+                if (best != null)
+                {
+                    bool same = Enumerable.Range(0, 3).All(index =>
+                        Math.Abs(best[index].CenterX - candidate.Item1[index].CenterX) <= 3
+                        && Math.Abs(best[index].CenterY - candidate.Item1[index].CenterY) <= 3
+                        && Math.Abs(best[index].Width - candidate.Item1[index].Width) <= 6);
+                    if (!same) { evidence = "more than one named login form is plausible"; return false; }
+                    continue;
+                }
+                best = candidate.Item1;
+                bestScore = candidate.Item2;
+                serviceControl = service;
             }
             if (best == null)
             {
-                evidence = "no three separately bordered stacked login controls matched among " + boxes.Count + " rectangles";
+                evidence = "stacked rectangles found, but the login service identity was not confirmed";
                 return false;
             }
 
@@ -122,103 +162,36 @@ namespace _4RTools.Model.Vanilla
             evidence = "detected three separate stacked controls; score=" + bestScore.ToString("0.000")
                 + "; boxes=" + string.Join(" | ", best.Select((box, index) => index + ":" + Describe(box)))
                 + "; username=" + user + "; password=" + password;
-            layout = new VanillaLoginLayout { UserName = user, Password = password, Evidence = evidence };
+            layout = new VanillaLoginLayout
+            {
+                UserName = user, Password = password, ServiceControl = serviceControl,
+                UserNameControl = Rectangle.FromLTRB(best[1].Left + 2, best[1].Top.Y + 1, best[1].Right - 1, best[1].Bottom.Y),
+                PasswordControl = Rectangle.FromLTRB(best[2].Left + 2, best[2].Top.Y + 1, best[2].Right - 1, best[2].Bottom.Y),
+                Evidence = evidence
+            };
             return true;
+        }
+
+        private static Rectangle LoginServiceTextInterior(ControlBox box, byte[] gray, int width)
+        {
+            int top = box.Top.Y + 2, bottom = box.Bottom.Y - 1;
+            int right = box.Right - 2;
+            // Exclude a dropdown arrow only after finding its actual vertical separator.
+            // No arbitrary text suffix or fixed-width crop can establish the service identity.
+            for (int x = box.Left + box.Width / 2; x < box.Right - 3; x++)
+            {
+                int edge = 0;
+                for (int y = top + 1; y < bottom - 1; y++)
+                    if (Math.Abs(gray[y * width + x + 1] - gray[y * width + x - 1]) >= 25) edge++;
+                if (edge >= Math.Max(4, (bottom - top - 2) * 0.85)) { right = x - 1; break; }
+            }
+            return Rectangle.FromLTRB(box.Left + 3, top, right, bottom);
         }
 
         internal static bool TryDetectServerDialog(Bitmap bitmap, out VanillaServerLayout layout, out string evidence)
         {
-            layout = null;
-            evidence = "server dialog not detected";
-            if (!Usable(bitmap, out evidence)) return false;
-
-            byte[] gray = Gray(bitmap);
-            int width = bitmap.Width, height = bitmap.Height;
-            Rectangle search = Rectangle.FromLTRB((int)(width * 0.28), (int)(height * 0.44), (int)(width * 0.72), (int)(height * 0.84));
-            List<EdgeLine> lines = FindHorizontalLines(gray, width, height, search,
-                Math.Max(100, (int)(width * 0.105)), Math.Max(360, (int)(width * 0.30)), 0.34, 0.66);
-            if (lines.Count < 2)
-            {
-                evidence = "found only " + lines.Count + " candidate server-dialog edges in " + search;
-                return false;
-            }
-
-            EdgeLine top = null, bottom = null;
-            double bestScore = double.MaxValue;
-            for (int a = 0; a < lines.Count - 1; a++)
-            for (int b = a + 1; b < lines.Count; b++)
-            {
-                EdgeLine first = lines[a], second = lines[b];
-                int dialogHeight = second.Y - first.Y;
-                if (dialogHeight < Math.Max(70, (int)(height * 0.075)) || dialogHeight > height * 0.28) continue;
-                int overlapLeft = Math.Max(first.Left, second.Left), overlapRight = Math.Min(first.Right, second.Right);
-                int overlap = overlapRight - overlapLeft + 1;
-                if (overlap < Math.Min(first.Width, second.Width) * 0.68) continue;
-                double centerDiff = Math.Abs(first.CenterX - second.CenterX);
-                if (centerDiff > width * 0.05) continue;
-                double meanCenter = (first.CenterX + second.CenterX) / 2.0;
-                double meanWidth = (first.Width + second.Width) / 2.0;
-                double score = Math.Abs(meanCenter / width - 0.50) * 2.5
-                    + Math.Abs(meanWidth / width - 0.17) * 1.2
-                    + Math.Abs(dialogHeight / (double)height - 0.16)
-                    + centerDiff / width;
-                if (score < bestScore)
-                {
-                    bestScore = score;
-                    top = first;
-                    bottom = second;
-                }
-            }
-            if (top == null || bottom == null)
-            {
-                evidence = "no central server-dialog rectangle matched among " + lines.Count + " edge lines";
-                return false;
-            }
-
-            int left = Math.Min(top.Left, bottom.Left), right = Math.Max(top.Right, bottom.Right);
-            int dialogHeightPixels = bottom.Y - top.Y;
-            Rectangle dialog = Rectangle.FromLTRB(left, top.Y, right + 1, bottom.Y + 1);
-
-            ControlBox firstRowBox = BuildControlBoxes(lines
-                    .Where(line => line.Y > top.Y && line.Y < top.Y + Math.Max(35, (int)(dialogHeightPixels * 0.32)))
-                    .ToList(), width,
-                    Math.Max(6, (int)(height * 0.005)), Math.Max(32, (int)(height * 0.035)))
-                .Where(box => box.Width >= dialog.Width * 0.62 && box.Width <= dialog.Width * 1.02
-                    && Math.Abs(box.CenterX - (left + right) / 2.0) <= width * 0.035)
-                .OrderBy(box => box.Top.Y)
-                .ThenByDescending(box => box.Width)
-                .FirstOrDefault();
-
-            Rectangle row;
-            string rowSource;
-            if (firstRowBox != null)
-            {
-                row = SafeInterior(firstRowBox);
-                rowSource = "nested bordered first row " + Describe(firstRowBox);
-            }
-            else
-            {
-                int rowLeft = left + Math.Max(5, (int)(dialog.Width * 0.08));
-                int rowRight = right - Math.Max(5, (int)(dialog.Width * 0.16));
-                int rowTop = top.Y + Math.Max(5, (int)(dialogHeightPixels * 0.07));
-                int rowBottom = top.Y + Math.Max(11, (int)(dialogHeightPixels * 0.15));
-                rowBottom = Math.Min(rowBottom, bottom.Y - 4);
-                row = Rectangle.FromLTRB(rowLeft, rowTop, rowRight + 1, rowBottom + 1);
-                rowSource = "geometry fallback";
-            }
-
-            if (row.Width < 30 || row.Height < 3 || !dialog.Contains(row))
-            {
-                evidence = "server dialog was found but its first-row safe area is invalid: " + row;
-                return false;
-            }
-
-            evidence = "detected one-server dialog; score=" + bestScore.ToString("0.000")
-                + "; dialog=" + dialog + "; firstRowSafe=" + row + "; rowSource=" + rowSource;
-            layout = new VanillaServerLayout { Dialog = dialog, ServerRow = row, Evidence = evidence };
-            return true;
+            return VanillaServiceRecognition.TryServer(bitmap, out layout, out evidence);
         }
-
         internal static Point PickInside(Rectangle rectangle, int seed)
         {
             if (rectangle.Width <= 0 || rectangle.Height <= 0) throw new ArgumentException("Safe click rectangle is empty.");

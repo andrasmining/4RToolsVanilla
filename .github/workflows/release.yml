@@ -71,6 +71,7 @@ jobs:
           path: |
             dist/ui-layout/*.png
             dist/ui-layout/*.txt
+            dist/recognition/*.png
           if-no-files-found: warn
           retention-days: 14
 
@@ -188,7 +189,7 @@ jobs:
         shell: powershell
         env:
           GH_TOKEN: ${{ github.token }}
-        run: '& .\scripts\test-published-update.ps1 -Version $env:VERSION'
+        run: '& .\scripts\test-published-update.ps1 -Version $env:VERSION -BaselineTag v0.6.67'
 
       - name: Delete verified merged branches
         shell: powershell
