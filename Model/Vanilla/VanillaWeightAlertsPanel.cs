@@ -11,7 +11,7 @@ namespace _4RTools.Model.Vanilla
     public sealed class VanillaWeightAlertsPanel : UserControl
     {
         private readonly VanillaWeightAlertService service;
-        private readonly CheckBox autoCart = new CheckBox { Text = "Automatically move selected inventory categories to Cart", AutoSize = true };
+        private readonly CheckBox autoCart = new CheckBox { Text = "Cart master", AutoSize = true };
         private readonly NumericUpDown autoThreshold = Number(1, 100, 50, 1);
         private readonly NumericUpDown autoRearm = Number(0, 99, 40, 1);
         private readonly CheckBox transferUse = new CheckBox { Text = "Use", AutoSize = true, Checked = true };
@@ -24,7 +24,7 @@ namespace _4RTools.Model.Vanilla
         private bool autobattleStopCtrl, autobattleStopAlt, autobattleStopShift;
         private bool inventoryCtrl, inventoryAlt, inventoryShift, cartCtrl, cartAlt, cartShift;
 
-        private readonly CheckBox enabled = new CheckBox { Text = "Enable carried-weight warning e-mail", AutoSize = true };
+        private readonly CheckBox enabled = new CheckBox { Text = "E-mail master", AutoSize = true };
         private readonly NumericUpDown threshold = Number(1, 100, 85, 1);
         private readonly NumericUpDown rearm = Number(0, 99, 80, 1);
         private readonly NumericUpDown pollSeconds = Number(2, 60, 5, 0);
@@ -47,6 +47,7 @@ namespace _4RTools.Model.Vanilla
             RowHeadersVisible = false, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill
         };
         private readonly Timer timer = new Timer { Interval = 1000 };
+        private readonly ToolTip help = new ToolTip { ShowAlways = true, AutoPopDelay = 30000 };
         private VanillaWeightAlertSettings loaded;
         private bool disposed;
 
@@ -67,30 +68,69 @@ namespace _4RTools.Model.Vanilla
 
         private void BuildLayout()
         {
-            var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(14), ColumnCount = 1, RowCount = 6 };
-            root.RowStyles.Add(new RowStyle(SizeType.AutoSize)); root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            root.RowStyles.Add(new RowStyle(SizeType.AutoSize)); root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            root.RowStyles.Add(new RowStyle(SizeType.AutoSize)); root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            root.Controls.Add(new Label { AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold), Text = "Weight / Cart management" }, 0, 0);
-            root.Controls.Add(new Label
-            {
-                AutoSize = true, MaximumSize = new Size(1150, 0), ForeColor = Color.DimGray, Margin = new Padding(0, 5, 0, 10),
-                Text = "Weight decisions use verified read-only carried and Cart weight only. Cart maintenance uses ordinary UI hotkeys, visual slot/category detection and slow drag/drop; it never reads or writes inventory memory. Before either panel opens, the dedicated STOP hotkey must be verified by at least 5 continuous seconds of unchanged X/Y, with up to 3 attempts on 10-second windows. The stopped HP baseline is then monitored throughout Cart work; a >10 percentage-point HP drop immediately resumes Autobattle and defers the Cart pass about 60 seconds. A transfer gets up to 3 slow attempts; pure transfer non-progress resumes Autobattle and retries about 60s later instead of holding the character. At 75% Cart weight it switches to capacity-safe precision filling: Mastela Fruit=3 and Peco Feather=1, using a positively detected quantity dialog and verified Cart-weight progress. Exact Cart 100% remains the Cart-full mail milestone; farming is DONE at Cart >=99% plus carried weight >=50%, then Autobattle is intentionally stopped."
-            }, 0, 1);
+            var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(14), ColumnCount = 1, RowCount = 5 };
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-            root.Controls.Add(BuildCartGroup(), 0, 2);
-            root.Controls.Add(BuildMailGroup(), 0, 3);
+            var title = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = Padding.Empty };
+            title.Controls.Add(new Label { AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold), Text = "Weight / Cart management" });
+            var info = new Label { AutoSize = true, Text = "ⓘ", Cursor = Cursors.Help, Margin = new Padding(8, 2, 0, 0) };
+            help.SetToolTip(info,
+                "Character-level Cart and Mail switches are edited on Recovery & relog. "
+                + "Cart mode uses verified read-only carried/Cart weight plus ordinary UI input. "
+                + "STOP must be verified stationary, HP is guarded while stopped, precision filling starts at 75%, "
+                + "Mastela=3, Peco Feather=1, and transient transfer failures retry later.");
+            title.Controls.Add(info);
+            root.Controls.Add(title, 0, 0);
+
+            root.Controls.Add(BuildCartGroup(), 0, 1);
+            root.Controls.Add(BuildMailGroup(), 0, 2);
+
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Margin = new Padding(0, 8, 0, 0) };
             buttons.Controls.Add(save); buttons.Controls.Add(test); buttons.Controls.Add(clearHold); buttons.Controls.Add(status);
-            root.Controls.Add(buttons, 0, 4);
+            root.Controls.Add(buttons, 0, 3);
 
             live.Columns.Add("Client", "Client"); live.Columns.Add("Weight", "Weight"); live.Columns.Add("Percent", "%");
             live.Columns.Add("Cart", "Cart"); live.Columns.Add("CartPercent", "Cart %"); live.Columns.Add("Verification", "State");
             var liveHost = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
             liveHost.RowStyles.Add(new RowStyle(SizeType.AutoSize)); liveHost.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             liveHost.Controls.Add(new Label { AutoSize = true, Font = new Font("Segoe UI", 9F, FontStyle.Bold), Margin = new Padding(0, 10, 0, 4), Text = "Live verified weight" }, 0, 0);
-            liveHost.Controls.Add(live, 0, 1); root.Controls.Add(liveHost, 0, 5);
+            liveHost.Controls.Add(live, 0, 1); root.Controls.Add(liveHost, 0, 4);
             Controls.Add(root);
+
+            ConfigureHelp();
+        }
+
+        private void ConfigureHelp()
+        {
+            help.SetToolTip(autoCart,
+                "Global Cart master. A character also needs its own Cart switch enabled in Recovery & relog.");
+            help.SetToolTip(autoThreshold,
+                "Carried-weight percentage that triggers a Cart-maintenance pass for Cart-enabled characters.");
+            help.SetToolTip(autoRearm,
+                "Re-arm automatic Cart maintenance after carried weight falls below this percentage.");
+            help.SetToolTip(transferUse, "Process Use. Known farming rule: Mastela Fruit weighs 3.");
+            help.SetToolTip(transferEquip, "Equip has no verified unit-weight rule and is skipped once precision filling starts at 75% Cart.");
+            help.SetToolTip(transferEtc, "Process Etc. Known farming rule: Peco Feather weighs 1.");
+            help.SetToolTip(autobattleStopHotkey,
+                "Dedicated Autobattle STOP hotkey. STOP is verified by 5 continuous stationary X/Y seconds before Cart UI is allowed.");
+            help.SetToolTip(inventoryHotkey, "Inventory hotkey used only after verified Autobattle STOP.");
+            help.SetToolTip(cartHotkey, "Cart hotkey used only after verified Autobattle STOP.");
+
+            help.SetToolTip(enabled,
+                "Global e-mail master. A character also needs its own Mail switch. Without Cart: carried-weight warning. "
+                + "With Cart: carried-only warnings are suppressed; Cart-full and combined DONE milestone mail is used.");
+            help.SetToolTip(threshold,
+                "Carried-weight warning threshold for Mail-enabled characters whose Cart switch is OFF.");
+            help.SetToolTip(rearm, "Re-arm carried-weight warning mail below this percentage.");
+            help.SetToolTip(pollSeconds, "Shared weight polling interval.");
+            help.SetToolTip(cooldownMinutes, "Cooldown for repeated carried-weight warning mail.");
+            help.SetToolTip(smtpPassword, "Leave blank to keep the existing protected SMTP password.");
+            help.SetToolTip(test, "Send a test message using the SMTP settings below.");
+            help.SetToolTip(clearHold, "Clear manual/completed Weight/Cart holds after you have inspected the character.");
         }
 
         private Control BuildCartGroup()
@@ -105,8 +145,10 @@ namespace _4RTools.Model.Vanilla
             categories.Controls.Add(transferUse); categories.Controls.Add(transferEquip); categories.Controls.Add(transferEtc);
             table.Controls.Add(new Label { Text = "Move categories", AutoSize = true, Margin = new Padding(3, 8, 6, 0) }, 0, 2);
             table.Controls.Add(categories, 1, 2);
-            var hint = new Label { AutoSize = true, ForeColor = Color.DimGray, MaximumSize = new Size(500, 0), Text = "Equip is optional/off by default. Favorite is not processed because it can overlap the real Use/Equip/Etc categories." };
-            table.Controls.Add(hint, 2, 2); table.SetColumnSpan(hint, 2);
+            var categoryHelp = new Label { AutoSize = true, Text = "ⓘ", Cursor = Cursors.Help, Margin = new Padding(6, 8, 0, 0) };
+            help.SetToolTip(categoryHelp,
+                "Equip is optional/off by default. Favorite is not processed because it can overlap the real Use/Equip/Etc categories.");
+            table.Controls.Add(categoryHelp, 2, 2);
             Add(table, 3, 0, "Autobattle STOP", autobattleStopHotkey); Add(table, 3, 2, "Inventory hotkey", inventoryHotkey);
             Add(table, 4, 0, "Cart hotkey", cartHotkey);
             group.Controls.Add(table); return group;
@@ -128,13 +170,11 @@ namespace _4RTools.Model.Vanilla
             Add(settings, 4, 0, "SMTP username", smtpUser); Add(settings, 4, 2, "SMTP password", smtpPassword);
             Add(settings, 5, 0, "From e-mail", fromAddress); Add(settings, 5, 2, "Recipient e-mail", toAddress);
             Add(settings, 6, 0, "Subject prefix", subjectPrefix);
-            settings.Controls.Add(new Label { AutoSize = true, ForeColor = Color.DimGray, Text = "Leave password blank to keep the already saved protected password." }, 2, 6);
-            var milestoneHint = new Label
-            {
-                AutoSize = true, ForeColor = Color.DimGray, MaximumSize = new Size(1100, 0),
-                Text = "Cart 100% and DONE milestone e-mails use these SMTP settings whenever they are configured; the checkbox above controls only carried-weight warning e-mails."
-            };
-            settings.Controls.Add(milestoneHint, 0, 7); settings.SetColumnSpan(milestoneHint, 4);
+            var mailHelp = new Label { AutoSize = true, Text = "ⓘ", Cursor = Cursors.Help, Margin = new Padding(6, 8, 0, 0) };
+            help.SetToolTip(mailHelp,
+                "Per-character Mail behavior: Cart OFF = carried-weight warning at the configured threshold. "
+                + "Cart ON = no carried-only warning; exact Cart 100% and combined Cart>=99% + carried>=50% milestones use this SMTP transport.");
+            settings.Controls.Add(mailHelp, 2, 6);
             group.Controls.Add(settings); return group;
         }
 
@@ -178,12 +218,8 @@ namespace _4RTools.Model.Vanilla
             VanillaWeightAlertSettings value = ReadSettings(); value.Validate(false); if (value.Enabled) value.Validate(true);
             service.ApplySettings(value, true); loaded = service.Settings; smtpPassword.Clear();
             bool milestoneMail = VanillaWeightAlertService.MilestoneMailConfigured(value);
-            status.Text = value.AutoCartEnabled
-                ? "Saved. Automatic Cart maintenance is armed at " + value.AutoCartThresholdPercent.ToString("0.#")
-                    + "%. Milestone mail " + (milestoneMail ? "is configured." : "is not configured until valid SMTP/addresses are saved.")
-                : value.Enabled ? "Saved. Carried-weight warning e-mail is enabled."
-                : milestoneMail ? "Saved. Cart-full/DONE milestone mail is configured."
-                : "Saved. Automatic actions and e-mail notifications are disabled.";
+            status.Text = "Saved. Character Cart/Mail switches control who uses these shared settings"
+                + (milestoneMail ? "; SMTP ready." : "; SMTP not configured.");
         }
 
         private enum HotkeyTarget { AutobattleStop, Inventory, Cart }
@@ -256,6 +292,6 @@ namespace _4RTools.Model.Vanilla
         { return new NumericUpDown { Minimum = min, Maximum = max, Value = value, DecimalPlaces = decimals, Width = 120 }; }
         private static decimal Clamp(NumericUpDown control, decimal value) { return Math.Max(control.Minimum, Math.Min(control.Maximum, value)); }
         private void Guard(System.Action action) { try { action(); } catch (Exception ex) { status.Text = ex.Message; } }
-        protected override void Dispose(bool disposing) { if (disposing) { disposed = true; timer.Stop(); timer.Dispose(); } base.Dispose(disposing); }
+        protected override void Dispose(bool disposing) { if (disposing) { disposed = true; timer.Stop(); timer.Dispose(); help.Dispose(); } base.Dispose(disposing); }
     }
 }
