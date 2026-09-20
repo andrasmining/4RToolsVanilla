@@ -29,11 +29,20 @@ jobs:
       - name: Integrate guarded edits and remove temporary tooling
         shell: powershell
         run: |
-          python scripts/complete-launcher-recovery.py
+          @'
+          import runpy
+          scope = runpy.run_path('scripts/complete-launcher-recovery.py')
+          edit, rep = scope['edit'], scope['rep']
+          edit('Model/Vanilla/VanillaLauncherUpdateRecovery.cs', lambda s: rep(rep(s,
+              'Func<bool> cancelled, Action begin)', 'Func<bool> cancelled, System.Action begin)'),
+              '            Action check =', '            System.Action check ='))
+          edit('Model/Vanilla/VanillaPatcherLauncher.cs', lambda s: rep(s,
+              '            return resolved;', '            return Path.GetFullPath(resolved);'))
+          '@ | python -
           if ($LASTEXITCODE -ne 0) { throw 'Guarded launcher integration failed.' }
           git rm scripts/complete-launcher-recovery.py .github/workflows/complete-launcher-recovery.yml
           if ($LASTEXITCODE -ne 0) { throw 'Temporary tooling removal failed.' }
-          git add AGENTS.md Model/Vanilla/AGENTS.md Model/Vanilla/VanillaPatcherLauncher.cs Model/Vanilla/VanillaReconnect.cs Model/Vanilla/VanillaStartupOrchestrator.cs Tests/Program.cs Tests/Vanilla.Diagnostics.Tests.csproj Tests/VanillaNativeRecoveryTests.cs
+          git add AGENTS.md Model/Vanilla/AGENTS.md Model/Vanilla/VanillaLauncherUpdateRecovery.cs Model/Vanilla/VanillaPatcherLauncher.cs Model/Vanilla/VanillaReconnect.cs Model/Vanilla/VanillaStartupOrchestrator.cs Tests/Program.cs Tests/Vanilla.Diagnostics.Tests.csproj Tests/VanillaNativeRecoveryTests.cs
           git -c core.whitespace=cr-at-eol diff --cached --check
           if ($LASTEXITCODE -ne 0) { throw 'Patch validation failed.' }
           git diff --cached --stat
