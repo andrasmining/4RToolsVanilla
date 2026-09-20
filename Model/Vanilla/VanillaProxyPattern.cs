@@ -58,8 +58,12 @@ namespace _4RTools.Model.Vanilla
                 string accurateEvidence;
                 Rectangle crop = Rectangle.Intersect(dialog.Bounds, Rectangle.Inflate(line.Bounds, 2, 2));
                 if (!VanillaTextRecognition.TryReadAccurate(bitmap, crop, true, out accurate, out accurateEvidence)) continue;
+                int before = services.Count;
                 foreach (VanillaTextLine candidate in VanillaServiceRecognition.CombineAlignedText(accurate))
                     if (TryParseRow(dialog, candidate, out service)) services.Add(service);
+                if (services.Count == before && VanillaServiceRecognition.TryReadNormalizedLine(bitmap, crop, out accurate, out accurateEvidence))
+                    foreach (VanillaTextLine candidate in VanillaServiceRecognition.CombineAlignedText(accurate))
+                        if (TryParseRow(dialog, candidate, out service)) services.Add(service);
             }
             if (services.Count < 2)
             { evidence = "Select Service form has fewer than two confident named proxy choices"; return false; }

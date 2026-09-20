@@ -221,7 +221,12 @@ namespace _4RTools.Model.Vanilla
             VanillaTextLine[] lines;
             string evidence;
             Rectangle text = Rectangle.Inflate(field, -1, -1);
-            return VanillaTextRecognition.TryRead(image, text, true, out lines, out evidence)
+            if (VanillaTextRecognition.TryRead(image, text, true, out lines, out evidence)
+                && lines.Length == 1 && lines[0].Confidence >= 80)
+                return string.Equals(lines[0].Text.Trim(), expected, StringComparison.Ordinal);
+            // The accurate model may resolve uncertain pixels, but must never override a
+            // confident contradictory username or receive the configured name as an OCR hint.
+            return VanillaTextRecognition.TryReadAccurate(image, text, true, out lines, out evidence)
                 && lines.Length == 1 && lines[0].Confidence >= 80
                 && string.Equals(lines[0].Text.Trim(), expected, StringComparison.Ordinal);
         }

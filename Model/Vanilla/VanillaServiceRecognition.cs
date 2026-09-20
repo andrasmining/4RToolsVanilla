@@ -69,6 +69,18 @@ namespace _4RTools.Model.Vanilla
                 return "Synthetic diagnostics are available only in CI.";
             var report = new StringBuilder();
             Detection detection = ReadDialog(bitmap, text => report.AppendLine(text));
+            if (detection.Dialog != null)
+            {
+                foreach (Rectangle area in ObservedTextAreas(detection.Dialog))
+                {
+                    VanillaTextLine[] accurate;
+                    string evidence;
+                    VanillaTextRecognition.TryReadAccurate(bitmap, area, true, out accurate, out evidence);
+                    report.AppendLine("Accurate crop=" + area + "; " + evidence + "; " + DescribeLines(accurate));
+                    TryReadNormalizedLine(bitmap, area, out accurate, out evidence);
+                    report.AppendLine("Normalized accurate crop=" + area + "; " + evidence + "; " + DescribeLines(accurate));
+                }
+            }
             report.AppendLine("Result: " + detection.Evidence);
             return report.ToString();
         }
@@ -133,7 +145,7 @@ namespace _4RTools.Model.Vanilla
                     int overlap = Math.Min(word.Bounds.Bottom, other.Bounds.Bottom) - Math.Max(word.Bounds.Top, other.Bounds.Top);
                     int gap = Math.Max(word.Bounds.Left - other.Bounds.Right, other.Bounds.Left - word.Bounds.Right);
                     return overlap >= Math.Min(word.Bounds.Height, other.Bounds.Height) * .5
-                        && gap >= 0 && gap <= Math.Max(24, Math.Max(word.Bounds.Height, other.Bounds.Height) * 3);
+                        && gap <= Math.Max(24, Math.Max(word.Bounds.Height, other.Bounds.Height) * 3);
                 })).ToArray();
                 if (adjacent.Length == 0) groups.Add(new List<VanillaTextWord> { word });
                 else
@@ -151,6 +163,62 @@ namespace _4RTools.Model.Vanilla
                 return new VanillaTextLine { Text = string.Join(" ", words.Select(word => word.Text)), Bounds = bounds,
                     Confidence = words.Average(word => word.Confidence), Words = words };
             }).OrderBy(line => line.Bounds.Top).ToArray();
+        }
+
+        internal static bool TryReadNormalizedLine(Bitmap bitmap, Rectangle area,
+            out VanillaTextLine[] lines, out string evidence)
+        {
+            lines = new VanillaTextLine[0];
+            evidence = "observed text area is invalid";
+            if (area.Width < 3 || area.Width > 1200 || area.Height < 3 || area.Height > 80
+                || !new Rectangle(Point.Empty, bitmap.Size).Contains(area)) return false;
+            // A pale blue selected strip has a darker background than OCR's white
+            // padding. Normalize the observed luminance range before enlargement so
+            // the strip does not become foreground and join tiny neighboring stems.
+            var gray = new byte[area.Width * area.Height];
+            var histogram = new int[256];
+            for (int y = 0; y < area.Height; y++)
+                for (int x = 0; x < area.Width; x++)
+                {
+                    Color color = bitmap.GetPixel(area.Left + x, area.Top + y);
+                    byte value = (byte)((color.R * 30 + color.G * 59 + color.B * 11) / 100);
+                    gray[y * area.Width + x] = value; histogram[value]++;
+                }
+            int low = Percentile(histogram, gray.Length, .10), high = Percentile(histogram, gray.Length, .90);
+            if (high - low < 20) { evidence = "observed text has insufficient contrast"; return false; }
+            using (var normalized = new Bitmap(area.Width, area.Height))
+            {
+                for (int y = 0; y < area.Height; y++)
+                    for (int x = 0; x < area.Width; x++)
+                    {
+                        int value = Math.Max(0, Math.Min(255, (gray[y * area.Width + x] - low) * 255 / (high - low)));
+                        normalized.SetPixel(x, y, Color.FromArgb(value, value, value));
+                    }
+                if (!VanillaTextRecognition.TryReadAccurate(normalized, new Rectangle(Point.Empty, normalized.Size),
+                    true, out lines, out evidence)) return false;
+                foreach (VanillaTextLine line in lines)
+                {
+                    Rectangle bounds = line.Bounds; bounds.Offset(area.Location); line.Bounds = bounds;
+                    foreach (VanillaTextWord word in line.Words)
+                    { bounds = word.Bounds; bounds.Offset(area.Location); word.Bounds = bounds; }
+                }
+                return true;
+            }
+        }
+
+        private static int Percentile(int[] histogram, int total, double percentile)
+        {
+            int sum = 0;
+            for (int index = 0; index < histogram.Length; index++)
+            { sum += histogram[index]; if (sum >= total * percentile) return index; }
+            return 255;
+        }
+
+        private static Rectangle[] ObservedTextAreas(VanillaServiceDialog dialog)
+        {
+            return dialog.CandidateTextAreas.Concat(dialog.Lines.Select(line => Rectangle.Intersect(dialog.Bounds,
+                    Rectangle.Inflate(line.Bounds, 2, 2))))
+                .Where(area => area.Top > dialog.Bounds.Top && dialog.Bounds.Contains(area)).Distinct().Take(24).ToArray();
         }
 
         private static string DescribeLines(VanillaTextLine[] lines)
@@ -319,15 +387,15 @@ namespace _4RTools.Model.Vanilla
             {
                 // Use the accurate model only on observed text or selected-strip ink.
                 // This includes tiny text sparse OCR omitted, without inventing a row.
-                Rectangle[] areas = dialog.CandidateTextAreas.Concat(dialog.Lines.Select(line => Rectangle.Intersect(dialog.Bounds,
-                        Rectangle.Inflate(line.Bounds, 2, 2))))
-                    .Where(area => area.Top > dialog.Bounds.Top && dialog.Bounds.Contains(area)).Distinct().Take(24).ToArray();
+                Rectangle[] areas = ObservedTextAreas(dialog);
                 foreach (Rectangle area in areas)
                 {
                     VanillaTextLine[] accurate;
                     string accurateEvidence;
                     if (!VanillaTextRecognition.TryReadAccurate(bitmap, area, true, out accurate, out accurateEvidence)) continue;
                     foreach (VanillaTextLine line in CombineAlignedText(accurate)) AddServerMatch(dialog, line, matches);
+                    if (TryReadNormalizedLine(bitmap, area, out accurate, out accurateEvidence))
+                        foreach (VanillaTextLine line in CombineAlignedText(accurate)) AddServerMatch(dialog, line, matches);
                 }
             }
             if (matches.Count != 1)

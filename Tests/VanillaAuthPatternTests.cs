@@ -272,6 +272,44 @@ namespace Vanilla.Diagnostics.Tests
                     using (Bitmap crop = image.Clone(service, System.Drawing.Imaging.PixelFormat.Format24bppRgb))
                         SaveLoginFixture(crop, "login-candidate");
             }
+            if (services.Count > 0) DiagnoseSmallTextPipelines(image, services.OrderByDescending(region => region.Height).First());
+        }
+
+        private static void DiagnoseSmallTextPipelines(Bitmap image, Rectangle service)
+        {
+            foreach (bool accurate in new[] { false, true })
+            foreach (int scale in new[] { 2, 3, 4, 6, 8 })
+            foreach (InterpolationMode interpolation in new[] { InterpolationMode.NearestNeighbor, InterpolationMode.HighQualityBilinear, InterpolationMode.HighQualityBicubic })
+            foreach (bool raw in new[] { false, true })
+            foreach (bool normalize in new[] { false, true })
+            {
+                VanillaTextLine[] lines;
+                string evidence;
+                VanillaTextRecognition.TryReadExperimental(image, service, accurate, scale, interpolation, raw, normalize, out lines, out evidence);
+                string pipeline = "model=" + (accurate ? "best" : "fast") + " scale=" + scale + " interpolation=" + interpolation
+                    + " raw=" + raw + " normalize=" + normalize;
+                bool exact = lines.Length == 1 && lines[0].Confidence >= 70 && lines[0].Text.Trim() == "Vanilla MMO";
+                Console.WriteLine("TinyTextBatch " + pipeline + ": "
+                    + string.Join(" | ", lines.Select(line => line.Text + " @" + line.Confidence.ToString("0.0"))) + "; exact=" + exact);
+                if (!exact) continue;
+                bool negativesPassed = true;
+                foreach (string name in new[] { "Vanila MMO", "Vania MMO", "Vandy MMO", "Vara MMO", "Other MMO" })
+                using (Bitmap large = LoginImage(1600, 1000, true, serviceLabel: name))
+                using (var negative = new Bitmap(1000, 625))
+                {
+                    using (Graphics graphics = Graphics.FromImage(negative))
+                    {
+                        graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                        graphics.DrawImage(large, new Rectangle(Point.Empty, negative.Size));
+                    }
+                    VanillaTextRecognition.TryReadExperimental(negative, service, accurate, scale, interpolation, raw, normalize, out lines, out evidence);
+                    bool accepted = lines.Length == 1 && lines[0].Confidence >= 70 && lines[0].Text.Trim() == "Vanilla MMO";
+                    negativesPassed &= !accepted;
+                    Console.WriteLine("TinyTextNegative " + pipeline + " source=" + name + " accepted=" + accepted + ": "
+                        + string.Join(" | ", lines.Select(line => line.Text + " @" + line.Confidence.ToString("0.0"))));
+                }
+                Console.WriteLine("TinyTextCandidate " + pipeline + " allNegativesPassed=" + negativesPassed);
+            }
         }
 
         private static void SaveLoginFixture(Bitmap image, string name)

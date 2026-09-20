@@ -51,8 +51,21 @@ namespace _4RTools.Model.Vanilla
             return TryReadCore(bitmap, area, singleLine, out lines, out evidence, true);
         }
 
+        // Temporary synthetic-CI diagnostic entry point. Removed once a bounded pipeline
+        // has been selected from the independently generated positive/negative fixtures.
+        internal static bool TryReadExperimental(Bitmap bitmap, Rectangle area, bool accurate, int scale,
+            InterpolationMode interpolation, bool rawLine, bool normalizeBackground,
+            out VanillaTextLine[] lines, out string evidence)
+        {
+            lines = new VanillaTextLine[0]; evidence = "invalid experimental crop";
+            if (area.Width > 600 || area.Height > 80) return false;
+            return TryReadCore(bitmap, area, true, out lines, out evidence, accurate, scale, interpolation, rawLine, normalizeBackground);
+        }
+
         private static bool TryReadCore(Bitmap bitmap, Rectangle area, bool singleLine,
-            out VanillaTextLine[] lines, out string evidence, bool accurate)
+            out VanillaTextLine[] lines, out string evidence, bool accurate, int scaleOverride = 0,
+            InterpolationMode interpolation = InterpolationMode.HighQualityBicubic,
+            bool rawLine = false, bool normalizeBackground = false)
         {
             lines = new VanillaTextLine[0];
             evidence = "OCR region is invalid";
@@ -68,6 +81,7 @@ namespace _4RTools.Model.Vanilla
                 // Small native UI text needs enlargement. Bound both dimensions and total
                 // pixels; a full-screen character scan remains bounded on a 4K desktop.
                 double scale = singleLine ? Math.Min(4, 60.0 / area.Height) : 3.0;
+                if (scaleOverride > 0) scale = scaleOverride;
                 scale = Math.Min(scale, Math.Min(4096.0 / area.Width, 3072.0 / area.Height));
                 scale = Math.Min(scale, Math.Sqrt(8000000.0 / ((double)area.Width * area.Height)));
                 int width = Math.Max(3, (int)Math.Round(area.Width * scale));
@@ -79,16 +93,31 @@ namespace _4RTools.Model.Vanilla
                     using (var attributes = new ImageAttributes())
                     {
                         graphics.Clear(Color.White);
-                        graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                        graphics.InterpolationMode = interpolation;
                         graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
                         // Grayscale removes colored selection/background fringing without
                         // fabricating or substituting any character in the recognized text.
+                        float gain = 1f, offset = 0f;
+                        if (normalizeBackground)
+                        {
+                            var samples = new List<int>();
+                            for (int sy = area.Top; sy < area.Bottom; sy++)
+                            for (int sx = area.Left; sx < area.Right; sx++)
+                            {
+                                Color color = bitmap.GetPixel(sx, sy);
+                                samples.Add((color.R * 30 + color.G * 59 + color.B * 11) / 100);
+                            }
+                            samples.Sort();
+                            int background = samples[samples.Count * 9 / 10], foreground = samples[0];
+                            gain = 255f / Math.Max(1, background - foreground);
+                            offset = -foreground * gain / 255f;
+                        }
                         attributes.SetColorMatrix(new ColorMatrix(new[] {
-                            new[] { .299f, .299f, .299f, 0f, 0f },
-                            new[] { .587f, .587f, .587f, 0f, 0f },
-                            new[] { .114f, .114f, .114f, 0f, 0f },
+                            new[] { .299f * gain, .299f * gain, .299f * gain, 0f, 0f },
+                            new[] { .587f * gain, .587f * gain, .587f * gain, 0f, 0f },
+                            new[] { .114f * gain, .114f * gain, .114f * gain, 0f, 0f },
                             new[] { 0f, 0f, 0f, 1f, 0f },
-                            new[] { 0f, 0f, 0f, 0f, 1f }
+                            new[] { offset, offset, offset, 0f, 1f }
                         }));
                         graphics.DrawImage(bitmap, new Rectangle(padding, padding, width, height),
                             area.X, area.Y, area.Width, area.Height, GraphicsUnit.Pixel, attributes);
@@ -111,7 +140,7 @@ namespace _4RTools.Model.Vanilla
                                     if (accurate) accurateEngine = activeEngine;
                                     else engine = activeEngine;
                                 }
-                                using (Page page = activeEngine.Process(pix, singleLine ? PageSegMode.SingleLine : PageSegMode.SparseText))
+                                using (Page page = activeEngine.Process(pix, rawLine ? PageSegMode.RawLine : singleLine ? PageSegMode.SingleLine : PageSegMode.SparseText))
                                 using (ResultIterator iterator = page.GetIterator())
                                 {
                                     var output = new List<VanillaTextLine>();

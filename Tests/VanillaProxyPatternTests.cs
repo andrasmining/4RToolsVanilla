@@ -11,6 +11,7 @@ namespace Vanilla.Diagnostics.Tests
     internal static class VanillaProxyPatternTests
     {
         private static int passed, failed, fixtureNumber;
+        private static bool serverExperimentWritten;
         internal static readonly string[] Names = { "Global", "Manila", "Singapore", "Tokyo", "Hong Kong", "Los Angeles", "Australia", "UAE" };
 
         internal static int Run()
@@ -157,7 +158,8 @@ namespace Vanilla.Diagnostics.Tests
             VanillaTextLine[] blocks = {
                 TextBlock("UAE", new Rectangle(190, 10, 40, 20)),
                 TextBlock("Proxy", new Rectangle(20, 12, 50, 20)),
-                TextBlock("Connection", new Rectangle(80, 12, 100, 20)),
+                // Tesseract's word box can extend into the adjacent service glyphs.
+                TextBlock("Connection", new Rectangle(80, 12, 140, 20)),
                 TextBlock("Proxy", new Rectangle(20, 46, 50, 20)),
                 TextBlock("Connection", new Rectangle(80, 46, 100, 20)),
                 TextBlock("Tokyo", new Rectangle(190, 44, 50, 20)),
@@ -228,6 +230,8 @@ namespace Vanilla.Diagnostics.Tests
                     graphics.DrawImage(reduced, new Rectangle(Point.Empty, restored.Size));
                 }
                 SaveFixture(restored, server);
+                if (server && names.Length == 1 && names[0] == "Crowded Vanilla MMO")
+                    SaveServerExperiment(restored, ExpectedRow(size, scale, 0));
                 return restored;
             }
         }
@@ -243,6 +247,38 @@ namespace Vanilla.Diagnostics.Tests
             string report = VanillaServiceRecognition.DescribeSyntheticFixture(image);
             File.WriteAllText(Path.Combine(directory, stem + ".txt"), report);
             Console.WriteLine("Synthetic service fixture " + stem + ": " + report);
+        }
+
+        private static void SaveServerExperiment(Bitmap image, Rectangle drawnRow)
+        {
+            if (serverExperimentWritten || Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true") return;
+            serverExperimentWritten = true;
+            VanillaServiceDialog dialog;
+            string evidence;
+            if (!VanillaServiceRecognition.TryDetect(image, out dialog, out evidence)) return;
+            Rectangle area = dialog.CandidateTextAreas.Where(candidate => drawnRow.IntersectsWith(candidate))
+                .OrderByDescending(candidate => candidate.Width).FirstOrDefault();
+            if (area.IsEmpty) return;
+            var report = new System.Text.StringBuilder();
+            report.AppendLine("Once-only synthetic softened server experiment; observed crop=" + area);
+            foreach (int scale in new[] { 2, 3, 4, 6, 8 })
+            foreach (InterpolationMode interpolation in new[] { InterpolationMode.NearestNeighbor, InterpolationMode.Bilinear, InterpolationMode.HighQualityBicubic })
+            foreach (bool accurate in new[] { false, true })
+            foreach (bool rawLine in new[] { false, true })
+            foreach (bool normalize in new[] { false, true })
+            {
+                VanillaTextLine[] lines;
+                VanillaTextRecognition.TryReadExperimental(image, area, accurate, scale, interpolation, rawLine, normalize, out lines, out evidence);
+                string description = "scale=" + scale + " interpolation=" + interpolation + " accurate=" + accurate
+                    + " raw=" + rawLine + " normalize=" + normalize + ": "
+                    + string.Join(" | ", lines.Select(line => "'" + line.Text + "' confidence=" + line.Confidence.ToString("0.0")))
+                    + "; " + evidence;
+                report.AppendLine(description);
+                Console.WriteLine("SERVICE-EXPERIMENT " + description);
+            }
+            string directory = Path.Combine(Environment.CurrentDirectory, "dist", "recognition");
+            Directory.CreateDirectory(directory);
+            File.WriteAllText(Path.Combine(directory, "server-small-text-experiment.txt"), report.ToString());
         }
 
         private static Rectangle ExpectedRow(Size size, float scale, int row)

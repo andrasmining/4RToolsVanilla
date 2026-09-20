@@ -260,14 +260,23 @@ It verifies the exact visible username before password entry, checks repeated
 known password mask glyphs and the expected count, and rechecks before Enter.
 TESTS -> Submit credentials uses the same guards. Credentials and credential
 frames are not sent to OCR services, written to capture files, or logged. OCR is
-local and the English model/native runtime are bundled with the release.
+local and both English models/native runtime are bundled with the release. The
+accurate model is restricted to bounded detected text controls when the fast
+model cannot establish the exact identity.
 
 Character selection requires explicit character-screen labels, fifteen detected
 cards and one selected frame. It measures the grid, uses keyboard navigation,
 checks each transition and edge clamp, and confirms the target before Enter.
+An already-selected first slot still requires a visible outward-and-return
+keyboard transition, so a static card border cannot authorize confirmation.
 TESTS -> Character uses that same path and waits for gameplay identity. Configured
 slot numbering is row-major; existing fresh username/character checks still gate
 Autobattle. No character-grid or GAME START coordinate clicks remain.
+
+These input paths bind each capture to its process, HWND, foreground focus,
+client dimensions, desktop origin and a five-second monotonic expiry. Input
+cannot refocus or adopt another window after recognition; a changed or expired
+surface requires new observations. Cancellation releases any held input.
 
 Recognition tests use synthetic text/forms with several fonts, DPI scales,
 resolutions, positions, row orders and softened resampling. These are not live
