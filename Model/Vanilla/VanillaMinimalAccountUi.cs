@@ -98,7 +98,8 @@ namespace _4RTools.Model.Vanilla
     {
         private readonly VanillaReconnectSupervisor supervisor;
         private readonly CheckBox enabled = new CheckBox { Text = "Enabled", AutoSize = true };
-        private readonly CheckBox weightEnabled = new CheckBox { Text = "Weight / Cart", AutoSize = true };
+        private readonly CheckBox cartMaintenance = new CheckBox { Text = "Cart", AutoSize = true };
+        private readonly CheckBox weightEmail = new CheckBox { Text = "E-mail", AutoSize = true };
         private readonly TextBox label = new TextBox { Dock = DockStyle.Fill, MaxLength = 80 };
         private readonly TextBox user = new TextBox { Dock = DockStyle.Fill, MaxLength = 128 };
         private readonly TextBox slot = new TextBox { Width = 80, MaxLength = 2 };
@@ -129,7 +130,8 @@ namespace _4RTools.Model.Vanilla
             KeyPreview = true;
             Build();
             enabled.Checked = account.Enabled;
-            weightEnabled.Checked = account.WeightEnabled;
+            cartMaintenance.Checked = account.EffectiveCartMaintenanceEnabled;
+            weightEmail.Checked = account.EffectiveWeightEmailEnabled;
             label.Text = account.Label;
             user.Text = account.UserName;
             slot.Text = account.CharacterSlot?.ToString() ?? string.Empty;
@@ -163,13 +165,13 @@ namespace _4RTools.Model.Vanilla
 
         private void Build()
         {
-            var table = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(14), ColumnCount = 2, RowCount = 12 };
+            var table = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(14), ColumnCount = 2, RowCount = 11 };
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 125));
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            for (int i = 0; i < 11; i++) table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            for (int i = 0; i < 10; i++) table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             table.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
             var toggles = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = Padding.Empty };
-            toggles.Controls.Add(enabled); toggles.Controls.Add(weightEnabled);
+            toggles.Controls.Add(enabled); toggles.Controls.Add(cartMaintenance); toggles.Controls.Add(weightEmail);
             AddRow(table, 0, string.Empty, toggles);
             AddRow(table, 1, "Description", label);
             AddRow(table, 2, "Username", user);
@@ -185,22 +187,21 @@ namespace _4RTools.Model.Vanilla
             teleportOptions.Controls.Add(new Label { Text = "sec still", AutoSize = true, Margin = new Padding(3, 8, 0, 0) });
             AddRow(table, 8, "Smart Teleport", teleportOptions);
             AddRow(table, 9, "Teleport hotkey", teleportHotkey);
-            table.Controls.Add(new Label { AutoSize = true, ForeColor = Color.DimGray, MaximumSize = new Size(340, 0),
-                Text = "Uses verified X/Y only. It is bound to this username + character automatically; no process selection." }, 1, 10);
             var buttons = new FlowLayoutPanel { AutoSize = true, Anchor = AnchorStyles.Right };
             var save = new Button { Text = "Save", AutoSize = true };
             var cancel = new Button { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
             save.Click += Save; buttons.Controls.Add(save); buttons.Controls.Add(cancel);
-            table.Controls.Add(buttons, 1, 11); Controls.Add(table); AcceptButton = save; CancelButton = cancel;
+            table.Controls.Add(buttons, 1, 10); Controls.Add(table); AcceptButton = save; CancelButton = cancel;
             help.SetToolTip(enabled, "Enable at most two character profiles. Multiple rows may use the same login account.");
-            help.SetToolTip(weightEnabled, "Allow Weight alerts and automatic Cart maintenance for this character. Shared Weight-tab thresholds/hotkeys apply only when this is enabled.");
+            help.SetToolTip(cartMaintenance, "Enable UI-only Cart maintenance for this character. Shared Cart thresholds, category choices and hotkeys are configured on the Weight tab.");
+            help.SetToolTip(weightEmail, "Enable e-mail notification for this character. With Cart OFF, the carried-weight threshold is used. With Cart ON, carried-only warnings are suppressed and Cart/full-farming milestone mail is used.");
             help.SetToolTip(label, "Your description; it is not used to identify the running character.");
             help.SetToolTip(character, "Saved expected character. The list contains freshly verified running character names.");
             help.SetToolTip(user, "Filled automatically only from verified memory. Without a verified username mapping, the saved username remains editable.");
             help.SetToolTip(slot, "1-based slot from 1 to 15; blank means unknown, not slot 1. Auto-filled only when verified memory provides it.");
             help.SetToolTip(proxy, "Choose this character's proxy. Discovery never guesses this setting.");
             help.SetToolTip(hotkey, "Press the key combination used to resume Vanilla Autobattle after login.");
-            help.SetToolTip(smartTeleport, "When enabled, this character teleports after verified X/Y has not changed for the configured number of seconds.");
+            help.SetToolTip(smartTeleport, "Uses fresh verified X/Y for this saved username + character. When enabled, teleports after the configured stationary time; no process selection is needed.");
             help.SetToolTip(teleportIdle, "Default 60 seconds. Any verified X/Y movement resets the timer.");
             help.SetToolTip(teleportHotkey, "Click here and press the exact teleport skill/hotkey combination you use in Vanilla. It is stored on this character row.");
             help.SetToolTip(password, "Stored with Windows DPAPI for this Windows user. Discovery never reads or replaces passwords.");
@@ -240,7 +241,11 @@ namespace _4RTools.Model.Vanilla
                 if (!string.IsNullOrWhiteSpace(slot.Text) && (!int.TryParse(slot.Text, out parsed) || parsed < 1 || parsed > 15))
                     throw new ArgumentException("Slot must be 1 to 15, or blank if unknown.");
                 var candidate = Account.Clone();
-                candidate.Enabled = enabled.Checked; candidate.WeightEnabled = weightEnabled.Checked; candidate.Label = label.Text.Trim();
+                candidate.Enabled = enabled.Checked;
+                candidate.CartMaintenanceEnabled = cartMaintenance.Checked;
+                candidate.WeightEmailEnabled = weightEmail.Checked;
+                candidate.WeightEnabled = cartMaintenance.Checked || weightEmail.Checked; // keep legacy combined field coherent
+                candidate.Label = label.Text.Trim();
                 candidate.UserName = user.Text.Trim(); candidate.CharacterName = character.Text.Trim();
                 candidate.CharacterSlot = string.IsNullOrWhiteSpace(slot.Text) ? (int?)null : int.Parse(slot.Text);
                 candidate.ProxyNeedsConfiguration = !(proxy.SelectedItem is VanillaProxyRoute);
