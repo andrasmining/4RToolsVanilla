@@ -72,6 +72,7 @@ jobs:
             dist/ui-layout/*.png
             dist/ui-layout/*.txt
             dist/recognition/*.png
+            dist/recognition/*.txt
           if-no-files-found: warn
           retention-days: 14
 

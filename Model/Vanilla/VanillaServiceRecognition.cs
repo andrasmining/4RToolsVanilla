@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Linq;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Text.RegularExpressions;
 
 namespace _4RTools.Model.Vanilla
@@ -56,19 +57,38 @@ namespace _4RTools.Model.Vanilla
 
         private static Detection ReadDialog(Bitmap bitmap)
         {
+            return ReadDialog(bitmap, null);
+        }
+
+        // Tests call this explicitly on generated fixtures. Production recognition never
+        // records OCR text from captures, regardless of environment variables.
+        internal static string DescribeSyntheticFixture(Bitmap bitmap)
+        {
+            if (!string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase))
+                return "Synthetic diagnostics are available only in CI.";
+            var report = new StringBuilder();
+            Detection detection = ReadDialog(bitmap, text => report.AppendLine(text));
+            report.AppendLine("Result: " + detection.Evidence);
+            return report.ToString();
+        }
+
+        private static Detection ReadDialog(Bitmap bitmap, Action<string> trace)
+        {
             var result = new Detection { Evidence = "no positively recognized Select Service form" };
             var pixels = new VanillaRecognitionPixels(bitmap);
             List<Rectangle> headers = FindHeaders(pixels);
+            if (trace != null) trace("Header candidates=" + headers.Count + ": " + string.Join("; ", headers));
             if (headers.Count > 16)
             { result.Evidence = "too many possible service forms; no input authorized"; return result; }
             foreach (Rectangle header in headers)
             {
-                Rectangle titleArea = Rectangle.Intersect(new Rectangle(Point.Empty, bitmap.Size),
-                    Rectangle.Inflate(header, 2, 2));
+                Rectangle titleArea;
+                if (!TryTitleTextArea(pixels, header, out titleArea)) continue;
                 VanillaTextLine[] title;
                 string ocrEvidence;
                 if (!VanillaTextRecognition.TryRead(bitmap, titleArea, true, out title, out ocrEvidence))
                 { result.Evidence = ocrEvidence; return result; }
+                if (trace != null) trace("Title header=" + header + "; crop=" + titleArea + "; " + DescribeLines(title));
                 if (!title.Any(IsServiceTitle)) continue;
 
                 // The title bar is detected anywhere on the captured client. This bounded
@@ -79,6 +99,7 @@ namespace _4RTools.Model.Vanilla
                 VanillaTextLine[] lines;
                 if (!VanillaTextRecognition.TryRead(bitmap, body, false, out lines, out ocrEvidence))
                 { result.Evidence = ocrEvidence; return result; }
+                if (trace != null) trace("Body crop=" + body + "; " + DescribeLines(lines));
                 if (result.Dialog != null)
                 {
                     result.Dialog = null;
@@ -90,6 +111,37 @@ namespace _4RTools.Model.Vanilla
                 result.Evidence = result.Dialog.Evidence;
             }
             return result;
+        }
+
+        private static string DescribeLines(VanillaTextLine[] lines)
+        {
+            return string.Join(" | ", lines.Select(line => "'" + line.Text + "' @" + line.Bounds
+                + " confidence=" + line.Confidence.ToString("0.0") + " words="
+                + string.Join(", ", (line.Words ?? new VanillaTextWord[0]).Select(word => word.Text + ":" + word.Confidence.ToString("0.0")))));
+        }
+
+        private static bool TryTitleTextArea(VanillaRecognitionPixels pixels, Rectangle header, out Rectangle area)
+        {
+            area = Rectangle.Empty;
+            var columns = new int[header.Width];
+            var rows = new int[header.Height];
+            for (int y = header.Top; y < header.Bottom; y++)
+                for (int x = header.Left; x < header.Right; x++)
+                    if (pixels.NeutralInk(x, y)) { columns[x - header.Left]++; rows[y - header.Top]++; }
+            int left = header.Right, right = header.Left - 1, top = header.Bottom, bottom = header.Top - 1;
+            for (int y = header.Top; y < header.Bottom; y++)
+                for (int x = header.Left; x < header.Right; x++)
+                {
+                    // Text strokes occupy part of a title's height/width. Full-height
+                    // frame edges and long horizontal rules must not become OCR glyphs.
+                    if (columns[x - header.Left] >= header.Height * .8
+                        || rows[y - header.Top] >= header.Width * .6 || !pixels.NeutralInk(x, y)) continue;
+                    left = Math.Min(left, x); right = Math.Max(right, x);
+                    top = Math.Min(top, y); bottom = Math.Max(bottom, y);
+                }
+            if (right - left < 20 || bottom - top < 4) return false;
+            area = Rectangle.Intersect(header, Rectangle.Inflate(Rectangle.FromLTRB(left, top, right + 1, bottom + 1), 2, 2));
+            return area.Width > 20 && area.Height > 4;
         }
 
         private static bool IsServiceTitle(VanillaTextLine line)

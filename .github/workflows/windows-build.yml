@@ -84,6 +84,7 @@ jobs:
             dist/ui-layout/*.txt
             dist/native-recovery.log
             dist/recognition/*.png
+            dist/recognition/*.txt
           if-no-files-found: warn
           retention-days: 14
 

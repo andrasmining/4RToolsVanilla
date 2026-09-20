@@ -1,13 +1,16 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Drawing.Drawing2D;
+using System.IO;
+using System.Linq;
 using _4RTools.Model.Vanilla;
 
 namespace Vanilla.Diagnostics.Tests
 {
     internal static class VanillaAuthPatternTests
     {
-        private static int passed, failed;
+        private static int passed, failed, fixtureNumber;
 
         internal static int Run()
         {
@@ -55,9 +58,13 @@ namespace Vanilla.Diagnostics.Tests
             {
                 graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
                 graphics.DrawImage(large, new Rectangle(0, 0, reduced.Width, reduced.Height));
+                SaveLoginFixture(reduced, "login-softened");
                 VanillaLoginLayout layout;
                 string evidence;
-                Assert(VanillaAuthPattern.TryDetectLogin(reduced, out layout, out evidence), "Softened login failed: " + evidence);
+                List<Rectangle> services;
+                bool detected = VanillaAuthPattern.TryDetectLogin(reduced, out layout, out evidence, out services);
+                if (!detected) DiagnoseSyntheticLogin(reduced, services);
+                Assert(detected, "Softened login failed: " + evidence);
                 Assert(layout.UserName.Bottom <= layout.Password.Top, "Softened username/password regions overlapped.");
             }
         }
@@ -224,7 +231,32 @@ namespace Vanilla.Diagnostics.Tests
                     }
                 }
             }
+            SaveLoginFixture(bitmap, "login");
             return bitmap;
+        }
+
+        private static void DiagnoseSyntheticLogin(Bitmap image, List<Rectangle> services)
+        {
+            // This method receives only bitmaps generated in this test file, never game captures.
+            foreach (Rectangle service in services)
+            {
+                VanillaTextLine[] lines;
+                string evidence;
+                VanillaTextRecognition.TryRead(image, service, true, out lines, out evidence);
+                Console.WriteLine("Synthetic login candidate {0}: {1}; {2}", service, evidence,
+                    string.Join(" | ", lines.Select(line => line.Text + " @" + line.Confidence.ToString("0.0"))));
+                if (service.Width > 0 && service.Height > 0 && new Rectangle(Point.Empty, image.Size).Contains(service))
+                    using (Bitmap crop = image.Clone(service, System.Drawing.Imaging.PixelFormat.Format24bppRgb))
+                        SaveLoginFixture(crop, "login-candidate");
+            }
+        }
+
+        private static void SaveLoginFixture(Bitmap image, string name)
+        {
+            if (!string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase)) return;
+            string directory = Path.Combine(Environment.CurrentDirectory, "dist", "recognition");
+            Directory.CreateDirectory(directory);
+            image.Save(Path.Combine(directory, name + "-" + (++fixtureNumber).ToString("D2") + ".png"), System.Drawing.Imaging.ImageFormat.Png);
         }
 
         private static void Test(string name, Action action)

@@ -47,7 +47,16 @@ namespace _4RTools.Model.Vanilla
 
         internal static bool TryDetectLogin(Bitmap bitmap, out VanillaLoginLayout layout, out string evidence)
         {
+            List<Rectangle> candidates;
+            return TryDetectLogin(bitmap, out layout, out evidence, out candidates);
+        }
+
+        internal static bool TryDetectLogin(Bitmap bitmap, out VanillaLoginLayout layout, out string evidence,
+            out List<Rectangle> candidateServices)
+        {
             layout = null;
+            // Bounds-only diagnostics. Production never exports the OCR content of login captures.
+            candidateServices = new List<Rectangle>();
             evidence = "login controls not detected";
             if (!Usable(bitmap, out evidence)) return false;
 
@@ -124,6 +133,7 @@ namespace _4RTools.Model.Vanilla
                 if (!identities.TryGetValue(service, out recognized))
                 {
                     if (identities.Count >= 24) { evidence = "too many distinct candidate login services"; return false; }
+                    candidateServices.Add(service);
                     VanillaTextLine[] serviceText;
                     string textEvidence;
                     recognized = VanillaTextRecognition.TryRead(bitmap, service, true, out serviceText, out textEvidence)
@@ -180,10 +190,15 @@ namespace _4RTools.Model.Vanilla
             // No arbitrary text suffix or fixed-width crop can establish the service identity.
             for (int x = box.Left + box.Width / 2; x < box.Right - 3; x++)
             {
+                int buttonWidth = box.Right - x;
+                if (buttonWidth < box.Height * 0.5 || buttonWidth > box.Height * 1.8) continue;
                 int edge = 0;
-                for (int y = top + 1; y < bottom - 1; y++)
+                // The separator spans the control interior. A short capital/letter stroke
+                // can span nearly all of a tiny OCR crop after downscaling, so do not trim
+                // those top/bottom rows before evaluating the structural vertical edge.
+                for (int y = top; y < bottom; y++)
                     if (Math.Abs(gray[y * width + x + 1] - gray[y * width + x - 1]) >= 25) edge++;
-                if (edge >= Math.Max(4, (bottom - top - 2) * 0.85)) { right = x - 1; break; }
+                if (edge >= Math.Max(6, (bottom - top) * 0.85)) { right = x - 1; break; }
             }
             return Rectangle.FromLTRB(box.Left + 3, top, right, bottom);
         }

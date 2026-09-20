@@ -212,8 +212,12 @@ namespace Vanilla.Diagnostics.Tests
             if (!string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase)) return;
             string directory = Path.Combine(Environment.CurrentDirectory, "dist", "recognition");
             Directory.CreateDirectory(directory);
-            image.Save(Path.Combine(directory, (server ? "server-" : "proxy-") + (++fixtureNumber).ToString("D2") + ".png"),
+            string stem = (server ? "server-" : "proxy-") + (++fixtureNumber).ToString("D2");
+            image.Save(Path.Combine(directory, stem + ".png"),
                 System.Drawing.Imaging.ImageFormat.Png);
+            string report = VanillaServiceRecognition.DescribeSyntheticFixture(image);
+            File.WriteAllText(Path.Combine(directory, stem + ".txt"), report);
+            Console.WriteLine("Synthetic service fixture " + stem + ": " + report);
         }
 
         private static Rectangle ExpectedRow(Size size, float scale, int row)
