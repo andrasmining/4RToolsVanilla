@@ -187,5 +187,12 @@ namespace _4RTools.Model.Vanilla
             int offset = (y * Width + x) * 3;
             return pixels[offset] + pixels[offset + 1] + pixels[offset + 2] < 450;
         }
+
+        internal bool NeutralInk(int x, int y)
+        {
+            int offset = (y * Width + x) * 3;
+            int b = pixels[offset], g = pixels[offset + 1], r = pixels[offset + 2];
+            return r + g + b < 510 && Math.Max(r, Math.Max(g, b)) - Math.Min(r, Math.Min(g, b)) < 45;
+        }
     }
 }
