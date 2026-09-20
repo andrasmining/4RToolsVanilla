@@ -26,8 +26,18 @@ namespace _4RTools.Model.Vanilla
     {
         public string Id { get; set; } = Guid.NewGuid().ToString("N");
         public bool Enabled { get; set; } = true;
-        // Per-character opt-in for Weight alerts and UI-only Cart maintenance. Missing legacy JSON defaults to true.
+        // Legacy combined Weight switch. New profiles persist the two nullable policy switches below.
+        // Null means "inherit the legacy WeightEnabled value", preserving old reconnect/catalog JSON exactly.
         public bool WeightEnabled { get; set; } = true;
+        public bool? CartMaintenanceEnabled { get; set; }
+        public bool? WeightEmailEnabled { get; set; }
+        [JsonIgnore]
+        public bool EffectiveCartMaintenanceEnabled { get { return CartMaintenanceEnabled ?? WeightEnabled; } }
+        [JsonIgnore]
+        public bool EffectiveWeightEmailEnabled { get { return WeightEmailEnabled ?? WeightEnabled; } }
+        [JsonIgnore]
+        public bool EffectiveWeightPolicyEnabled { get { return EffectiveCartMaintenanceEnabled || EffectiveWeightEmailEnabled; } }
+
         // Per-character, process-agnostic Smart Teleport. It is off until explicitly configured.
         public bool SmartTeleportEnabled { get; set; }
         public int SmartTeleportIdleSeconds { get; set; } = 60;
