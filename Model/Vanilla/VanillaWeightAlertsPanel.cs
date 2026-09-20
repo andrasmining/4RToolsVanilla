@@ -121,8 +121,8 @@ namespace _4RTools.Model.Vanilla
             help.SetToolTip(cartHotkey, "Cart hotkey used only after verified Autobattle STOP.");
 
             help.SetToolTip(enabled,
-                "Global e-mail master. A character also needs its own Mail switch. Without Cart: carried-weight warning. "
-                + "With Cart: carried-only warnings are suppressed; Cart-full and combined DONE milestone mail is used.");
+                "Global e-mail master. A character also needs its own Mail switch. If Cart maintenance is inactive, mail uses the carried-weight threshold. "
+                + "If that character's Cart switch and the Cart master are active, carried-only warnings are suppressed and Cart-full / combined DONE milestone mail is used.");
             help.SetToolTip(threshold,
                 "Carried-weight warning threshold for Mail-enabled characters whose Cart switch is OFF.");
             help.SetToolTip(rearm, "Re-arm carried-weight warning mail below this percentage.");
