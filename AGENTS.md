@@ -181,7 +181,7 @@ Never fabricate test, deployment, release, or in-game success.
 When asked to update project instructions first, provide the copyable block
 within the requested character limit before implementation, then persist the
 enduring policy here without deleting unrelated valid rules. This automation
-repository is `andrasmining/4RTools`; the archived `andrasmining/cinder-index`
+repository is the private `andrasmining/4RToolsVanilla`; the archived `andrasmining/cinder-index`
 market dashboard is a different project and must not receive autobattle changes.
 
 ## Post-login Autobattle verification and steady-state recovery
@@ -478,10 +478,12 @@ selection. Automatic and TESTS paths must share the same guarded selector.
 Character navigation requires positive screen and selected-slot evidence before
 input and feedback after each key; an assumed keyboard clamp is not evidence.
 
-When the user is working on this PC and requests background-only development,
-perform all executable/UI/build validation on the existing Windows GitHub Actions
-runners. Do not launch local applications, observe live clients, or manipulate
-the desktop in that session. This does not waive CI/release verification.
+Build, test, package and publish from the local Windows repository. GitHub Actions
+is prohibited for this private repository; keep it disabled and do not add workflows.
+Background-only development permits local compilers, offline tests and hidden,
+isolated mock rendering/package probes. Do not show application windows, observe
+live clients, send desktop input or disturb the user's active applications.
+This replaces the former Actions-only validation policy without waiving tests.
 
 Never select a Vanilla character or GAME START by fixed/normalized grid coordinates.
 Character-select automation must use focus-verified keyboard navigation from a
@@ -606,20 +608,26 @@ live relog/restart validation of a supplied address.
 
 ## VPS update delivery is mandatory
 
-The user's VPS is updated through the application's GitHub-release updater.
-Every implementation task must finish with a tested public stable release,
+The user's VPS is updated through authenticated private GitHub releases built
+and published locally. End-user update installation must not require compiling
+the source tree. Portable ZIPs also support offline copying/installing; network
+access is required to publish to or download from GitHub.
+Every implementation task must finish with a tested private stable release,
 explicitly marked Latest, unless the user explicitly requests source-only work.
-A chat ZIP, Actions artifact, branch, commit, PR or queued release is not an
+A chat ZIP, branch, commit, PR or queued release is not an
 alternative deliverable. Do not stop at those intermediate states.
 
-Verify the public releases/latest response and both expected portable ZIP and
-checksum assets. Exercise the previously published application's real updater
-against the endpoint, verify downloads and source identity, integrate all work
+Verify the authenticated releases/latest response and both expected portable ZIP and
+checksum assets. Exercise the application's real updater against the private
+endpoint, verify downloads and source identity, integrate all work
 into main and remove completed task branches. Diagnose and repair failures;
 replace unsuitable approaches instead of handing development back to the user.
 State a genuine unavoidable external blocker accurately only after exhausting
 practical authorized alternatives. Never claim publication or VPS installation
 without evidence; testing update discovery is not installing on the user's VPS.
+The old public v0.6.67 updater cannot discover the new private repository: the
+first private release requires a one-time portable upgrade. Never embed repository
+credentials in source, release packages, logs or command-line arguments.
 
 ## Weight / Cart maintenance
 

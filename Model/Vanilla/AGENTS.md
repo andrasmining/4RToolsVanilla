@@ -22,7 +22,7 @@ The Vanilla workspace is functionally dense, so keep its visible UI deliberately
 
 ## Required native UI validation
 
-Use the existing standard Windows GitHub Actions runners for build, test and rendering validation. Do not introduce paid runners, testing services or extra infrastructure. Before publishing a UI release, run `scripts/test-ui-layout.ps1`, fix its failures and inspect the generated screenshots. A successful build alone is not UI validation.
+Use local Windows build, test and isolated hidden rendering validation. GitHub Actions is prohibited in this private repository. Do not introduce paid runners, testing services or extra infrastructure. Before publishing a UI release, run `scripts/test-ui-layout.ps1` in its background-safe mode, fix its failures and inspect the generated mock screenshots. Never show test windows, observe live clients or send desktop input during background-only development. A successful build alone is not UI validation.
 
 Preserve the native mock-data harness's checks for full-width embedding, column visibility, pane ratio, toolbar spacing, live-card fields, large profile lists, scrolling, tab selection and resize/text-size transitions. Add a regression assertion when a screenshot reveals a missed defect. Do not silently skip or weaken a failing check just to publish. Keep the release gated on these tests.
 
