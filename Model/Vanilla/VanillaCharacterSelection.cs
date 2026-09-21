@@ -14,6 +14,7 @@ namespace _4RTools.Model.Vanilla
         internal Rectangle[] Cards;
         internal int Columns;
         internal int Selected;
+        internal bool[] Occupied;
         internal string Evidence;
         internal VanillaVisualInputProof InputProof;
         internal int Rows { get { return Cards.Length / Columns; } }
@@ -26,8 +27,8 @@ namespace _4RTools.Model.Vanilla
                         && InputProof.ProcessId == other.InputProof.ProcessId && InputProof.ClientSize == other.InputProof.ClientSize
                         && InputProof.ClientOrigin == other.InputProof.ClientOrigin))
                 && Cards.Length == other.Cards.Length && Cards.Zip(other.Cards, (a, b) =>
-                    Math.Abs(a.Left - b.Left) <= 3 && Math.Abs(a.Top - b.Top) <= 3
-                    && Math.Abs(a.Width - b.Width) <= 3 && Math.Abs(a.Height - b.Height) <= 3).All(v => v);
+                    Math.Abs(a.Left - b.Left) <= Math.Max(3, a.Width * .04) && Math.Abs(a.Top - b.Top) <= Math.Max(3, a.Height * .04)
+                    && Math.Abs(a.Width - b.Width) <= Math.Max(3, a.Width * .06) && Math.Abs(a.Height - b.Height) <= Math.Max(3, a.Height * .06)).All(v => v);
         }
     }
 
@@ -44,6 +45,8 @@ namespace _4RTools.Model.Vanilla
             if (observe == null || press == null || pause == null || cancelled == null) throw new ArgumentNullException();
             long frame = -1;
             VanillaCharacterSelectionObservation current = Stable(observe, pause, cancelled, ref frame);
+            int target = oneBasedSlot - 1;
+            RequireOccupied(current, target);
             var origin = current;
             bool moved = false;
             Action<Keys, int> move = (key, expected) =>
@@ -64,11 +67,10 @@ namespace _4RTools.Model.Vanilla
             move(Keys.Up, current.Selected);
             while (current.Selected % current.Columns > 0) move(Keys.Left, current.Selected - 1);
             move(Keys.Left, current.Selected);
-            int target = oneBasedSlot - 1;
             for (int column = 0; column < target % current.Columns; column++) move(Keys.Right, current.Selected + 1);
             for (int row = 0; row < target / current.Columns; row++) move(Keys.Down, current.Selected + current.Columns);
-            // An already-selected first slot must still prove that this frame follows keyboard
-            // selection. Two unchanged edge keys cannot distinguish an unfocused/static card.
+            // An already-selected first slot must prove that keyboard input changes this
+            // surface; unchanged edge keys alone do not establish keyboard ownership.
             if (!moved)
             {
                 bool horizontal = current.Columns > 1;
@@ -78,8 +80,16 @@ namespace _4RTools.Model.Vanilla
             var confirmed = Stable(observe, pause, cancelled, ref frame, target);
             if (!origin.SameLayout(confirmed) || confirmed.Selected != target)
                 throw new InvalidOperationException("Configured character slot is no longer selected; no confirmation was sent.");
+            RequireOccupied(confirmed, target);
             CheckCancelled(cancelled);
             press(Keys.Enter);
+        }
+
+        private static void RequireOccupied(VanillaCharacterSelectionObservation current, int target)
+        {
+            if (current.Occupied == null || current.Occupied.Length != 15 || !current.Occupied[target])
+                throw new InvalidOperationException("Configured slot " + (target + 1)
+                    + " is empty, locked or its character occupancy is unknown; character creation is never authorized.");
         }
 
         private static VanillaCharacterSelectionObservation Stable(Func<VanillaCharacterSelectionObservation> observe,
@@ -111,16 +121,14 @@ namespace _4RTools.Model.Vanilla
     }
 
     /// <summary>
-    /// Conservative supported surface: explicit character-selection and GAME START labels,
-    /// fifteen independently bordered cards, and one continuous colored selection frame.
-    /// No supplied live fixture establishes that every Vanilla skin uses this surface.
-    /// An unknown skin/layout must remain unsupported rather than authorizing blind keys.
+    /// Recognize the supplied card skin first. The older explicit-heading detector
+    /// remains available for other known surfaces, but unknown occupancy never authorizes Enter.
     /// </summary>
     internal static class VanillaCharacterPattern
     {
         internal static bool TryDetect(Bitmap bitmap, out VanillaCharacterSelectionObservation observation, out string evidence)
         {
-            observation = null;
+            if (VanillaObservedCharacterGrid.TryDetect(bitmap, out observation, out evidence)) return true;
             VanillaTextLine[] text;
             if (bitmap == null) { evidence = "character capture missing"; return false; }
             if (!VanillaTextRecognition.TryRead(bitmap, new Rectangle(Point.Empty, bitmap.Size), false, out text, out evidence)) return false;
@@ -191,10 +199,10 @@ namespace _4RTools.Model.Vanilla
             {
                 Rectangle box = rows[r][c];
                 if (c > 0 && box.Left <= rows[r][c - 1].Right) return false;
-                if (r > 0 && (box.Top <= rows[r - 1][c].Bottom || Math.Abs(box.Left - rows[0][c].Left) > 3
-                    || Math.Abs(box.Width - rows[0][c].Width) > 3)) return false;
-                if (c > 1 && Math.Abs((box.Left - rows[r][c - 1].Left) - (rows[r][1].Left - rows[r][0].Left)) > 4) return false;
-                if (r > 1 && Math.Abs((box.Top - rows[r - 1][c].Top) - (rows[1][c].Top - rows[0][c].Top)) > 4) return false;
+                if (r > 0 && (box.Top <= rows[r - 1][c].Bottom || Math.Abs(box.Left - rows[0][c].Left) > Math.Max(3, box.Width * .04)
+                    || Math.Abs(box.Width - rows[0][c].Width) > Math.Max(3, box.Width * .06))) return false;
+                if (c > 1 && Math.Abs((box.Left - rows[r][c - 1].Left) - (rows[r][1].Left - rows[r][0].Left)) > Math.Max(4, box.Width * .06)) return false;
+                if (r > 1 && Math.Abs((box.Top - rows[r - 1][c].Top) - (rows[1][c].Top - rows[0][c].Top)) > Math.Max(4, box.Height * .06)) return false;
             }
             ordered = rows.SelectMany(r => r).ToArray();
             return true;
@@ -217,7 +225,7 @@ namespace _4RTools.Model.Vanilla
                 }
                 if (last - left >= 27 && last - left < pixels.Width * .7)
                     edges.Add(new Edge { Left = left, Right = last, Y = y });
-                if (edges.Count > 4000) return new List<Rectangle>();
+                if (edges.Count > 4000) return new List<Edge>().Select(e => Rectangle.Empty).ToList();
             }
             var boxes = new List<Rectangle>();
             foreach (Edge upper in edges)
