@@ -16,11 +16,11 @@ namespace _4RTools.Model.Vanilla
 {
     // Values 0..3 are persisted by older releases. New choices must never renumber them.
     public enum VanillaProxyRoute { Global = 0, Singapore = 1, Tokyo = 2, LosAngeles = 3, Manila = 4, HongKong = 5, Australia = 6, UAE = 7 }
-    public enum VanillaVisualState { Unknown, Gameplay, LoginShell, ModalDialog, LoggingOut, Disconnected }
+    public enum VanillaVisualState { Unknown, Gameplay, LoginShell, ModalDialog, LoggingOut, Disconnected, ServerClosed }
     public enum VanillaReconnectStage
     {
         Stopped, WaitingForClient, Launching, WaitingForWindow, LoggingIn, SelectingCharacter,
-        WaitingForGameplay, Online, AcknowledgingPopup, NeedsConfiguration, Backoff, Error, VerifyingAutobattle, ClosingClient
+        WaitingForGameplay, Online, AcknowledgingPopup, NeedsConfiguration, Backoff, Error, VerifyingAutobattle, ClosingClient, WaitingForServer
     }
 
     public sealed class VanillaReconnectAccount
@@ -514,6 +514,9 @@ namespace _4RTools.Model.Vanilla
         {
             if (bitmap == null || bitmap.Width < 320 || bitmap.Height < 240
                 || bitmap.Width > 4096 || bitmap.Height > 4096) return VanillaVisualState.Unknown;
+            Rectangle serverClosedDialog; string serverClosedEvidence;
+            if (VanillaServerClosedPattern.TryDetect(bitmap, out serverClosedDialog, out serverClosedEvidence))
+                return VanillaVisualState.ServerClosed;
             var terminal = VanillaDisconnectPattern.Classify(bitmap);
             if (VanillaReconnectSupervisor.IsTerminalDisconnect(terminal)) return terminal;
             int width = bitmap.Width, height = bitmap.Height;
@@ -592,6 +595,7 @@ namespace _4RTools.Model.Vanilla
             public int TerminalSamples;
             public VanillaVisualState TerminalVisual;
             public DateTimeOffset? TerminalObservedAt;
+            public bool ServerOutagePending;
         }
 
         private readonly object gate = new object();
@@ -712,6 +716,7 @@ namespace _4RTools.Model.Vanilla
                 }
                 else
                 {
+                    CancelServerOutageLocked();
                     Interlocked.Increment(ref resumeVerificationGeneration);
                     Interlocked.Increment(ref diagnosticGeneration);
                     Interlocked.Increment(ref hardenedStartupGeneration);
@@ -757,6 +762,7 @@ namespace _4RTools.Model.Vanilla
                 RebuildRuntimes();
                 if (freshManualStart)
                 {
+                    CancelServerOutageLocked();
                     Interlocked.Increment(ref weightMaintenanceGeneration);
                     Interlocked.Increment(ref smartTeleportGeneration);
                     foreach (Runtime runtime in runtimes.Values)
@@ -780,6 +786,7 @@ namespace _4RTools.Model.Vanilla
         {
             lock (gate)
             {
+                CancelServerOutageLocked();
                 Interlocked.Increment(ref resumeVerificationGeneration);
                 Interlocked.Increment(ref diagnosticGeneration);
                 Interlocked.Increment(ref hardenedStartupGeneration);
@@ -860,6 +867,7 @@ namespace _4RTools.Model.Vanilla
         {
             // One update owner intentionally closes both clients. No sibling adoption/relaunch mid-reset.
             if (launcherUpdateResetRunning) return;
+            ReconcileServerOutageOwnerLocked();
             var now = restartEnvironment.UtcNow;
             var desired = settings.Accounts.Where(a => a.Enabled).Take(settings.MaxClients).ToList();
             var desiredIds = new HashSet<string>(desired.Select(a => a.Id), StringComparer.OrdinalIgnoreCase);
@@ -947,6 +955,12 @@ namespace _4RTools.Model.Vanilla
             Process p = null;
             try
             {
+                if (runtime.ServerOutagePending && !runtime.RecoveryOwned)
+                {
+                    QueueClientRestart(runtime, now, "Scheduled 15-minute server availability check", false,
+                        () => restartEnvironment.GetStartTimeUtc(runtime.ProcessId.Value));
+                    return;
+                }
                 if (runtime.NextRecoveryAt.HasValue && runtime.NextRecoveryAt.Value > now)
                 {
                     SetStage(runtime, VanillaReconnectStage.Backoff, BackoffDetail(runtime, now));
@@ -954,6 +968,12 @@ namespace _4RTools.Model.Vanilla
                 }
                 p = Process.GetProcessById(runtime.ProcessId.Value);
                 p.Refresh();
+                VanillaVisualState visual = settings.VisualWatchdog && p.MainWindowHandle != IntPtr.Zero
+                    ? VanillaVisualProbe.Classify(p.MainWindowHandle) : VanillaVisualState.Unknown;
+                runtime.Visual = visual;
+                // Exact terminal/outage evidence precedes a generic movement timeout.
+                if ((visual == VanillaVisualState.ServerClosed || IsTerminalDisconnect(visual))
+                    && HandleTerminalVisual(runtime, visual, now, () => p.StartTime.ToUniversalTime())) return;
                 // Independent of visual recognition and window availability. A stale/failed
                 // coordinate reader is an unhealthy observation, never position (0,0).
                 if (CheckMovementWatchdog(runtime, now, () => p.StartTime.ToUniversalTime())) return;
@@ -967,10 +987,8 @@ namespace _4RTools.Model.Vanilla
                     SetStage(runtime, VanillaReconnectStage.WaitingForWindow, "Waiting for Vanilla main window");
                     return;
                 }
-
-                VanillaVisualState visual = settings.VisualWatchdog ? VanillaVisualProbe.Classify(p.MainWindowHandle) : VanillaVisualState.Unknown;
-                runtime.Visual = visual;
                 if (HandleTerminalVisual(runtime, visual, now, () => p.StartTime.ToUniversalTime())) return;
+
                 if (visual == VanillaVisualState.Gameplay)
                 {
                     runtime.LoginLikeSince = null;
@@ -1044,17 +1062,28 @@ namespace _4RTools.Model.Vanilla
 
         private bool CanLaunch(Runtime runtime, int aliveCount, DateTimeOffset now)
         {
-            if (!settings.AutoRecover || aliveCount >= settings.MaxClients || runtime.ScriptRunning) return false;
+            if (!settings.AutoRecover || runtime.ScriptRunning) return false;
+            if (aliveCount >= settings.MaxClients)
+            {
+                DeferReservedServerProbeLocked(runtime, "No free client slot for the server availability check");
+                return false;
+            }
             string missing = MissingCharacterConfiguration(runtime.Account);
             if (missing != null)
             {
+                serverOutage.CompleteFailure(runtime.Account.Id, restartEnvironment.MonotonicNow, restartEnvironment.UtcNow);
                 runtime.RecoveryOwned = false;
                 SetStage(runtime, VanillaReconnectStage.NeedsConfiguration, missing);
                 return false;
             }
-            if (characterSource != null && aliveCount > ObservedCharacters().Count(i => i != null && i.IsFresh(now) && VanillaCharacterRoster.Key(i) != null))
+            var knownClients = new HashSet<int>(ObservedCharacters()
+                .Where(i => i != null && i.IsFresh(now) && VanillaCharacterRoster.Key(i) != null).Select(i => i.ProcessId));
+            foreach (Runtime parked in runtimes.Values.Where(r => r.ServerOutagePending && r.ProcessId.HasValue))
+                knownClients.Add(parked.ProcessId.Value);
+            if (characterSource != null && aliveCount > knownClients.Count)
             {
-                SetStage(runtime, VanillaReconnectStage.WaitingForClient, "Waiting for verified identities of running clients; no duplicate launch");
+                if (!DeferReservedServerProbeLocked(runtime, "A running client has no verified identity; no duplicate launch"))
+                    SetStage(runtime, VanillaReconnectStage.WaitingForClient, "Waiting for verified identities of running clients; no duplicate launch");
                 return false;
             }
             Runtime owner = OtherRecoveryOwner(runtime);
@@ -1066,6 +1095,7 @@ namespace _4RTools.Model.Vanilla
             }
             if (string.IsNullOrWhiteSpace(settings.LaunchExecutable) || !File.Exists(settings.LaunchExecutable))
             {
+                serverOutage.CompleteFailure(runtime.Account.Id, restartEnvironment.MonotonicNow, restartEnvironment.UtcNow);
                 runtime.RecoveryOwned = false;
                 SetStage(runtime, VanillaReconnectStage.NeedsConfiguration, "Set the Vanilla launch executable");
                 return false;
@@ -1075,6 +1105,7 @@ namespace _4RTools.Model.Vanilla
                 SetStage(runtime, VanillaReconnectStage.Backoff, BackoffDetail(runtime, now));
                 return false;
             }
+            if (!MayStartServerOutageProbeLocked(runtime)) return false;
             return true;
         }
         private void Launch(Runtime runtime, DateTimeOffset now)
@@ -1159,6 +1190,15 @@ namespace _4RTools.Model.Vanilla
         }
         private void Bind(Runtime runtime, int pid, bool freshLaunch, string detail)
         {
+            if (freshLaunch) runtime.ServerOutagePending = false; // a new client may provide new outage evidence
+            else if (serverOutage.Active)
+            {
+                // An externally running identity-matched client may be adopted, but it
+                // cannot complete this tool's reserved server-availability attempt.
+                serverOutage.CompleteFailure(runtime.Account.Id, restartEnvironment.MonotonicNow, restartEnvironment.UtcNow);
+                runtime.ServerOutagePending = false;
+                runtime.RecoveryOwned = false;
+            }
             runtime.ProcessId = pid;
             runtime.CharacterSession = freshLaunch ? (Guid?)null : CurrentCharacter(pid)?.Session;
             runtime.ConfirmedCharacter = null;
@@ -1195,10 +1235,12 @@ namespace _4RTools.Model.Vanilla
             }
             if (MissingCharacterConfiguration(runtime.Account) != null)
             {
+                serverOutage.CompleteFailure(runtime.Account.Id, restartEnvironment.MonotonicNow, restartEnvironment.UtcNow);
                 runtime.RecoveryOwned = false;
                 SetStage(runtime, VanillaReconnectStage.NeedsConfiguration, MissingCharacterConfiguration(runtime.Account));
                 return;
             }
+            if (!MayStartServerOutageProbeLocked(runtime)) return;
             runtime.ScriptRunning = true;
             runtime.RecoveryOwned = true;
             runtime.LastRecovery = now;
@@ -1220,6 +1262,7 @@ namespace _4RTools.Model.Vanilla
             Func<bool> cancelled = () => !IsRunning || ResumeWorkerCancelled(owner, pid, generation);
             string error = null;
             bool autobattlePhase = false;
+            bool serverClosed = false;
             try
             {
                 string password = store.UnprotectPassword(account.ProtectedPassword);
@@ -1259,6 +1302,7 @@ namespace _4RTools.Model.Vanilla
                         throw new InvalidOperationException("Movement verified but client minimization could not be confirmed.");
                 }
             }
+            catch (VanillaServerClosedException ex) { serverClosed = true; error = ex.Message; }
             catch (Exception ex) { error = ex.Message; }
             finally
             {
@@ -1281,6 +1325,11 @@ namespace _4RTools.Model.Vanilla
                             CompleteAutobattleRecoverySuccessLocked(runtime);
                             SetStage(runtime, VanillaReconnectStage.Online,
                                 "Login + autobattle hotkey + verified X/Y movement complete; client minimized");
+                        }
+                        else if (serverClosed)
+                        {
+                            ConfirmServerOutageLocked(runtime);
+                            FinishServerOutageFailureLocked(runtime, error);
                         }
                         else if (autobattlePhase)
                         {
@@ -1339,6 +1388,11 @@ namespace _4RTools.Model.Vanilla
 
         private void ResetRecoverySuccessLocked(Runtime runtime)
         {
+            runtime.ServerOutagePending = false;
+            if (serverOutage.CompleteVerifiedRecovery(runtime.Account.Id))
+            {
+                Log(runtime.Account.Label + ": verified recovery succeeded; server is available and the 15-minute outage schedule is cleared.");
+            }
             if (runtime.RecoveryFailures > 0 || runtime.NextRecoveryAt.HasValue || runtime.RecoveryOwned)
                 Log(runtime.Account.Label + ": recovery succeeded; retry state reset.");
             runtime.RecoveryFailures = 0;
@@ -1348,6 +1402,11 @@ namespace _4RTools.Model.Vanilla
 
         private void ScheduleRecoveryFailureLocked(Runtime runtime, DateTimeOffset now, string reason)
         {
+            if (serverOutage.Active)
+            {
+                FinishServerOutageFailureLocked(runtime, reason);
+                return;
+            }
             runtime.RecoveryFailures = Math.Min(30, runtime.RecoveryFailures + 1);
             int retryDelay = VanillaRecoveryPolicy.RetryDelayMs(runtime.RecoveryFailures, settings.RetryBackoffMs, settings.MaxRetryBackoffMs);
             runtime.NextRecoveryAt = now.AddMilliseconds(retryDelay);
@@ -1544,6 +1603,7 @@ namespace _4RTools.Model.Vanilla
             {
                 Interlocked.Increment(ref resumeVerificationGeneration);
                 if (disposed) return;
+                CancelServerOutageLocked();
                 disposed = true;
                 running = false;
                 timer?.Dispose();

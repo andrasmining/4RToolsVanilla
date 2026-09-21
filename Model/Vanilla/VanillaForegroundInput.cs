@@ -455,6 +455,35 @@ namespace _4RTools.Model.Vanilla
         {
             lock (ForegroundGate)
             {
+                Bitmap first = CaptureClientBitmapCore();
+                try
+                {
+                    Rectangle dialog; string evidence;
+                    if (!VanillaServerClosedPattern.TryDetect(first, out dialog, out evidence)) return first;
+                    var firstProof = LastCaptureProof;
+                    // A recognized outage modal authorizes no keyboard or mouse input.
+                    // Confirm with a new frame, retaining only the fixed dialog identity.
+                    DelayWithCancellation(150);
+                    using (Bitmap second = CaptureClientBitmapCore())
+                    {
+                        Rectangle secondDialog; string secondEvidence;
+                        if (firstProof.Window == LastCaptureProof.Window && firstProof.ProcessId == LastCaptureProof.ProcessId
+                            && firstProof.ClientSize == LastCaptureProof.ClientSize && firstProof.ClientOrigin == LastCaptureProof.ClientOrigin
+                            && VanillaServerClosedPattern.TryDetect(second, out secondDialog, out secondEvidence)
+                            && Math.Abs(dialog.X - secondDialog.X) <= 3 && Math.Abs(dialog.Y - secondDialog.Y) <= 3
+                            && Math.Abs(dialog.Width - secondDialog.Width) <= 3 && Math.Abs(dialog.Height - secondDialog.Height) <= 3)
+                            throw new VanillaServerClosedException();
+                    }
+                    throw new InvalidOperationException("Server unavailable dialog changed during confirmation; no input sent.");
+                }
+                catch { first.Dispose(); LastCaptureProof = null; throw; }
+            }
+        }
+
+        private Bitmap CaptureClientBitmapCore()
+        {
+            lock (ForegroundGate)
+            {
                 LastCaptureProof = null;
                 Activate();
                 VerifyForeground();

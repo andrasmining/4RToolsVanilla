@@ -34,7 +34,7 @@ namespace _4RTools.Model.Vanilla
         {
             return visual == VanillaVisualState.LoginShell
                 || visual == VanillaVisualState.LoggingOut
-                || visual == VanillaVisualState.Disconnected;
+                || visual == VanillaVisualState.Disconnected || visual == VanillaVisualState.ServerClosed;
         }
 
         public void StartHardenedSequentialStartup(System.Action<bool, string> completed)
@@ -68,12 +68,14 @@ namespace _4RTools.Model.Vanilla
         {
             lock (gate)
             {
+                CancelServerOutageLocked();
                 Interlocked.Increment(ref hardenedStartupGeneration);
                 Interlocked.Increment(ref resumeVerificationGeneration);
                 hardenedStartupRunning = false;
                 foreach (Runtime runtime in runtimes.Values)
                 {
-                    if (runtime.Detail != null && runtime.Detail.StartsWith("Sequential startup", StringComparison.Ordinal))
+                    if ((runtime.Detail != null && runtime.Detail.StartsWith("Sequential startup", StringComparison.Ordinal))
+                        || runtime.Stage == VanillaReconnectStage.WaitingForServer)
                     {
                         runtime.ScriptRunning = false;
                         runtime.RecoveryOwned = false;
@@ -118,10 +120,20 @@ namespace _4RTools.Model.Vanilla
                     {
                         using (var process = Process.GetProcessById(existingPid.Value))
                         {
-                            if (CloseTerminalBeforeStartup(runtime, existingPid.Value, generation, config,
-                                () => { process.Refresh(); return VanillaVisualProbe.Classify(process.MainWindowHandle); },
-                                () => process.StartTime.ToUniversalTime(), milliseconds => BriefPause(generation, milliseconds)))
+                            try
+                            {
+                                if (CloseTerminalBeforeStartup(runtime, existingPid.Value, generation, config,
+                                    () => { process.Refresh(); return VanillaVisualProbe.Classify(process.MainWindowHandle); },
+                                    () => process.StartTime.ToUniversalTime(), milliseconds => BriefPause(generation, milliseconds)))
+                                    existingPid = null;
+                            }
+                            catch (OperationCanceledException) { throw; }
+                            catch (Exception) when (runtime.ServerOutagePending)
+                            {
+                                // The verified outage remains a scheduled retry even if its
+                                // owned close failed. The next attempt must close before launch.
                                 existingPid = null;
+                            }
                         }
                     }
                     if (existingPid.HasValue)
@@ -133,8 +145,17 @@ namespace _4RTools.Model.Vanilla
                         }
                         Log(account.Label + ": existing PID " + existingPid.Value + " found. Verifying gameplay before releasing the sequential gate.");
                         VanillaDebugLog.Write("STARTUP", account.Label + ": existing PID " + existingPid.Value + " verification begin.");
-                        WaitForExistingClientGameplayReady(account, existingPid.Value,
-                            () => StartupCancelled(generation), 15000, account.Label + " existing client");
+                        try
+                        {
+                            WaitForExistingClientGameplayReady(account, existingPid.Value,
+                                () => StartupCancelled(generation), 15000, account.Label + " existing client");
+                        }
+                        catch (VanillaServerClosedException)
+                        {
+                            lock (gate) { ConfirmServerOutageLocked(runtime); ParkForServerOutageLocked(runtime); }
+                            RunOneColdStart(generation, account, config, index + 1, accounts.Length);
+                            continue;
+                        }
                         VanillaVisualState supplementalVisual = VanillaVisualState.Unknown;
                         try
                         {
@@ -152,6 +173,16 @@ namespace _4RTools.Model.Vanilla
                         VanillaDebugLog.Write("STARTUP", account.Label + ": existing PID " + existingPid.Value
                             + " accepted by fresh verified memory gameplay state; supplemental visual=" + supplementalVisual
                             + (supplementalVisual == VanillaVisualState.Unknown ? " (Unknown is non-blocking)." : "."));
+                        if (supplementalVisual == VanillaVisualState.ServerClosed)
+                        {
+                            try { ThrowIfConfirmedServerClosed(existingPid.Value, () => StartupCancelled(generation)); }
+                            catch (VanillaServerClosedException)
+                            {
+                                lock (gate) { ConfirmServerOutageLocked(runtime); ParkForServerOutageLocked(runtime); }
+                                RunOneColdStart(generation, account, config, index + 1, accounts.Length);
+                                continue;
+                            }
+                        }
                         if (ExistingClientVisualBlocksMemoryAdoption(supplementalVisual))
                             throw new InvalidOperationException(account.Label
                                 + ": fresh verified memory says gameplay, but supplemental visual is " + supplementalVisual
@@ -234,16 +265,28 @@ namespace _4RTools.Model.Vanilla
             Exception last = null;
             while (true)
             {
+                Runtime runtime;
+                lock (gate)
+                {
+                    if (StartupCancelled(generation)) throw new OperationCanceledException("Sequential startup cancelled.");
+                    runtime = runtimes[account.Id];
+                }
+                WaitForStartupServerAvailability(generation, runtime);
                 try
                 {
+                    if (runtime.ServerOutagePending && runtime.ProcessId.HasValue)
+                        CloseColdStartClientForRestart(generation, runtime, failureCount, "Scheduled server availability check");
                     RunOneColdStartAttempt(generation, account, config, ordinal, total);
                     return;
                 }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex) { last = ex; failureCount = Math.Min(30, failureCount + 1); }
 
-                Runtime runtime;
-                lock (gate) runtime = runtimes[account.Id];
+                lock (gate)
+                {
+                    if (StartupCancelled(generation)) throw new OperationCanceledException("Sequential startup cancelled.");
+                    if (last is VanillaServerClosedException) ConfirmServerOutageLocked(runtime);
+                }
                 Log(account.Label + ": startup/restart attempt failed: " + last.Message + ". Closing any failed client before retry.");
                 VanillaDebugLog.Write("STARTUP", account.Label + ": failure " + failureCount + ": " + last.Message);
                 try { CloseColdStartClientForRestart(generation, runtime, failureCount, last.Message); }
@@ -253,10 +296,39 @@ namespace _4RTools.Model.Vanilla
                     last = closeEx;
                     Log(account.Label + ": failed client could not be closed cleanly: " + closeEx.Message);
                 }
+                lock (gate)
+                {
+                    if (StartupCancelled(generation)) throw new OperationCanceledException("Sequential startup cancelled.");
+                    if (serverOutage.Active)
+                    {
+                        FinishServerOutageFailureLocked(runtime, last.Message);
+                        continue;
+                    }
+                }
                 int delay = VanillaRecoveryPolicy.RetryDelayMs(failureCount, config.RetryBackoffMs, config.MaxRetryBackoffMs);
                 Log(account.Label + ": next sequential restart/login attempt in " + FormatDelay(delay)
                     + "; retry intervals double and cap at 1 hour. Later clients remain blocked behind this recovery lease.");
                 PauseStartupRetry(generation, delay);
+            }
+        }
+
+        private void WaitForStartupServerAvailability(int generation, Runtime runtime)
+        {
+            while (true)
+            {
+                lock (gate)
+                {
+                    Runtime current;
+                    if (StartupCancelled(generation) || !runtimes.TryGetValue(runtime.Account.Id, out current)
+                        || !ReferenceEquals(runtime, current) || !runtime.Account.Enabled)
+                        throw new OperationCanceledException("Sequential startup cancelled during server wait.");
+                    if (MayStartServerOutageProbeLocked(runtime)) return;
+                    foreach (Runtime queued in runtimes.Values.Where(r => r.Account.Enabled && !ReferenceEquals(r, runtime)
+                        && !r.HasBeenOnline && !r.ScriptRunning))
+                        SetStage(queued, VanillaReconnectStage.WaitingForServer, "Queued behind server availability check; " + ServerOutageDetail());
+                }
+                RaiseUpdated();
+                PauseStartupRetry(generation, 500);
             }
         }
 
@@ -350,7 +422,8 @@ namespace _4RTools.Model.Vanilla
             {
                 if (alreadyRunning.Count >= 2)
                     throw new InvalidOperationException("Two Vanilla clients are already running; no third client will be started.");
-                if (alreadyRunning.Any(p => VanillaCharacterRoster.Key(CurrentCharacter(p.Id)) == null))
+                if (alreadyRunning.Any(p => VanillaCharacterRoster.Key(CurrentCharacter(p.Id)) == null
+                    && !IsParkedServerOutageClient(p.Id)))
                     throw new InvalidOperationException("A running client has no verified character identity yet; no duplicate client will be started.");
             }
             finally { foreach (var process in alreadyRunning) process.Dispose(); }

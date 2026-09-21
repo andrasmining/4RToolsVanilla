@@ -96,7 +96,8 @@ namespace _4RTools.Model.Vanilla
         /// <summary>Called for each newly captured frame, before generic gameplay logic.</summary>
         private bool HandleTerminalVisual(Runtime runtime, VanillaVisualState visual, DateTimeOffset now, Func<DateTime> startTimeUtc)
         {
-            if (!IsTerminalDisconnect(visual))
+            bool outage = visual == VanillaVisualState.ServerClosed;
+            if (!IsTerminalDisconnect(visual) && !outage)
             {
                 ResetTerminalEvidence(runtime);
                 if (visual != VanillaVisualState.ModalDialog) return false;
@@ -106,7 +107,7 @@ namespace _4RTools.Model.Vanilla
                 return true;
             }
             runtime.GameplaySince = runtime.LoginLikeSince = null;
-            string reason = visual == VanillaVisualState.LoggingOut ? "Now Logging Out." : "Disconnected from Server.";
+            string reason = outage ? "Server Closed.(1)" : visual == VanillaVisualState.LoggingOut ? "Now Logging Out." : "Disconnected from Server.";
             if (!running || disposed || !settings.VisualWatchdog || !settings.AutoRecover || !runtime.Account.Enabled)
             {
                 ResetTerminalEvidence(runtime);
@@ -126,6 +127,7 @@ namespace _4RTools.Model.Vanilla
                 SetStage(runtime, VanillaReconnectStage.WaitingForGameplay, reason + " Confirming terminal dialog (1/2)");
                 return true;
             }
+            if (outage) ConfirmServerOutageLocked(runtime);
             QueueClientRestart(runtime, now, reason, runtime.RecoveryOwned, startTimeUtc);
             return true;
         }
@@ -139,7 +141,8 @@ namespace _4RTools.Model.Vanilla
             if (StartupCancelled(startupGeneration)) throw new OperationCanceledException();
             if (!config.VisualWatchdog) return false;
             VanillaVisualState visual = readVisual();
-            if (!IsTerminalDisconnect(visual)) return false;
+            bool outage = visual == VanillaVisualState.ServerClosed;
+            if (!IsTerminalDisconnect(visual) && !outage) return false;
             if (!config.AutoRecover) throw new InvalidOperationException("Terminal dialog detected; automatic recovery is disabled.");
             DateTime identity = startTimeUtc();
             pause(Math.Max(250, Math.Min(1500, config.PollMs)));
@@ -154,6 +157,7 @@ namespace _4RTools.Model.Vanilla
                         throw new InvalidOperationException("Another client operation still owns recovery; no close sent.");
                     return true;
                 });
+                if (outage) ConfirmServerOutageLocked(runtime);
                 operation = Interlocked.Increment(ref resumeVerificationGeneration);
                 runtime.ResumeOperationGeneration = operation;
                 runtime.ScriptRunning = runtime.RecoveryOwned = runtime.ClosingForRecovery = true;
@@ -169,6 +173,7 @@ namespace _4RTools.Model.Vanilla
                 {
                     if (cancelled()) throw new OperationCanceledException();
                     CompleteClientRestartClose(runtime, restartEnvironment.UtcNow, visual.ToString(), false, null);
+                    if (outage) ParkForServerOutageLocked(runtime);
                 }
                 Log(runtime.Account.Label + ": terminal client exit confirmed; replacement must finish before the next account starts.");
                 RaiseUpdated();
@@ -186,6 +191,19 @@ namespace _4RTools.Model.Vanilla
         {
             if (!running || disposed || !settings.AutoRecover || !runtime.Account.Enabled
                 || !runtime.ProcessId.HasValue || runtime.ScriptRunning) return;
+            if (serverOutage.Active)
+            {
+                string missing = MissingCharacterConfiguration(runtime.Account);
+                if (missing == null && (string.IsNullOrWhiteSpace(settings.LaunchExecutable) || !System.IO.File.Exists(settings.LaunchExecutable)))
+                    missing = "Set the Vanilla launch executable";
+                if (missing != null)
+                {
+                    serverOutage.CompleteFailure(runtime.Account.Id, restartEnvironment.MonotonicNow, restartEnvironment.UtcNow);
+                    runtime.RecoveryOwned = false;
+                    SetStage(runtime, VanillaReconnectStage.NeedsConfiguration, missing);
+                    return;
+                }
+            }
             if (runtime.NextRecoveryAt.HasValue && runtime.NextRecoveryAt.Value > now)
             {
                 SetStage(runtime, VanillaReconnectStage.Backoff, BackoffDetail(runtime, now));
@@ -198,6 +216,7 @@ namespace _4RTools.Model.Vanilla
                     reason + " Queued: waiting for " + owner.Account.Label + " to finish recovery before closing this client");
                 return;
             }
+            if (!MayStartServerOutageProbeLocked(runtime)) return;
             // Read identity only once the operation can obtain the lease. A fresh
             // frame must reach this method again after any time spent in the queue.
             DateTime identity;

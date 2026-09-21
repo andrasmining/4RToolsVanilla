@@ -46,6 +46,8 @@ namespace _4RTools.Model.Vanilla
 
         private void ReleaseChangedCharacter(Runtime runtime)
         {
+            serverOutage.CompleteFailure(runtime.Account.Id, restartEnvironment.MonotonicNow, restartEnvironment.UtcNow);
+            runtime.ServerOutagePending = false;
             int? pid = runtime.ProcessId;
             runtime.ResumeOperationGeneration++;
             runtime.ProcessId = null;

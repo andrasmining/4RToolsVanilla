@@ -178,7 +178,7 @@ namespace _4RTools.Model.Vanilla
                 + string.Join(", ", (line.Words ?? new VanillaTextWord[0]).Select(word => word.Text + ":" + word.Confidence.ToString("0.0")))));
         }
 
-        private static bool TryTitleTextArea(VanillaRecognitionPixels pixels, Rectangle header, out Rectangle area, Action<string> trace)
+        internal static bool TryTitleTextArea(VanillaRecognitionPixels pixels, Rectangle header, out Rectangle area, Action<string> trace, int minimumComponents = 2)
         {
             area = Rectangle.Empty;
             var ink = new bool[header.Width * header.Height];
@@ -217,7 +217,7 @@ namespace _4RTools.Model.Vanilla
                 kept.Add(component);
             }
             if (trace != null) trace("Retained title ink components=" + string.Join("; ", kept));
-            if (kept.Count < 2) return false;
+            if (kept.Count < minimumComponents) return false;
             Rectangle text = kept[0];
             foreach (Rectangle component in kept.Skip(1)) text = Rectangle.Union(text, component);
             if (text.Width < 20 || text.Height < 5) return false;
@@ -239,7 +239,7 @@ namespace _4RTools.Model.Vanilla
                 && Letters(words[1].Text) == "SELECT" && Letters(words[2].Text) == "SERVICE";
         }
 
-        private static List<Rectangle> FindHeaders(VanillaRecognitionPixels pixels)
+        internal static List<Rectangle> FindHeaders(VanillaRecognitionPixels pixels)
         {
             var bands = new List<HeaderBand>();
             for (int y = 0; y < pixels.Height; y++)

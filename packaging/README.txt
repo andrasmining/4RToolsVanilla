@@ -48,6 +48,13 @@ The delay starts from the configured base, doubles after failures and is capped 
 hour between attempts. There is no finite three-client-restart shutdown budget.
 Healthy siblings remain untouched and recovery input stays globally serialized.
 
+Server downtime is a specific exception: two fresh Server Closed.(1) Message
+observations start a shared 15-minute retry schedule. 4RTools checks by using its
+normal verified launcher/login flow, keeps waiting if recovery fails, and clears
+outage mode only after the recovering account's gameplay identity is verified.
+Please wait... alone is not an outage or online signal. The next-check status is
+shown in Recovery; waiting releases input ownership and leaves healthy clients alone.
+
 STOP and active configuration/client-ownership changes cancel stale input.
 
 Automatic minimization is user-presence aware for ordinary/adopted clients: they are

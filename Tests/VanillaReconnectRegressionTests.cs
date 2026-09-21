@@ -210,6 +210,8 @@ namespace Vanilla.Diagnostics.Tests
                 "Logging-out state must block gameplay adoption.");
             Assert(VanillaReconnectSupervisor.ExistingClientVisualBlocksMemoryAdoption(VanillaVisualState.Disconnected),
                 "Disconnected state must block gameplay adoption.");
+            Assert(VanillaReconnectSupervisor.ExistingClientVisualBlocksMemoryAdoption(VanillaVisualState.ServerClosed),
+                "Server-closed state must block gameplay adoption.");
         }
 
         private static void HostDiagnosticsBundle()

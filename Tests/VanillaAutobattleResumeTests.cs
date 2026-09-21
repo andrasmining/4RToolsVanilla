@@ -88,7 +88,7 @@ namespace Vanilla.Diagnostics.Tests
             Assert(!VanillaReconnectSupervisor.AutobattleVisualBlocksInput(VanillaVisualState.Gameplay),
                 "Gameplay visual state was unexpectedly blocked.");
             foreach (var blocked in new[] { VanillaVisualState.LoginShell, VanillaVisualState.ModalDialog,
-                VanillaVisualState.LoggingOut, VanillaVisualState.Disconnected })
+                VanillaVisualState.LoggingOut, VanillaVisualState.Disconnected, VanillaVisualState.ServerClosed })
                 Assert(VanillaReconnectSupervisor.AutobattleVisualBlocksInput(blocked),
                     "Unsafe visual state did not block input: " + blocked);
         }
@@ -289,6 +289,12 @@ namespace Vanilla.Diagnostics.Tests
             Assert(VanillaAutobattleStatus.Compact(VanillaReconnectStage.VerifyingAutobattle,
                 "Movement verified after 3/3 attempts") == "Movement verified", "Success hidden.");
             Assert(VanillaAutobattleStatus.Compact(VanillaReconnectStage.Online, "Gameplay") == "Online", "Existing status changed.");
+            Assert(VanillaAutobattleStatus.Compact(VanillaReconnectStage.WaitingForServer,
+                "Server unavailable: next check 12:15:00 (in 15m; every 15 minutes)") == "Server down; check 12:15:00",
+                "Server availability deadline hidden from the account row.");
+            Assert(VanillaAutobattleStatus.Compact(VanillaReconnectStage.WaitingForServer,
+                "Server unavailable; one account is checking through the normal login flow.") == "Server down; queued",
+                "Queued server check status was lost.");
         }
 
         private sealed class Harness

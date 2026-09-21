@@ -247,9 +247,7 @@ STOP, settings changes, client replacement and disposal cancel delayed actions.
 Cover both exact dialogs, single-client and dual-client failure, native visual
 matching, unknown-message rejection, close/exit ordering and cancellation tests.
 
-## Required validation
-
-### Confirmed server downtime (2026-09-21)
+## Confirmed server downtime (2026-09-21)
 
 The exact `Message` dialog `Server Closed.(1)` means server downtime. Confirm
 it with two fresh matching observations before entering outage recovery; a
@@ -264,6 +262,8 @@ STOP and ownership/configuration changes cancel stale work. Keep next-check
 status and evidence in the normal recovery log. Do not probe the game protocol or
 bypass the launcher; generic failures outside confirmed downtime retain their
 existing exponential backoff.
+
+## Required validation
 
 Test every meaningful change as far as available tooling permits. Appropriate
 checks include restore/build, full Release builds, unit/integration tests,

@@ -66,6 +66,8 @@
     <Compile Include="VanillaReconnectRegressionTests.cs" />
     <Compile Include="VanillaAutobattleResumeTests.cs" />
     <Compile Include="VanillaRecoveryWatchdogTests.cs" />
+    <Compile Include="VanillaServerClosedPatternTests.cs" />
+    <Compile Include="VanillaServerOutageTests.cs" />
     <Compile Include="VanillaCharacterRosterTests.cs" />
     <Compile Include="VanillaNativeRecoveryTests.cs" />
     <Compile Include="VanillaTemporaryActionTests.cs" />

@@ -83,6 +83,17 @@ Failed close/launch attempts retain diagnostics and use bounded retry backoff;
 STOP, configuration changes or replaced client ownership cancel pending actions.
 This depends on a readable supported dialog capture, not merely frozen HP or X/Y.
 
+### Server downtime
+
+Two fresh observations of the exact **Server Closed.(1)** Message dialog enter
+server-outage recovery. Pending accounts share one normal launcher/login check
+every **15 minutes** until the recovering account reaches freshly verified
+gameplay. The interval stays fixed during the outage. A separate **Please wait...**
+dialog, a missing frame or a disappearing popup does not mean the server is back.
+The recovery status/log shows the next check. Waiting releases input ownership,
+and healthy clients continue normally. STOP cancels pending checks. Other recovery
+failures continue to use the ordinary exponential backoff.
+
 ### Autofarming health watchdog
 
 Fresh verified read-only X/Y movement is the primary steady-state health signal.
@@ -201,13 +212,13 @@ From a clean checkout of `main`:
 
 ```powershell
 # Initial dependency restore, local validation and portable package:
-.\scripts\release-local.ps1 -Version 0.6.68 -Restore
+.\scripts\release-local.ps1 -Version 0.6.69 -Restore
 
 # Subsequent offline validation/package using cached dependencies:
-.\scripts\release-local.ps1 -Version 0.6.68 -Replace
+.\scripts\release-local.ps1 -Version 0.6.69 -Replace
 
 # Publish the locally validated release while connected and authenticated:
-.\scripts\release-local.ps1 -Version 0.6.68 -Publish -Replace
+.\scripts\release-local.ps1 -Version 0.6.69 -Publish -Replace
 ```
 
 Version must match `Properties/AssemblyInfo.cs`. Publication requires the tested

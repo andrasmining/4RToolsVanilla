@@ -121,6 +121,7 @@ namespace _4RTools.Model.Vanilla
                 bool teleportConfirmed = false;
                 try { teleportConfirmed = teleport(attempt); }
                 catch (OperationCanceledException) { throw; }
+                catch (VanillaServerClosedException) { throw; }
                 catch (Exception ex)
                 {
                     report("Smart Teleport attempt " + attempt + "/" + MaximumAttempts + " failed safely: " + ex.Message);
@@ -411,6 +412,13 @@ namespace _4RTools.Model.Vanilla
     {
         internal static string Compact(VanillaReconnectStage stage, string detail)
         {
+            if (stage == VanillaReconnectStage.WaitingForServer)
+            {
+                const string marker = "next check ";
+                int next = (detail ?? "").IndexOf(marker, StringComparison.Ordinal);
+                return next >= 0 && detail.Length >= next + marker.Length + 8
+                    ? "Server down; check " + detail.Substring(next + marker.Length, 8) : "Server down; queued";
+            }
             if (stage != VanillaReconnectStage.VerifyingAutobattle) return stage.ToString();
             detail = detail ?? "";
             if (detail.IndexOf("Movement verified", StringComparison.Ordinal) >= 0) return "Movement verified";
@@ -476,7 +484,8 @@ namespace _4RTools.Model.Vanilla
         internal static bool AutobattleVisualBlocksInput(VanillaVisualState visual)
         {
             return visual == VanillaVisualState.LoginShell || visual == VanillaVisualState.ModalDialog
-                || visual == VanillaVisualState.LoggingOut || visual == VanillaVisualState.Disconnected;
+                || visual == VanillaVisualState.LoggingOut || visual == VanillaVisualState.Disconnected
+                || visual == VanillaVisualState.ServerClosed;
         }
 
         private void WaitForAutobattleReady(VanillaReconnectAccount account, int pid, Func<bool> cancelled,
@@ -496,6 +505,7 @@ namespace _4RTools.Model.Vanilla
         {
             if (account == null) throw new ArgumentNullException(nameof(account));
             if (cancelled == null) throw new ArgumentNullException(nameof(cancelled));
+            ThrowIfConfirmedServerClosed(pid, cancelled);
             string purpose = postLoginHotkey ? "mandatory post-login hotkey" : "existing-client adoption";
             Log(account.Label + ": " + context + ": waiting for fresh verified username/character/X/Y/map/living HP for " + purpose + ".");
             VanillaDebugLog.Write("MEMORY-GATE", "PID=" + pid + "; " + account.Label + ": " + context
@@ -515,6 +525,7 @@ namespace _4RTools.Model.Vanilla
                     while (watch.ElapsedMilliseconds < timeoutMs)
                     {
                         if (cancelled()) throw new OperationCanceledException(context + ": gameplay memory verification cancelled.");
+                        ThrowIfConfirmedServerClosed(pid, cancelled);
                         var now = DateTimeOffset.UtcNow;
                         try
                         {
@@ -585,6 +596,7 @@ namespace _4RTools.Model.Vanilla
                             VanillaDebugLog.Write("AUTOBATTLE", "PID=" + pid
                                 + "; visual probe unavailable during memory-verified resume: " + ex.Message);
                         }
+                        if (visual == VanillaVisualState.ServerClosed) ThrowIfConfirmedServerClosed(pid, cancelled);
                         if (AutobattleVisualBlocksInput(visual))
                             throw new InvalidOperationException("Client is in blocking visual state " + visual
                                 + "; autobattle verification stopped before input.");
@@ -716,6 +728,7 @@ namespace _4RTools.Model.Vanilla
             {
                 string error = null;
                 bool cancelled = false;
+                bool serverClosed = false;
                 try
                 {
                     await VerifyAutobattleResumeAsync(account, pid,
@@ -727,6 +740,7 @@ namespace _4RTools.Model.Vanilla
                         throw new InvalidOperationException("Movement verified but client minimization could not be confirmed.");
                 }
                 catch (OperationCanceledException) { cancelled = true; }
+                catch (VanillaServerClosedException ex) { serverClosed = true; error = ex.Message; }
                 catch (Exception ex) { error = ex.Message; }
                 lock (gate)
                 {
@@ -740,6 +754,11 @@ namespace _4RTools.Model.Vanilla
                     {
                         runtime.RecoveryOwned = false;
                         SetStage(runtime, VanillaReconnectStage.Stopped, "Autobattle verification cancelled");
+                    }
+                    else if (serverClosed)
+                    {
+                        ConfirmServerOutageLocked(runtime);
+                        FinishServerOutageFailureLocked(runtime, error);
                     }
                     else if (error != null)
                     {
