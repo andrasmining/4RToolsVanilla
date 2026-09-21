@@ -128,7 +128,7 @@ namespace _4RTools.Model.Vanilla
 
         internal static string DescribeSyntheticSuffixes(Bitmap bitmap, VanillaServiceDialog dialog)
         {
-            if (Environment.GetEnvironmentVariable("GITHUB_ACTIONS") != "true") return "";
+            if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("FOURRTOOLS_ISOLATED_DESKTOP"))) return "";
             var report = new System.Text.StringBuilder();
             foreach (VanillaTextLine source in dialog.Lines)
             {

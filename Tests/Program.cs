@@ -17,6 +17,9 @@ namespace Vanilla.Diagnostics.Tests
         [STAThread]
         private static int Main(string[] args)
         {
+            VanillaIsolatedTestDesktop.AssertCurrent();
+            if (args.Length == 1 && args[0] == "--proxy-pattern-tests") return VanillaProxyPatternTests.Run();
+            if (args.Length == 1 && args[0] == "--private-updater-tests") return VanillaUpdaterTests.Run();
             if (args.Length == 1 && args[0].StartsWith("--recovery-native-probe", StringComparison.Ordinal))
                 return VanillaNativeRecoveryTests.Child(args[0].EndsWith("-ignore-close", StringComparison.Ordinal));
             if (args.Length == 1 && args[0] == "--native-recovery-tests") return VanillaNativeRecoveryTests.Run();
@@ -77,6 +80,7 @@ namespace Vanilla.Diagnostics.Tests
             failed += VanillaMemoryScannerTests.Run();
             failed += ProcessObservationContextTests.Run();
             failed += VanillaFleetMonitorTests.Run();
+            failed += VanillaUpdaterTests.Run();
 
             Console.WriteLine("Core diagnostics: {0} passed. Total failures across all suites: {1}. All tests used offline data.", passed, failed);
             return failed == 0 ? 0 : 1;

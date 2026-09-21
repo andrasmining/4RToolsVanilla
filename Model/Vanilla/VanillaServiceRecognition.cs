@@ -65,8 +65,8 @@ namespace _4RTools.Model.Vanilla
         // records OCR text from captures, regardless of environment variables.
         internal static string DescribeSyntheticFixture(Bitmap bitmap)
         {
-            if (!string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase))
-                return "Synthetic diagnostics are available only in CI.";
+            if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("FOURRTOOLS_ISOLATED_DESKTOP")))
+                return "Synthetic diagnostics are available only in isolated tests.";
             var report = new StringBuilder();
             Detection detection = ReadDialog(bitmap, text => report.AppendLine(text));
             if (detection.Dialog != null)

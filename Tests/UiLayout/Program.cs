@@ -39,6 +39,8 @@ internal static class UiLayoutHarness
         try
         {
             app = Assembly.LoadFrom(Path.GetFullPath(args[0]));
+            CallStatic("_4RTools.Model.Vanilla.VanillaIsolatedTestDesktop", "AssertCurrent");
+            report.AppendLine("Isolated non-input desktop: verified");
             report.AppendLine("Assembly: " + app.GetName().Version + "; platform=" + Environment.OSVersion + "; pointerBytes=" + IntPtr.Size);
             CallStatic("_4RTools.Model.Vanilla.VanillaAppData", "InitializeAndMigrateLegacy", Path.GetDirectoryName(Path.GetFullPath(args[0])));
             CallStatic("_4RTools.Model.ProfileSingleton", "Create", "Default");
@@ -83,6 +85,7 @@ internal static class UiLayoutHarness
                 CheckCharacterEditor(main, recovery);
                 CheckLegacyUsernameDiscovery(main, recovery);
                 CheckUsernameDiagnostics();
+                CheckPrivateUpdateAccess();
                 Call(main, "AssertSmokeBackgroundServicesInactive");
                 report.AppendLine("Background services: inactive; fleet polls=0; no game input or email enabled.");
             }
@@ -110,6 +113,36 @@ internal static class UiLayoutHarness
         Check(items.Contains("Smart Teleport now (selected)"), "TESTS menu is missing manual Smart Teleport.");
         Check(items.Contains("Weight/Cart clean now (selected)"), "TESTS menu is missing manual Weight/Cart cleaning.");
         report.AppendLine("CASE workspace policy: Automation tab removed; 180s restart default; manual Smart Teleport and Weight/Cart TESTS actions present.");
+    }
+
+    private static void CheckPrivateUpdateAccess()
+    {
+        foreach (float scale in new[] { 1F, 1.5F })
+        using (var dialog = (Form)Activator.CreateInstance(app.GetType("_4RTools.Model.Vanilla.VanillaUpdateAccessDialog", true), true))
+        {
+            caseNumber++;
+            dialog.StartPosition = FormStartPosition.Manual; dialog.Location = Point.Empty;
+            if (scale != 1F)
+            {
+                dialog.Scale(new SizeF(scale, scale));
+                dialog.Font = new Font(dialog.Font.FontFamily, dialog.Font.Size * scale);
+            }
+            dialog.Show(); Pump();
+            var boxes = Descendants(dialog).OfType<TextBox>().ToArray();
+            Check(boxes.Length == 1 && boxes[0].UseSystemPasswordChar && boxes[0].Text.Length == 0,
+                "Private update token must start empty and use password masking.");
+            foreach (string caption in new[] { "SAVE", "CLEAR SAVED", "CANCEL" })
+            {
+                var button = Descendants(dialog).OfType<Button>().SingleOrDefault(b => b.Text == caption);
+                Check(button != null && button.Visible && FullyVisible(button, dialog), "Private update action is clipped: " + caption);
+            }
+            Check(boxes.Length == 1 && FullyVisible(boxes[0], dialog), "Private update token entry is clipped.");
+            if (boxes.Length == 1) boxes[0].Text = "synthetic-ui-token-only";
+            Pump();
+            SaveScreenshot(dialog, Path.Combine(output, scale == 1F ? "24-private-update-access.png" : "25-private-update-access-scaled.png"));
+            report.AppendLine("CASE private update access: masked empty entry and Save/Clear/Cancel visible at scale " + scale + "; no credentials saved or network requested.");
+            dialog.Close();
+        }
     }
 
     private static void CheckRecoverySplitter(Form main, object recovery)

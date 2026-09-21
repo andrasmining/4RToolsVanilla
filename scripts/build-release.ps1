@@ -1,10 +1,12 @@
 [CmdletBinding()]
 param(
     [ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+(?:-[A-Za-z0-9.-]+)?$')]
-    [string] $Version = '0.2.0',
+    [Parameter(Mandatory = $true)][string] $Version,
     [string] $CacheRoot = (Join-Path $env:LOCALAPPDATA '4RTools-Engineering'),
     [string] $MSBuildPath,
-    [switch] $Replace
+    [switch] $Replace,
+    [switch] $Offline,
+    [switch] $SkipBuild
 )
 
 Set-StrictMode -Version Latest
@@ -118,13 +120,14 @@ function New-PortableArchive([string] $Root, [string] $ArchivePath, [DateTime] $
 
 function Assert-PortableSmokeResult([object] $Report) {
     if ($null -eq $Report) { throw 'Portable smoke report is empty.' }
-    foreach ($requiredField in @('Success', 'MainUi', 'PackagedOcr', 'AutomationEnabled', 'GameplayAttached', 'InputSent', 'OriginalFeatureForms',
+    foreach ($requiredField in @('Success', 'IsolatedDesktop', 'MainUi', 'PackagedOcr', 'AutomationEnabled', 'GameplayAttached', 'InputSent', 'OriginalFeatureForms',
         'VanillaPollingEnabled', 'FleetPollingEnabled', 'FleetPollCount', 'RecoveryRunning', 'WeightAlertsRunning', 'UpdateCheckRunning')) {
         if ($null -eq $Report.PSObject.Properties[$requiredField]) {
             throw "Portable smoke report is missing $requiredField."
         }
     }
     if ($Report.Success -isnot [bool] -or -not $Report.Success) { throw 'Portable smoke test reported failure.' }
+    if ($Report.IsolatedDesktop -isnot [bool] -or -not $Report.IsolatedDesktop) { throw 'Portable smoke test did not prove desktop isolation.' }
     if ($Report.PackagedOcr -isnot [bool] -or -not $Report.PackagedOcr) { throw 'Portable OCR runtime/model validation failed.' }
     if ($Report.MainUi -cne 'Container') { throw 'Portable smoke test did not validate the original 4RTools main window.' }
     foreach ($inactiveField in @('AutomationEnabled', 'GameplayAttached', 'InputSent', 'VanillaPollingEnabled',
@@ -151,16 +154,15 @@ function Test-PortableArchive([string] $ArchivePath, [string] $ExpectedZipHash) 
         if (Test-Path -LiteralPath (Join-Path $smokeReleasePath $legacyDataFolder)) { throw "Portable release must not contain user-data folder: $legacyDataFolder" }
     }
     $smokeOutput = Join-Path $smokeLogRoot 'portable-smoke.json'
+    $script:lastSmokeReport = $smokeOutput
     $smokeExecutable = Join-Path $smokeReleasePath $applicationName
-    # All local executable launches stay inside the repo and use the repo cwd.
-    $smokeArguments = '--portable-smoke-test --output "' + $smokeOutput + '"'
-    $smokeProcess = Start-Process -FilePath $smokeExecutable -ArgumentList $smokeArguments -WorkingDirectory $repositoryRoot -WindowStyle Hidden -PassThru
-    if (-not $smokeProcess.WaitForExit(30000)) {
-        $smokeProcess.Kill()
-        throw "Portable smoke test timed out. Evidence: $smokeLogRoot; extracted package: $smokeRoot"
-    }
-    $smokeProcess.Refresh()
-    if ($smokeProcess.ExitCode -ne 0) { throw "Portable smoke test failed (exit $($smokeProcess.ExitCode)). Evidence: $smokeLogRoot" }
+    # Load the extracted production entry point from a test-only x86 host. This keeps
+    # the release's administrator manifest intact without UAC or visible desktop UI.
+    $smokeHost = Join-Path $smokeReleasePath 'PortableSmokeHost.exe'
+    $compiler = Join-Path $env:WINDIR 'Microsoft.NET/Framework/v4.0.30319/csc.exe'
+    & $compiler /nologo /target:exe /platform:x86 "/out:$smokeHost" (Join-Path $repositoryRoot 'Tests/PortableSmoke/Program.cs')
+    if ($LASTEXITCODE -ne 0) { throw 'Portable smoke host compilation failed.' }
+    & (Join-Path $PSScriptRoot 'test-isolated.ps1') -Executable $smokeHost -TestArguments @($smokeOutput) -LogPath (Join-Path $smokeLogRoot 'host.log') -TimeoutMilliseconds 120000
     if (-not (Test-Path -LiteralPath $smokeOutput -PathType Leaf)) { throw "Portable smoke test did not produce its report: $smokeOutput" }
     $smokeResult = Get-Content -LiteralPath $smokeOutput -Raw -Encoding UTF8 | ConvertFrom-Json
     try { Assert-PortableSmokeResult $smokeResult }
@@ -203,9 +205,9 @@ foreach ($source in $requiredSources) {
 
 # Restore + Rebuild cleans compiler outputs; both build errors and test failures throw.
 # The app and offline tests use x86 together through the VanillaRelease property.
-$buildParameters = @{ Configuration = @('Release'); VanillaRelease = $true; CacheRoot = $CacheRoot }
+$buildParameters = @{ Configuration = @('Release'); VanillaRelease = $true; CacheRoot = $CacheRoot; Offline = $Offline }
 if ($MSBuildPath) { $buildParameters.MSBuildPath = $MSBuildPath }
-& (Join-Path $PSScriptRoot 'build.ps1') @buildParameters
+if (-not $SkipBuild) { & (Join-Path $PSScriptRoot 'build.ps1') @buildParameters }
 
 $applicationOutput = Join-Path $repositoryRoot 'bin/Release'
 $applicationName = '4RTools-Vanilla.exe'
@@ -347,18 +349,10 @@ try {
     # The staging directory is now empty; no recursive deletion is necessary.
     Remove-Item -LiteralPath (Assert-RepositoryPath $stagingRoot)
 
-    $checksumBlock = @(
-        '<!-- BEGIN GENERATED RELEASE CHECKSUMS -->',
-        '',
-        "Release version: $Version. SHA256:",
-        '',
-        ('- `' + $zipName + '`: `' + $zipHash + '`'),
-        ('- `' + $applicationName + '`: `' + $exeHash + '`'),
-        '',
-        'These generated hashes are excluded from the packaged notes to avoid a circular ZIP checksum.',
-        '<!-- END GENERATED RELEASE CHECKSUMS -->'
-    ) -join "`n"
-    Write-Utf8 $notesPath ($packagedNotes.TrimEnd() + "`n`n" + $checksumBlock + "`n")
+    # Generated output never mutates tracked source after the clean-source gate.
+    [ordered]@{ version = $Version; sourceCommit = $sourceCommit; sourceTree = $treeState;
+        zip = $zipName; zipSha256 = $zipHash; executableSha256 = $exeHash; smokeReport = $script:lastSmokeReport } |
+        ConvertTo-Json | Out-File -LiteralPath (Join-Path $distRoot "$releaseName-build.json") -Encoding utf8
     Write-Host "Portable folder: $releasePath"
     Write-Host "Portable ZIP: $zipPath"
     Write-Host "ZIP SHA256: $zipHash"

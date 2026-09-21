@@ -113,6 +113,21 @@ CHECK FOR UPDATES and version status are at the right of the Vanilla header.
 The updater verifies the downloaded ZIP checksum and its payload manifest before
 applying an update. The Data & updates page displays the actual paths in use.
 
+Releases now come from the private andrasmining/4RToolsVanilla repository.
+GitHub Actions is not used: packages are built/tested locally and uploaded when
+online. Updating downloads the prebuilt package, without compiling on your PC.
+Private downloads require an account or token with read access to that repository.
+In Data & updates > UPDATE ACCESS, save a fine-grained GitHub token scoped to
+4RToolsVanilla with Contents: Read permission. Windows DPAPI protects it for the
+current Windows user/PC. CLEAR removes the saved token. A saved token needs no
+GitHub CLI; existing GH_TOKEN/GITHUB_TOKEN environment credentials take priority,
+followed by the saved token and then an existing GitHub CLI login. The token is
+never included in profile exports, debug logs or portable releases.
+The old public v0.6.67 updater cannot discover the new repository; install the
+first private portable ZIP once. Existing local settings remain in place.
+For offline use, copy the whole portable ZIP from an authorized online PC and
+extract it into a new folder. Offline publishing to GitHub is not possible.
+
 Validation and integrity
 ------------------------
 VERSION.txt records the version, architecture, source commit and build status.

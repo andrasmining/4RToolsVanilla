@@ -2,12 +2,17 @@
 
 An independent fork of 4RTools for Vanilla MMO. The **Vanilla** workspace is the
 primary interface; the **Original 4RTools** tab remains available for compatibility.
+Development and releases now live in the private
+[`andrasmining/4RToolsVanilla`](https://github.com/andrasmining/4RToolsVanilla)
+repository. Git history, tags and historical release assets are preserved.
+GitHub Actions is disabled; builds, validation and publication run locally.
 Vanilla's own Autobattle controls movement and combat. This fork adds read-only
 state observation and ordinary, client-targeted keyboard/mouse input around it.
 
 ## Portable application
 
-Use the portable ZIP attached to the latest GitHub Release. Extract the entire
+Use the portable ZIP attached to the latest private GitHub Release while signed
+into an account with repository access. Extract the entire
 `4RTools-Vanilla-v<version>` folder and run **4RTools-Vanilla.exe**, keeping its
 configuration and `VanillaBuilds` folder together. The application targets x86
 and requires Windows with Microsoft .NET Framework 4.7.2 or a later 4.x runtime.
@@ -22,6 +27,29 @@ folders. Upgrades preserve compatible profiles and recovery settings. Passwords
 use Windows DPAPI and must be entered separately for each Windows user/machine.
 Release packages contain no personal profiles, passwords or mutable user-data
 folders. See the included `README.txt`, `VERSION.txt` and `RELEASE-NOTES.md`.
+
+### Updates and offline use
+
+Local engineering builds produce the portable ZIP and checksums. When online,
+the release script uploads those validated files directly to the private GitHub
+release; GitHub does not build them. CHECK FOR UPDATES downloads the prebuilt
+package with repository authentication and verifies it before installation.
+End-user PCs do not download or compile the source tree.
+
+On **Data & updates > UPDATE ACCESS**, save a GitHub fine-grained token scoped to
+this repository with **Contents: Read** permission. It is protected with Windows
+DPAPI for the current user/PC, kept outside profiles and logs, and can be cleared
+from the same dialog. No GitHub CLI is needed with a saved token. Existing
+`GH_TOKEN`/`GITHUB_TOKEN` environment credentials take priority, followed by the
+saved token and then an existing GitHub CLI login. Never share tokens in logs or
+release packages. Browser downloads instead use your normal GitHub sign-in.
+
+The old public v0.6.67 application points to the old repository. Upgrade once
+using the new private portable ZIP; compatible settings remain in the same
+per-user data folder. Later private releases use the integrated updater.
+For an offline PC, copy the complete ZIP from an authorized online PC and extract
+it into a new folder. Building offline requires previously installed build tools
+and cached dependencies; publishing or checking GitHub requires connectivity.
 
 ## Workspace and recovery
 
@@ -164,6 +192,32 @@ and actual live-game validation.
 
 ## Engineering and release validation
 
+Use Visual Studio 2022 Build Tools with .NET desktop MSBuild and the x86 Visual C++
+runtime redistributable files, Windows PowerShell 5.1, and Git. GitHub CLI is
+required only for authenticated publication. The build script locates MSBuild
+and can acquire the .NET Framework 4.7.2 reference pack during initial restore.
+
+From a clean checkout of `main`:
+
+```powershell
+# Initial dependency restore, local validation and portable package:
+.\scripts\release-local.ps1 -Version 0.6.68 -Restore
+
+# Subsequent offline validation/package using cached dependencies:
+.\scripts\release-local.ps1 -Version 0.6.68 -Replace
+
+# Publish the locally validated release while connected and authenticated:
+.\scripts\release-local.ps1 -Version 0.6.68 -Publish -Replace
+```
+
+Version must match `Properties/AssemblyInfo.cs`. Publication requires the tested
+commit on remote `main`; it creates the version tag, uploads ZIP/checksum assets,
+marks the stable release Latest and verifies the downloaded result. The local
+package remains under `dist/4RTools-Vanilla-v<version>/` with its sibling portable
+ZIP. GitHub Actions is disabled at repository level and no workflow is shipped.
+`-Replace` preserves an existing local package under `dist/.previous` before
+rebuilding; published release assets are never silently overwritten.
+
 The existing Windows build scripts restore dependencies, build Debug/Release and
 run the offline regression suite. Portable packaging checks x86/version metadata,
 licenses, payload checksums and a relocated inert executable launch. The native
@@ -171,10 +225,11 @@ mock-data UI harness covers responsive layouts, enlarged text, large saved-accou
 lists, character discovery/editor behavior, legacy username migration and diagnostic
 username/address rendering without observing live clients.
 
-The release workflow runs these gates before publication, then downloads the
-public release assets and verifies their hashes and source identity against the
-tested package. Automated tests and mock UI rendering are not a live Vanilla or
-Gepard gameplay test. See `RELEASE-NOTES.md` for the precise validation limits.
+The local release command runs these gates before publication, then downloads
+the private release assets and verifies their hashes and source identity against
+the tested package. Rendering runs on a separate non-input Windows desktop that
+is never displayed. Automated tests and mock UI rendering are not a live Vanilla
+or Gepard gameplay test. See `RELEASE-NOTES.md` for the precise validation limits.
 
 ## Attribution and license
 

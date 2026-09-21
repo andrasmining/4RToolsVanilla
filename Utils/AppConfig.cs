@@ -10,11 +10,10 @@ namespace _4RTools.Utils
         public static string Name = "4RTools Vanilla";
         public static string ProfileFolder = InitializeProfileFolder();
         public static string Website = "https://www.4rtools.com.br";
-        public static string GithubLink = "https://github.com/andrasmining/4RTools";
+        public static string GithubLink = "https://github.com/andrasmining/4RToolsVanilla";
         public static string DiscordLink = "https://discord.gg/AtZ2fJVtBz";
         public static string _4RClientsURL = "https://storage.googleapis.com/4rtools/supported_servers.json";
         public static string _4RAdvertiserUrl = "https://storage.googleapis.com/4rtools/advertisers.json";
-        public static string _4RLatestVersionURL = "https://api.github.com/repos/andrasmining/4RTools/releases/latest";
         public static string _4RApiHost = "https://api.4rtools.com.br/api";
         public static string Version = "v0.6.1";
 

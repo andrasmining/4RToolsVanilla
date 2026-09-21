@@ -239,7 +239,7 @@ namespace Vanilla.Diagnostics.Tests
 
         private static void SaveFixture(Bitmap image, bool server)
         {
-            if (!string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase)) return;
+            if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("FOURRTOOLS_ISOLATED_DESKTOP"))) return;
             string directory = Path.Combine(Environment.CurrentDirectory, "dist", "recognition");
             Directory.CreateDirectory(directory);
             string stem = (server ? "server-" : "proxy-") + (++fixtureNumber).ToString("D2");

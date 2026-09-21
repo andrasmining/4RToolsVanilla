@@ -4,7 +4,8 @@ param(
     [string[]] $Configuration = @('Release', 'Debug'),
     [string] $CacheRoot = (Join-Path $env:LOCALAPPDATA '4RTools-Engineering'),
     [string] $MSBuildPath,
-    [switch] $VanillaRelease
+    [switch] $VanillaRelease,
+    [switch] $Offline
 )
 
 Set-StrictMode -Version Latest
@@ -40,6 +41,7 @@ if (-not (Test-Path -LiteralPath (Join-Path $referenceRoot $referenceMarker))) {
     $packageRoot = Join-Path $CacheRoot 'net472'
     $referenceRoot = Join-Path $packageRoot 'build'
     if (-not (Test-Path -LiteralPath (Join-Path $referenceRoot $referenceMarker))) {
+        if ($Offline) { throw 'The .NET 4.7.2 reference pack is not cached. Run once without -Offline to populate dependencies.' }
         $packageUrl = 'https://api.nuget.org/v3-flatcontainer/microsoft.netframework.referenceassemblies.net472/1.0.3/microsoft.netframework.referenceassemblies.net472.1.0.3.nupkg'
         $archivePath = Join-Path $CacheRoot 'microsoft.netframework.referenceassemblies.net472.1.0.3.zip'
         Write-Host 'Downloading Microsoft .NET Framework 4.7.2 reference assemblies 1.0.3 from NuGet.'
@@ -63,7 +65,6 @@ try {
         $buildArguments = @(
             (Join-Path $repositoryRoot '4RTools.sln'),
             '/nologo',
-            '/restore',
             '/t:Rebuild',
             '/p:RestorePackagesConfig=true',
             "/p:Configuration=$buildConfiguration",
@@ -72,6 +73,7 @@ try {
             '/consoleloggerparameters:Summary;Verbosity=minimal',
             "/fileloggerparameters:LogFile=$buildLog;Verbosity=normal;Encoding=UTF-8"
         )
+        if (-not $Offline) { $buildArguments += '/restore' }
         if ($VanillaRelease) { $buildArguments += '/p:VanillaRelease=true' }
         & $MSBuildPath @buildArguments
         if ($LASTEXITCODE -ne 0) { throw "$buildConfiguration build failed. See $buildLog." }
@@ -90,16 +92,7 @@ try {
         }
         Copy-Item -LiteralPath (Join-Path $repositoryRoot 'LICENSE') -Destination $testOutput -Force
         $testLog = Join-Path $logDirectory ("tests-$buildConfiguration.log")
-        $testErrorPreference = $ErrorActionPreference
-        try {
-            # Windows PowerShell wraps native stderr in nonterminating error records.
-            # Negative tests may deliberately log an error; the runner's exit code is authoritative.
-            $ErrorActionPreference = 'Continue'
-            & $testExecutable 2>&1 | Tee-Object -FilePath $testLog
-            $testExitCode = $LASTEXITCODE
-        }
-        finally { $ErrorActionPreference = $testErrorPreference }
-        if ($testExitCode -ne 0) { throw "$buildConfiguration tests failed. See $testLog." }
+        & (Join-Path $PSScriptRoot 'test-isolated.ps1') -Executable $testExecutable -LogPath $testLog
     }
 }
 finally {

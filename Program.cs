@@ -17,6 +17,7 @@ namespace _4RTools
         [STAThread]
         static void Main(string[] args)
         {
+            if (args.Contains("--portable-smoke-test")) VanillaIsolatedTestDesktop.AssertCurrent();
             if (VanillaUpdater.TryHandleApplyCommand(args)) return;
             VanillaAppData.InitializeAndMigrateLegacy(AppDomain.CurrentDomain.BaseDirectory);
 
@@ -199,6 +200,7 @@ namespace _4RTools
                     var report = new
                     {
                         Success = true, Version = VanillaUpdater.CurrentVersionText, PointerBytes = IntPtr.Size,
+                        IsolatedDesktop = !liveCheck,
                         ObserverContext = ProcessObservationContext.Current.ToString(),
                         MainUi = "Container", OriginalFeatureForms = featureForms, PackagedOcr = true,
                         FeatureForms = originalForms,

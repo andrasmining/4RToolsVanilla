@@ -4,10 +4,9 @@ using System.Diagnostics;
 using System.IO;
 using System.IO.Compression;
 using System.Linq;
-using System.Net;
-using System.Net.Http;
 using System.Reflection;
 using System.Security.Cryptography;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using System.Windows.Forms;
@@ -28,8 +27,8 @@ namespace _4RTools.Model.Vanilla
     /// <summary>Verified GitHub-release updater. User data lives outside the install directory.</summary>
     public static class VanillaUpdater
     {
-        private const string LatestReleaseApi = "https://api.github.com/repos/andrasmining/4RTools/releases/latest";
-        private static readonly HttpClient Http = CreateClient();
+        public const string ReleasesUrl = VanillaPrivateReleaseClient.ReleasesUrl;
+        private static readonly VanillaPrivateReleaseClient Releases = VanillaPrivateReleaseClient.Create();
 
         public static Version CurrentVersion
         {
@@ -42,34 +41,31 @@ namespace _4RTools.Model.Vanilla
         public static string CurrentVersionText { get { return CurrentVersion.ToString(3); } }
         public static bool IsNewerVersion(Version candidate, Version current) { return candidate != null && current != null && candidate > current; }
 
-        private static HttpClient CreateClient()
-        {
-            ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
-            var client = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
-            client.DefaultRequestHeaders.UserAgent.ParseAdd("4RTools-Vanilla-Updater/" + CurrentVersionText);
-            client.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
-            // End-user update checks remain anonymous. The disposable GitHub Actions
-            // release gate may authenticate its real updater probe so a shared runner's
-            // anonymous API quota cannot make an otherwise valid release fail.
-            if (string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase))
-            {
-                string token = Environment.GetEnvironmentVariable("GH_TOKEN");
-                if (!string.IsNullOrWhiteSpace(token))
-                    client.DefaultRequestHeaders.TryAddWithoutValidation("Authorization", "Bearer " + token.Trim());
-            }
-            return client;
-        }
-
         public static async Task<VanillaUpdateInfo> CheckAsync()
         {
-            string json = await Http.GetStringAsync(LatestReleaseApi).ConfigureAwait(false);
+            var latest = await ReadLatestReleaseAsync().ConfigureAwait(false);
+            return IsNewerVersion(latest.Version, CurrentVersion) ? latest : null;
+        }
+
+        // Also used by the headless published-release probe to verify an equal-version
+        // release through the identical authenticated discovery and staging path.
+        public static async Task<VanillaUpdateInfo> ReadLatestReleaseAsync()
+        {
+            return ParseRelease(await Releases.ReadLatestAsync().ConfigureAwait(false));
+        }
+
+        internal static VanillaUpdateInfo ParseRelease(string json)
+        {
             var root = JObject.Parse(json);
+            if ((bool?)root["draft"] != false || (bool?)root["prerelease"] != false)
+                throw new InvalidDataException("Private updater requires a published stable release.");
             string tag = (string)root["tag_name"];
             if (string.IsNullOrWhiteSpace(tag)) throw new InvalidDataException("GitHub returned a release without a tag.");
             Version version;
             if (!Version.TryParse(tag.Trim().TrimStart('v', 'V'), out version)) throw new InvalidDataException("Unsupported release tag: " + tag);
+            if (version.Revision >= 0 || version.Build < 0 || !System.Text.RegularExpressions.Regex.IsMatch(tag, "^[vV]?[0-9]+\\.[0-9]+\\.[0-9]+$"))
+                throw new InvalidDataException("Release tag must contain three version components.");
             version = new Version(version.Major, version.Minor, Math.Max(0, version.Build));
-            if (!IsNewerVersion(version, CurrentVersion)) return null;
 
             string zipName = "4RTools-Vanilla-v" + version.ToString(3) + "-portable.zip";
             var assets = root["assets"] as JArray;
@@ -80,7 +76,7 @@ namespace _4RTools.Model.Vanilla
             {
                 Version = version,
                 TagName = tag,
-                ReleaseUrl = (string)root["html_url"],
+                ReleaseUrl = ReleasesUrl + "/tag/" + Uri.EscapeDataString(tag),
                 ZipUrl = zipUrl,
                 ChecksumUrl = checksumUrl,
                 ZipName = zipName
@@ -89,25 +85,24 @@ namespace _4RTools.Model.Vanilla
 
         private static string AssetUrl(JArray assets, string name)
         {
-            foreach (var asset in assets.OfType<JObject>())
-                if (string.Equals((string)asset["name"], name, StringComparison.OrdinalIgnoreCase))
-                {
-                    string url = (string)asset["browser_download_url"];
-                    if (!string.IsNullOrWhiteSpace(url)) return url;
-                }
-            throw new InvalidDataException("Release asset is missing: " + name);
+            var matches = assets.OfType<JObject>().Where(a => string.Equals((string)a["name"], name, StringComparison.Ordinal)).ToArray();
+            if (matches.Length != 1 || (string)matches[0]["state"] != "uploaded")
+                throw new InvalidDataException("Release asset is missing, duplicated, or unfinished: " + name);
+            return VanillaPrivateReleaseClient.AssetUrl((long?)matches[0]["id"] ?? 0);
         }
 
         public static async Task<string> DownloadAndStageAsync(VanillaUpdateInfo info)
         {
             if (info == null) throw new ArgumentNullException(nameof(info));
+            if (info.Version == null || info.ZipName != "4RTools-Vanilla-v" + info.Version.ToString(3) + "-portable.zip")
+                throw new InvalidDataException("Update package name does not match its version.");
             VanillaAppData.InitializeAndMigrateLegacy(AppDomain.CurrentDomain.BaseDirectory);
             string stage = Path.Combine(VanillaAppData.UpdatesDirectory, "v" + info.Version.ToString(3) + "-" + Guid.NewGuid().ToString("N"));
             Directory.CreateDirectory(stage);
             try
             {
-                byte[] zip = await Http.GetByteArrayAsync(info.ZipUrl).ConfigureAwait(false);
-                string checksumText = await Http.GetStringAsync(info.ChecksumUrl).ConfigureAwait(false);
+                byte[] zip = await Releases.ReadAssetAsync(info.ZipUrl, 256 * 1024 * 1024).ConfigureAwait(false);
+                string checksumText = Encoding.UTF8.GetString(await Releases.ReadAssetAsync(info.ChecksumUrl, 16384).ConfigureAwait(false));
                 string expected = checksumText.Trim().Split(new[] { ' ', '\t', '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
                 if (string.IsNullOrWhiteSpace(expected) || expected.Length != 64) throw new InvalidDataException("Release checksum is malformed.");
                 string actual = Sha256(zip);
@@ -221,19 +216,35 @@ namespace _4RTools.Model.Vanilla
             throw new IOException("Could not replace " + destination + ".", last);
         }
 
-        private static void SafeExtract(string zipPath, string destination)
+        internal static void SafeExtract(string zipPath, string destination)
         {
             string root = Path.GetFullPath(destination).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
             using (var archive = ZipFile.OpenRead(zipPath))
             {
+                const long maximumExpandedBytes = 512L * 1024 * 1024;
+                if (archive.Entries.Count > 10000) throw new InvalidDataException("Update ZIP contains too many entries.");
+                long total = 0;
                 foreach (var entry in archive.Entries)
                 {
+                    if (Path.IsPathRooted(entry.FullName) || entry.FullName.Contains(":")) throw new InvalidDataException("Update ZIP contains an unsafe path.");
+                    if (entry.Length < 0 || entry.Length > maximumExpandedBytes - total) throw new InvalidDataException("Expanded update exceeds the supported size.");
+                    total += entry.Length;
                     string path = Path.GetFullPath(Path.Combine(destination, entry.FullName.Replace('/', Path.DirectorySeparatorChar)));
                     if (!path.StartsWith(root, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Update ZIP contains an unsafe path.");
                     if (string.IsNullOrEmpty(entry.Name)) { Directory.CreateDirectory(path); continue; }
                     Directory.CreateDirectory(Path.GetDirectoryName(path));
                     using (var input = entry.Open())
-                    using (var output = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None)) input.CopyTo(output);
+                    using (var output = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                    {
+                        var buffer = new byte[81920];
+                        long written = 0; int count;
+                        while ((count = input.Read(buffer, 0, buffer.Length)) != 0)
+                        {
+                            if (written + count > entry.Length) throw new InvalidDataException("Update ZIP entry exceeds its declared size.");
+                            output.Write(buffer, 0, count); written += count;
+                        }
+                        if (written != entry.Length) throw new InvalidDataException("Update ZIP entry is incomplete.");
+                    }
                 }
             }
         }

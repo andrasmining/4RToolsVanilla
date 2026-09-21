@@ -279,7 +279,8 @@ namespace _4RTools.Forms
             var buttons = new FlowLayoutPanel { AutoSize = true, WrapContents = true };
             AddIntegratedButton(buttons, "OPEN DATA FOLDER", OpenDataFolder);
             AddIntegratedButton(buttons, "CHECK FOR UPDATES", () => CheckForUpdates(false));
-            AddIntegratedButton(buttons, "OPEN GITHUB RELEASES", () => Process.Start("https://github.com/andrasmining/4RTools/releases"));
+            AddIntegratedButton(buttons, "UPDATE ACCESS", () => { using (var dialog = new VanillaUpdateAccessDialog()) dialog.ShowDialog(this); });
+            AddIntegratedButton(buttons, "OPEN GITHUB RELEASES", () => Process.Start(VanillaUpdater.ReleasesUrl));
             panel.Controls.Add(buttons);
             panel.Controls.Add(new Label
             {

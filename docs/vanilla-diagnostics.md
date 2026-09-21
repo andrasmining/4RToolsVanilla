@@ -288,6 +288,6 @@ Vanilla screenshots. The available user captures do not expose the unobscured
 fifteen-slot screen, so its actual card styling and slot numbering remain
 unverified. Unsupported layouts, unreadable text, ambiguous highlights and unknown
 focus stop selection safely; there is no promise of recognition at arbitrary blur
-or with every future skin. Windows CI also runs the packaged OCR engine against a
+or with every future skin. Local package validation runs the packaged OCR engine against a
 generated label from the extracted portable ZIP. It does not interact with a game
 or install an update on the user's PC/VPS.

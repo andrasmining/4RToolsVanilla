@@ -290,7 +290,7 @@ namespace Vanilla.Diagnostics.Tests
 
         private static void SaveFixture(Bitmap image, string name)
         {
-            if (!string.Equals(Environment.GetEnvironmentVariable("GITHUB_ACTIONS"), "true", StringComparison.OrdinalIgnoreCase)) return;
+            if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("FOURRTOOLS_ISOLATED_DESKTOP"))) return;
             string directory = Path.Combine(Environment.CurrentDirectory, "dist", "recognition");
             Directory.CreateDirectory(directory);
             image.Save(Path.Combine(directory, name + ".png"), ImageFormat.Png);

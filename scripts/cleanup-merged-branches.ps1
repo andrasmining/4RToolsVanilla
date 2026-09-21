@@ -4,14 +4,16 @@ param([switch] $Apply)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-if ($env:GITHUB_REF_NAME -ne 'main' -or $env:GITHUB_REPOSITORY -ne 'andrasmining/4RTools') {
-    throw 'Branch cleanup is restricted to the production main checkout of andrasmining/4RTools.'
-}
+
 $repositoryRoot = Split-Path -Parent $PSScriptRoot
 Push-Location $repositoryRoot
 try {
+    $branchName = (& git branch --show-current).Trim()
+    if ($LASTEXITCODE -ne 0 -or $branchName -cne 'main') { throw 'Branch cleanup requires the private repository main checkout.' }
+    $sourceCommit = (& git rev-parse HEAD).Trim()
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve source commit.' }
     $origin = & git remote get-url origin
-    if ($LASTEXITCODE -ne 0 -or $origin.TrimEnd('/') -notmatch '^https://github\.com/andrasmining/4RTools(?:\.git)?$') {
+    if ($LASTEXITCODE -ne 0 -or $origin.TrimEnd('/') -notmatch '^https://github\.com/andrasmining/4RToolsVanilla(?:\.git)?$') {
         throw 'Unexpected origin; no branch deletion attempted.'
     }
     & gh auth setup-git --hostname github.com
@@ -20,7 +22,7 @@ try {
     if ($LASTEXITCODE -ne 0) { throw 'Remote branch refresh failed.' }
     $main = (& git rev-parse refs/remotes/origin/main).Trim()
     if ($LASTEXITCODE -ne 0) { throw 'Remote main could not be resolved.' }
-    & git merge-base --is-ancestor $env:GITHUB_SHA $main
+    & git merge-base --is-ancestor $sourceCommit $main
     if ($LASTEXITCODE -ne 0) { throw 'The verified release commit is no longer on remote main.' }
 
     $removed = @()
@@ -58,7 +60,7 @@ try {
     New-Item -ItemType Directory -Path dist/published -Force | Out-Null
     $reportName = if ($Apply) { 'branch-cleanup.json' } else { 'branch-cleanup-plan.json' }
     [ordered]@{
-        sourceCommit = $env:GITHUB_SHA
+        sourceCommit = $sourceCommit
         remoteMain = $main
         applied = [bool]$Apply
         mergedBranches = @($eligible)

@@ -1,43 +1,63 @@
-# 4RTools Vanilla 0.6.67
+# 4RTools Vanilla 0.6.68
 
-## Recover a stalled launcher update without bypassing the launcher
+## Private repository and local releases
 
-The launcher can remain on its patch progress screen without a GAME START button while an existing Vanilla client still has the installation open. A frozen screen suggests a blocked update; it does not independently prove a file lock.
+Development has moved to **andrasmining/4RToolsVanilla**, preserving Git history,
+tags and historical release assets. GitHub Actions is disabled. The local
+`scripts/release-local.ps1` command builds, tests, renders mock layouts, packages
+and optionally publishes directly to the private GitHub release.
 
-4RTools now recognizes the launcher's thin yellow progress bar and status area as an update state. Recovery requires the same verified launcher window/process to show no GAME START and no visible progress/status change for **60 continuous seconds**. Missing Start alone, unknown/blank/failed captures, capture gaps, changed windows/processes and normal visible update progress do not authorize closing clients.
+The portable ZIP bundles local OCR engines, English models, native dependencies
+and required licenses. End-user PCs need Windows and .NET Framework 4.7.2 or later
+4.x; updates download prebuilt packages without compiling the repository.
 
-Once a fresh confirmation and two matching process-identity snapshots establish the recovery conditions, the current startup/recovery operation retains its global lease and:
+## Private updates
 
-1. closes the same-installation launchers, including leftover patchers, so they cannot spawn a game during shutdown;
-2. closes both verified Vanilla game clients from that installation (or the one remaining client), confirming every exit;
-3. checks that no game/launcher process remains or appeared in that installation;
-4. starts the configured **launcher again**, lets patching finish, and uses the verified GAME START path;
-5. restores enabled characters sequentially through login, verified Autobattle movement and minimization.
+CHECK FOR UPDATES authenticates private release metadata and asset downloads.
+UPDATE ACCESS on Data & updates accepts a repository read token protected with
+Windows DPAPI for the current user. Environment and existing GitHub CLI
+credentials are also supported. Tokens stay out of logs and packages and are
+never forwarded to download CDNs. ZIP checksums, payload manifests and executable
+versions remain mandatory before installation.
 
-Cold startup revisits earlier characters closed by the update reset before enabling continuous supervision. Ordinary disconnect and movement-stall recovery still leave healthy siblings untouched. Disabled profiles and existing Cart/manual/completed-farming holds are preserved.
+**One-time migration:** the public v0.6.67 updater points to the old repository.
+Extract this private portable ZIP and use its executable once; compatible
+settings remain under the same per-user data folder. Later releases use the
+private updater. Offline PCs can receive the complete ZIP from an authorized
+online PC. Publishing or checking GitHub requires connectivity.
 
-## No direct-game fallback
+## Verified selections
 
-Vanilla startup must use **Vanilla Launcher.exe** or **patcher.exe**. A saved game-executable path may resolve to an adjacent launcher. Without a launcher, startup reports a configuration error rather than directly launching Vanilla MMO.exe and bypassing updates.
+- Offer Global, Manila, Singapore, Tokyo, Hong Kong, Los Angeles, Australia and
+  UAE while preserving the original four saved numeric identities. Recognize the
+  configured name and confirm its highlight in two fresh captures before Enter.
+- Recognize **Vanilla MMO** in the server dialog. Status text such as Crowded,
+  list order and guessed dialog percentages cannot select a server.
+- Confirm credential-field focus, verify the exact username, and check repeated
+  password masks before submission. Credential images and passwords are not
+  logged or sent to an OCR service.
+- Share the character selector across automatic and TESTS paths. Require a
+  recognized screen, selected-slot evidence, verified keyboard transitions and
+  the final target before Enter. Each input is bound to fresh window, focus and
+  geometry evidence; stale captures cannot authorize an action.
 
-## Ownership and bounded recovery
+## Validation and limits
 
-Process identity uses one limited-query Windows handle for the executable path and creation time, with no game-memory access and no alternate access after denial. Shutdown reuses the existing creation-time-pinned graceful-close/termination protocol. Another installation is not a reset target; unverified identities fail closed.
+Both local Debug/Release regression suites passed, covering multi-scale and softened
+synthetic recognition, credential and focus failures, all initial/target
+character-slot combinations, private-updater authentication and download guards,
+relocated package OCR/smoke checks, test-owned native processes and the mock UI
+layout matrix. All 14 private-updater tests, four native process cases and 27 mock
+UI cases passed. Rendering uses a separate non-input desktop that is never shown.
+The seven existing local build warnings are three framework facade version
+conflicts and four unassigned test-field warnings; no new warnings were added.
 
-One launch invocation can perform at most one whole-installation update reset. A **ten-minute supervisor cooldown** prevents repeated client shutdowns across retries. Visible changing update progress may extend the normal launch wait, subject to a **ten-minute hard deadline**.
+No live Vanilla/Gepard/RDP validation, client observation or gameplay input was
+performed. The supplied screenshots do not expose the unobscured fifteen-slot
+screen, so its actual card styling and row-major numbering remain unverified.
+Unknown layouts, unreadable text and ambiguous selection/focus stop safely.
+Arbitrary blur and future skins are not guaranteed. Release verification does
+not install the application on the user's PC or VPS.
 
-STOP, settings/generation changes, runtime/PID/session replacement and competing recovery ownership invalidate pending work. Automated Process.Start itself now runs under the supervisor ownership lock: cancellation cannot slip between the last check and starting the replacement launcher.
-
-## Validation
-
-The feature implementation and the final launcher-start ownership guard passed the complete Windows Debug and Release regression suites, Release package/smoke checks, native test-owned process lifecycle checks and all 25 mock-data UI cases before versioning.
-
-New regressions cover progress-screen detection at six image scales, blank/ready/changing screens, continuous stall timing and observation gaps, PID/HWND/creation-time changes, one/two-client close ordering, leftover launchers, other-installation and unknown-identity rejection, process replacement during preflight/shutdown, STOP, competing ownership, cooldown and cancellation at the actual launcher-start boundary. Native inert-child tests additionally verify limited-query path/creation-time metadata.
-
-The detector's progress-bar/footer predicates were also checked offline against the provided launcher screenshot. This is not a live Vanilla/Gepard/RDP patching test. Actual live update recovery remains unverified on the user's PC.
-
-## Separate character-slot issue remains open
-
-This release does **not** claim to fix the newly reported wrong-slot/Character Creation issue. The current keyboard selection routine still assumes a clamped grid instead of verifying the selected slot. The supplied screenshots show Character Creation over the selection screen, so they do not expose the actual 1–15 slot layout and selection marker. An unobscured character-selection capture is required to implement and validate a detected-slot replacement without inventing coordinates or UI state.
-
-All Cart/Mail, HP safety, drag timing and log-rotation changes from v0.6.66 are retained.
+All launcher recovery, Cart/Mail, HP safety, movement recovery, persistence and
+log-rotation behavior from v0.6.67 is retained.
