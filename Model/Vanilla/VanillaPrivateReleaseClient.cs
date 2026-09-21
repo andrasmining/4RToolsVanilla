@@ -9,7 +9,7 @@ using System.Threading.Tasks;
 
 namespace _4RTools.Model.Vanilla
 {
-    /// <summary>Authenticated API access with explicit, credential-free CDN redirects.</summary>
+    /// <summary>Public-first release access with optional API authentication and credential-free CDN redirects.</summary>
     internal sealed class VanillaPrivateReleaseClient
     {
         internal const string Repository = "andrasmining/4RToolsVanilla";
@@ -18,16 +18,19 @@ namespace _4RTools.Model.Vanilla
         private const string AssetsPrefix = "https://api.github.com/repos/" + Repository + "/releases/assets/";
         private readonly HttpClient http;
         private readonly Func<Task<string>> credential;
+        private readonly bool publicFirst;
 
-        internal VanillaPrivateReleaseClient(HttpClient http, Func<Task<string>> credential)
-        { this.http = http; this.credential = credential; }
+        // Explicit private mode preserves the authenticated transport for compatibility.
+        // Normal application creation always uses public-first mode below.
+        internal VanillaPrivateReleaseClient(HttpClient http, Func<Task<string>> credential, bool publicFirst = false)
+        { this.http = http; this.credential = credential; this.publicFirst = publicFirst; }
 
         internal static VanillaPrivateReleaseClient Create()
         {
             ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
             var client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false })
             { Timeout = Timeout.InfiniteTimeSpan };
-            return new VanillaPrivateReleaseClient(client, VanillaUpdateAccess.GetTokenAsync);
+            return new VanillaPrivateReleaseClient(client, VanillaUpdateAccess.GetTokenAsync, publicFirst: true);
         }
 
         internal static string AssetUrl(long id)
@@ -69,13 +72,15 @@ namespace _4RTools.Model.Vanilla
         {
             Uri uri;
             if (!Uri.TryCreate(apiUrl, UriKind.Absolute, out uri) || !IsAssetApi(uri))
-                throw new InvalidDataException("Update asset must belong to the configured private repository API.");
+                throw new InvalidDataException("Update asset must belong to the configured repository API.");
             return ReadAsync(uri, true, maximumBytes);
         }
 
         private async Task<byte[]> ReadAsync(Uri uri, bool asset, int maximumBytes)
         {
-            string token = VanillaUpdateAccess.ValidateToken(await credential().ConfigureAwait(false));
+            // A stale/missing DPAPI/CLI credential must not block a public release.
+            string token = publicFirst ? null : VanillaUpdateAccess.ValidateToken(await credential().ConfigureAwait(false));
+            bool authenticationAttempted = !publicFirst;
             using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(asset ? 300 : 30)))
             {
                 try
@@ -86,7 +91,7 @@ namespace _4RTools.Model.Vanilla
                         {
                             request.Headers.UserAgent.ParseAdd("4RTools-Vanilla-Updater/" + VanillaUpdater.CurrentVersionText);
                             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(asset ? "application/octet-stream" : "application/vnd.github+json"));
-                            if (redirects == 0)
+                            if (redirects == 0 && token != null)
                             {
                                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                                 request.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
@@ -103,8 +108,18 @@ namespace _4RTools.Model.Vanilla
                                     uri = next;
                                     continue;
                                 }
+                                if ((status == 401 || status == 403 || status == 404) && redirects == 0 && !authenticationAttempted)
+                                {
+                                    authenticationAttempted = true;
+                                    try { token = VanillaUpdateAccess.ValidateToken(await credential().ConfigureAwait(false)); }
+                                    catch { throw new InvalidOperationException("Public GitHub update request failed (HTTP " + status
+                                        + "). The repository must have a published release; optional UPDATE ACCESS may help with API rate limits. The installed application was not changed."); }
+                                    redirects--; // One authenticated retry of the original API request, never a CDN.
+                                    continue;
+                                }
                                 if (status == 401 || status == 403 || status == 404)
-                                    throw new InvalidOperationException("Private update access was refused (HTTP " + status + "). Check UPDATE ACCESS and Contents: Read permission for andrasmining/4RToolsVanilla; a published release must exist.");
+                                    throw new InvalidOperationException("GitHub update access was refused (HTTP " + status
+                                        + "). Check the published release or optional UPDATE ACCESS. The installed application was not changed.");
                                 if (status != 200) throw new InvalidOperationException("GitHub update request failed (HTTP " + status + "). Try again later.");
                                 if (response.Content.Headers.ContentLength > maximumBytes)
                                     throw new InvalidDataException("GitHub update response exceeds the supported size.");
