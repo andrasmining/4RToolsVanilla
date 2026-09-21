@@ -249,6 +249,22 @@ matching, unknown-message rejection, close/exit ordering and cancellation tests.
 
 ## Required validation
 
+### Confirmed server downtime (2026-09-21)
+
+The exact `Message` dialog `Server Closed.(1)` means server downtime. Confirm
+it with two fresh matching observations before entering outage recovery; a
+separate `Please wait...` dialog or an unknown popup is not sufficient evidence.
+During a confirmed outage, retry the ordinary verified launcher/login flow once
+every 15 minutes, without exponential growth or faster retries. Coordinate this
+interval across pending accounts so two clients do not probe the outage twice.
+Keep healthy siblings running and release input/recovery ownership while waiting.
+Only fresh verified recovery to the expected gameplay identity clears outage
+mode. Missing frames or a disappearing popup do not establish server availability.
+STOP and ownership/configuration changes cancel stale work. Keep next-check
+status and evidence in the normal recovery log. Do not probe the game protocol or
+bypass the launcher; generic failures outside confirmed downtime retain their
+existing exponential backoff.
+
 Test every meaningful change as far as available tooling permits. Appropriate
 checks include restore/build, full Release builds, unit/integration tests,
 syntax checks, configuration serialization, timers/cooldowns, state transitions,
