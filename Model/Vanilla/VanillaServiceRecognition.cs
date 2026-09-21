@@ -89,7 +89,6 @@ namespace _4RTools.Model.Vanilla
             var result = new Detection { Evidence = "no positively recognized Select Service form" };
             var pixels = new VanillaRecognitionPixels(bitmap);
             List<Rectangle> headers = FindHeaders(pixels);
-            var candidateTextAreas = new List<Rectangle>();
             if (trace != null) trace("Header candidates=" + headers.Count + ": " + string.Join("; ", headers));
             if (headers.Count > 16)
             { result.Evidence = "too many possible service forms; no input authorized"; return result; }
@@ -97,13 +96,19 @@ namespace _4RTools.Model.Vanilla
             {
                 Rectangle titleArea;
                 if (!TryTitleTextArea(pixels, header, out titleArea, trace)) continue;
-                candidateTextAreas.Add(titleArea);
                 VanillaTextLine[] title;
                 string ocrEvidence;
                 if (!VanillaTextRecognition.TryRead(bitmap, titleArea, true, out title, out ocrEvidence))
                 { result.Evidence = ocrEvidence; return result; }
                 if (trace != null) trace("Title header=" + header + "; crop=" + titleArea + "; " + DescribeLines(title));
-                if (!title.Any(IsServiceTitle)) continue;
+                if (!title.Any(IsServiceTitle))
+                {
+                    // A short native title is a separate recognition gate, not proof
+                    // that the requested proxy disappeared. Retry only its observed ink.
+                    VanillaTextLine[] accurateTitle;
+                    if (!VanillaTextRecognition.TryReadPixelPreservingLine(bitmap, titleArea,
+                        out accurateTitle, out ocrEvidence) || !accurateTitle.Any(IsServiceTitle)) continue;
+                }
 
                 // The title bar is detected anywhere on the captured client. This bounded
                 // region is for observation only; it does not manufacture a clickable row.
@@ -122,9 +127,38 @@ namespace _4RTools.Model.Vanilla
                     return result;
                 }
                 result.Dialog = new VanillaServiceDialog { Bounds = Rectangle.Union(header, body), Lines = lines,
-                    Pixels = pixels, CandidateTextAreas = candidateTextAreas,
+                    Pixels = pixels, CandidateTextAreas = FindBodyTextAreas(pixels, body),
                     Evidence = "Select Service title recognized; observed text lines=" + lines.Length };
                 result.Evidence = result.Dialog.Evidence;
+            }
+            return result;
+        }
+
+        internal static List<Rectangle> FindBodyTextAreas(VanillaRecognitionPixels pixels, Rectangle body)
+        {
+            // Recover lines sparse OCR omitted without assuming the number/order of
+            // services. Only bounded, actually observed neutral ink supplies crops.
+            var result = new List<Rectangle>();
+            int top = -1, left = body.Right, right = body.Left, lastInk = -1;
+            for (int y = body.Top; y <= body.Bottom; y++)
+            {
+                int count = 0, first = body.Right, last = body.Left;
+                if (y < body.Bottom)
+                    for (int x = body.Left + 2; x < body.Right - 2; x++)
+                        if (pixels.NeutralInk(x, y)) { count++; first = Math.Min(first, x); last = x; }
+                bool ink = count >= 3 && count < body.Width * .70;
+                if (ink)
+                {
+                    if (top < 0) top = y;
+                    left = Math.Min(left, first); right = Math.Max(right, last); lastInk = y;
+                }
+                if (top < 0 || (y < body.Bottom && y - lastInk <= 1)) continue;
+                int height = lastInk - top + 1;
+                if (height >= 4 && height <= 70 && right - left >= 20)
+                    result.Add(Rectangle.Intersect(body, Rectangle.Inflate(
+                        Rectangle.FromLTRB(left, top, right + 1, lastInk + 1), 2, 2)));
+                top = -1; left = body.Right; right = body.Left; lastInk = -1;
+                if (result.Count > 20) return new List<Rectangle>();
             }
             return result;
         }
@@ -208,10 +242,11 @@ namespace _4RTools.Model.Vanilla
                         }
                 }
                 var component = new Rectangle(header.Left + left, header.Top + top, right - left + 1, bottom - top + 1);
-                // Resampling breaks borders into fragments, so row/column averages are
-                // insufficient. Exclude connected edge fragments and long frame rules.
-                // All retained glyph bounds must be inside the observed title surface.
-                if (count < 2 || left <= 1 || top <= 1 || right >= header.Width - 2 || bottom >= header.Height - 2
+                // A color-derived blue band is NOT a padded text rectangle. Real
+                // Select Service glyphs touch its top/bottom at low settings (the
+                // supplied 0.6.69 capture). Filter frame shapes, not edge proximity.
+                // Retained glyphs still have to pass exact title recognition.
+                if (count < 2
                     || (component.Height >= header.Height * .75 && component.Height >= component.Width * 3)
                     || (component.Width >= header.Width * .15 && component.Width >= component.Height * 8)) continue;
                 kept.Add(component);
@@ -314,8 +349,6 @@ namespace _4RTools.Model.Vanilla
             int left = anchor, right = anchor;
             while (left > dialog.Bounds.Left && pixels.Blue(left - 1, centerY)) left--;
             while (right + 1 < dialog.Bounds.Right && pixels.Blue(right + 1, centerY)) right++;
-            // Text interrupts horizontal runs, so the clear tail must extend past the
-            // actual recognized label and form a tall-enough vertical background strip.
             if (right - anchor < Math.Max(3, text.Height / 3)) return false;
             int top = centerY, bottom = centerY;
             while (top > dialog.Bounds.Top && pixels.Blue(anchor, top - 1)) top--;
@@ -335,8 +368,6 @@ namespace _4RTools.Model.Vanilla
                 AddServerMatch(dialog, line, matches);
             if (matches.Count == 0)
             {
-                // Use the accurate model only on observed text or selected-strip ink.
-                // This includes tiny text sparse OCR omitted, without inventing a row.
                 Rectangle[] areas = ObservedTextAreas(dialog);
                 foreach (Rectangle area in areas)
                 {
@@ -357,8 +388,7 @@ namespace _4RTools.Model.Vanilla
 
         private static void AddServerMatch(VanillaServiceDialog dialog, VanillaTextLine line, List<VanillaServiceRow> matches)
         {
-            // Status is optional and semantically distinct from the server identity.
-            // Never accept a substring such as Other Vanilla MMO or Vanilla MMO Test.
+            // Status is distinct from identity; never accept an arbitrary substring.
             if (line.Confidence < 65 || !Regex.IsMatch(Normalize(line.Text),
                 @"^(?:(?:Crowded|Normal|Busy)\s+)?Vanilla\s+MMO$", RegexOptions.IgnoreCase)) return;
             VanillaTextWord[] identity = line.Words.Skip(Math.Max(0, line.Words.Length - 2)).ToArray();
