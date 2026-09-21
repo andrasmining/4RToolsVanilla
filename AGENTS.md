@@ -24,40 +24,39 @@ required and cannot be obtained otherwise. Request one simple, specific action
 at a time, such as "Please move exactly one cell to the right." Then continue
 the technical investigation yourself.
 
-## Private repository and local-only execution
+## Repository, Windows CI, and release execution
 
-The only active development repository is the private
-`andrasmining/4RToolsVanilla`, with production branch `main`. The former public
+The only active development repository is the public
+`andrasmining/4RToolsVanilla`, with production branch `main`. The former
 `andrasmining/4RTools` repository is retired and must not receive fixes,
 features, releases, or automation changes unless the user explicitly asks.
 
-GitHub Actions is prohibited for this repository. Never add, enable, dispatch,
-rerun, depend on, or use hosted GitHub workflows/runners/artifacts for builds,
-tests, packaging, UI validation, publication, or recovery. Remove obsolete
-temporary workflow infrastructure encountered during normal cleanup when safe.
+GitHub Actions is allowed and is a normal engineering tool for this repository.
+Use Windows hosted runners for reproducible restore/build/test/package/release
+validation when useful, especially when the current chat lacks direct access to
+the user's Windows checkout. Workflows must be focused, bounded, cancellable,
+non-destructive, and free of secrets in logs/artifacts. Do not add CI merely for
+ceremony; use it to obtain real Windows evidence and keep stable reusable
+workflows rather than one-off transport hacks.
 
-All engineering execution must happen from the local Windows checkout: repository
-inspection, editing, restore, Debug/Release builds, unit/regression/integration
-tests, native process tests, UI/mock rendering, packaging, smoke tests, release
-notes, checksums, updater verification, and live Vanilla checks when available.
-Do not substitute CI for a missing local validation step. If local Windows
-execution is temporarily unavailable, exhaust practical local alternatives and
-state the exact blocker; never fall back to GitHub Actions.
+Local Windows execution remains preferred for live Vanilla/Gepard validation,
+desktop/input behavior, updater installation tests, and any check that hosted
+runners cannot reproduce. CI evidence is not live-game evidence. When both are
+available, use local validation plus Windows CI for stronger confidence.
 
-GitHub is a private source/publication endpoint only. Use authenticated local Git
-and release tooling to fetch/pull, push verified commits/tags, publish private
-GitHub Releases, and upload release assets. Never put repository credentials,
-tokens, passwords, cookies, or private URLs containing credentials in source,
-commits, release packages, logs, screenshots, or command-line arguments.
+GitHub is the source/publication endpoint. Use Git/GitHub tooling to fetch,
+reconcile, push verified commits/tags, and publish public stable GitHub Releases
+and assets. Never put credentials, tokens, passwords, cookies, or authenticated
+URLs in source, commits, logs, screenshots, packages, workflow output, or
+command-line arguments.
 
-For every implementation task, begin from a clean/reconciled local checkout and
-finish with the tested result on remote `main`. A release-required task is not
-done until the exact clean main commit has been built locally, its portable
-package/checksum/source identity has been verified locally, the private stable
-release and assets are published from the local machine, authenticated
-`releases/latest` and updater discovery are verified, and temporary branches or
-infrastructure are removed. A local artifact alone is not a substitute for the
-private release/update path.
+For every implementation task, reconcile current `main`, implement and test the
+change, integrate it to remote `main`, verify the pushed SHA, and clean up task
+branches/temp infrastructure. For release-oriented work, completion includes
+building the exact clean main commit on Windows, running the strongest applicable
+tests, verifying the portable package/checksum/source identity, publishing the
+stable release/tag/assets, and verifying `releases/latest` plus the in-app
+updater path. A local ZIP or green compile alone is not completion.
 
 ## Inspect before changing anything
 
@@ -216,7 +215,7 @@ Never fabricate test, deployment, release, or in-game success.
 When asked to update project instructions first, provide the copyable block
 within the requested character limit before implementation, then persist the
 enduring policy here without deleting unrelated valid rules. This automation
-repository is the private `andrasmining/4RToolsVanilla`; the former public
+repository is the public `andrasmining/4RToolsVanilla`; the former
 `andrasmining/4RTools` and the archived `andrasmining/cinder-index` are different
 or retired projects and must not receive Vanilla development changes.
 
@@ -529,11 +528,11 @@ selection. Automatic and TESTS paths must share the same guarded selector.
 Character navigation requires positive screen and selected-slot evidence before
 input and feedback after each key; an assumed keyboard clamp is not evidence.
 
-Build, test, package and publish from the local Windows repository. GitHub Actions
-is prohibited for this private repository; keep it disabled and do not add, dispatch,
-rerun, or depend on workflows.
-Background-only development permits local compilers, offline tests and hidden,
-isolated mock rendering/package probes. Do not show application windows, observelive clients, send desktop input or disturb the user's active applications.
+Build, test, package and publish from the local Windows repository when available,
+and use Windows GitHub Actions for reproducible restore/build/test/package/release
+validation when useful. Hosted Windows validation does not replace live Vanilla
+testing. Background-only development permits local compilers, Windows CI, offline
+tests and hidden, isolated mock rendering/package probes. Do not show application windows, observelive clients, send desktop input or disturb the user's active applications.
 This replaces the former Actions-only validation policy without waiving tests.
 
 Never select a Vanilla character or GAME START by fixed/normalized grid coordinates.
