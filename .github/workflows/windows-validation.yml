@@ -1,0 +1,96 @@
+name: Windows validation
+
+on:
+  push:
+    branches: [main, 'chatgpt/**']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-validation-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: windows-2022
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Record source provenance
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory dist/validation -Force | Out-Null
+          git rev-parse HEAD | Out-File dist/validation/source-commit.txt -Encoding utf8
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot resolve source identity.' }
+          git bundle create dist/validation/source.bundle HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Cannot preserve the exact build source.' }
+          $text = Get-Content Properties/AssemblyInfo.cs -Raw
+          $match = [regex]::Match($text, 'AssemblyFileVersion\("([0-9]+\.[0-9]+\.[0-9]+)\.0"\)')
+          if (-not $match.Success) { throw 'Invalid executable version.' }
+          "VERSION=$($match.Groups[1].Value)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Validate shipped build profiles
+        shell: powershell
+        run: '& .\scripts\validate-vanilla-build-profiles.ps1'
+
+      - name: Debug and Release builds with full isolated regressions
+        shell: powershell
+        run: '& .\scripts\build.ps1 -Configuration Debug,Release -VanillaRelease'
+
+      - name: Package and smoke-test the exact Release build
+        shell: powershell
+        run: '& .\scripts\build-release.ps1 -Version $env:VERSION -SkipBuild'
+
+      - name: Native test-owned process lifecycle checks
+        shell: powershell
+        run: '& .\scripts\test-recovery-native.ps1'
+
+      - name: Isolated mock UI rendering and geometry checks
+        shell: powershell
+        run: '& .\scripts\test-ui-layout.ps1'
+
+      - name: Collect bounded validation evidence
+        if: always()
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $cache = Join-Path $env:LOCALAPPDATA '4RTools-Engineering'
+          foreach ($folder in @('builds', 'portable-tests')) {
+            $source = Join-Path $cache $folder
+            if (Test-Path -LiteralPath $source) { Copy-Item -LiteralPath $source -Destination dist/validation -Recurse -Force }
+          }
+          if (Test-Path dist/native-recovery.log) { Copy-Item dist/native-recovery.log dist/validation }
+          git status --porcelain | Out-File dist/validation/working-tree-after-tests.txt -Encoding utf8
+
+      - name: Upload diagnostics and exact source evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-validation-${{ github.sha }}
+          path: |
+            dist/validation/**
+            dist/ui-layout/*.png
+            dist/ui-layout/*.txt
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload validated portable package
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: portable-${{ github.sha }}
+          path: |
+            dist/4RTools-Vanilla-v${{ env.VERSION }}-portable.zip
+            dist/4RTools-Vanilla-v${{ env.VERSION }}-portable.zip.sha256
+          if-no-files-found: error
+          retention-days: 14
