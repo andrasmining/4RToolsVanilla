@@ -82,15 +82,16 @@ namespace Vanilla.Diagnostics.Tests
 
         private static void DetectSoftText()
         {
-            using (Bitmap image = ServiceImage(new Size(1280, 720), 1f, "Tahoma", Names, "Hong Kong", true))
+            foreach (VanillaProxyRoute selected in Enum.GetValues(typeof(VanillaProxyRoute)))
+            using (Bitmap image = ServiceImage(new Size(1280, 720), 1f, "Tahoma", Names, VanillaProxyPattern.NameForRoute(selected), true))
             {
                 VanillaProxyLayout layout;
                 VanillaServiceRow row;
                 string evidence;
                 Assert(VanillaProxyPattern.TryDetect(image, out layout, out evidence), "Softened list rejected: " + evidence);
                 Assert(layout.Services.Length == 8, "Every softened service name must be independently read: " + evidence);
-                Assert(layout.TryFind(VanillaProxyRoute.HongKong, out row) && row.IsHighlighted,
-                    "Softened Hong Kong must be recognized and positively selected: " + evidence);
+                Assert(layout.TryFind(selected, out row) && row.IsHighlighted,
+                    "Softened " + selected + " must be recognized and positively selected: " + evidence);
             }
         }
 
@@ -110,8 +111,9 @@ namespace Vanilla.Diagnostics.Tests
 
         private static void RejectAmbiguousNames()
         {
+            foreach (bool softened in new[] { false, true })
             using (Bitmap image = ServiceImage(new Size(1280, 720), 1f, "Tahoma",
-                new[] { "Global", "Tokyo Experimental", "Singapore", "Unknown", "Manda", "Manila Test" }, "Tokyo Experimental", false))
+                new[] { "Global", "Tokyo Experimental", "Singapore", "Unknown", "Manda", "Manila Test", "Australa", "Australia Test" }, "Tokyo Experimental", softened))
             {
                 VanillaProxyLayout layout;
                 VanillaServiceRow row;
@@ -119,6 +121,7 @@ namespace Vanilla.Diagnostics.Tests
                 bool detected = VanillaProxyPattern.TryDetect(image, out layout, out evidence);
                 Assert(!detected || !layout.TryFind(VanillaProxyRoute.Tokyo, out row), "Substring is not exact Tokyo identity.");
                 Assert(!detected || !layout.TryFind(VanillaProxyRoute.Manila, out row), "Unknown names/suffixes are not exact Manila identity.");
+                Assert(!detected || !layout.TryFind(VanillaProxyRoute.Australia, out row), "Unknown names/suffixes are not exact Australia identity.");
             }
             using (Bitmap image = ServiceImage(new Size(1280, 720), 1f, "Tahoma",
                 new[] { "Global", "Tokyo", "Tokyo", "Singapore" }, "Tokyo", false))

@@ -59,11 +59,22 @@ namespace _4RTools.Model.Vanilla
             if (area.Width > 1200 || area.Height > 80) return false;
             // Nearest-neighbor enlargement retains the original small glyph gaps.
             // Synthetic degraded service captures verified this fixed fourfold path.
-            return TryReadCore(bitmap, area, true, out lines, out evidence, true, true);
+            return TryReadCore(bitmap, area, true, out lines, out evidence, true, 4);
+        }
+
+        internal static bool TryReadCompactLine(Bitmap bitmap, Rectangle area,
+            out VanillaTextLine[] lines, out string evidence)
+        {
+            lines = new VanillaTextLine[0];
+            evidence = "compact OCR requires a bounded observed text line";
+            if (area.Width > 400 || area.Height > 60) return false;
+            // A fixed integral scale preserves the separate stems in small names such
+            // as Manila. Fractional bicubic enlargement can join those stems into 'd'.
+            return TryReadCore(bitmap, area, true, out lines, out evidence, false, 3);
         }
 
         private static bool TryReadCore(Bitmap bitmap, Rectangle area, bool singleLine,
-            out VanillaTextLine[] lines, out string evidence, bool accurate, bool pixelPreserving = false)
+            out VanillaTextLine[] lines, out string evidence, bool accurate, int pixelScale = 0)
         {
             lines = new VanillaTextLine[0];
             evidence = "OCR region is invalid";
@@ -79,7 +90,7 @@ namespace _4RTools.Model.Vanilla
                 // Small native UI text needs enlargement. Bound both dimensions and total
                 // pixels; a full-screen character scan remains bounded on a 4K desktop.
                 double scale = singleLine ? Math.Min(4, 60.0 / area.Height) : 3.0;
-                if (pixelPreserving) scale = 4;
+                if (pixelScale > 0) scale = pixelScale;
                 scale = Math.Min(scale, Math.Min(4096.0 / area.Width, 3072.0 / area.Height));
                 scale = Math.Min(scale, Math.Sqrt(8000000.0 / ((double)area.Width * area.Height)));
                 int width = Math.Max(3, (int)Math.Round(area.Width * scale));
@@ -91,7 +102,7 @@ namespace _4RTools.Model.Vanilla
                     using (var attributes = new ImageAttributes())
                     {
                         graphics.Clear(Color.White);
-                        graphics.InterpolationMode = pixelPreserving ? InterpolationMode.NearestNeighbor : InterpolationMode.HighQualityBicubic;
+                        graphics.InterpolationMode = pixelScale > 0 ? InterpolationMode.NearestNeighbor : InterpolationMode.HighQualityBicubic;
                         graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
                         // Grayscale removes colored selection/background fringing without
                         // fabricating or substituting any character in the recognized text.

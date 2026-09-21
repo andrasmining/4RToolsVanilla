@@ -122,6 +122,8 @@ namespace _4RTools.Model.Vanilla
                 foreach (VanillaTextLine line in lines) yield return line;
             if (VanillaTextRecognition.TryReadPixelPreservingLine(bitmap, area, out lines, out evidence))
                 foreach (VanillaTextLine line in lines) yield return line;
+            if (VanillaTextRecognition.TryReadCompactLine(bitmap, area, out lines, out evidence))
+                foreach (VanillaTextLine line in lines) yield return line;
         }
 
         internal static string DescribeSyntheticSuffixes(Bitmap bitmap, VanillaServiceDialog dialog)
