@@ -28,24 +28,26 @@ Compatible profiles and recovery settings survive updates. Passwords use Windows
 DPAPI and must be entered separately for each Windows user/machine. Packages
 contain no personal credentials, profiles or mutable user-data directories.
 
-**v0.6.72 and later resolve the public stable release and assets anonymously first.**
-A missing, expired or unreadable saved token cannot block successful public access.
-The normal public path uses the canonical `github.com/.../releases/latest` redirect and
-canonical release-download URLs, avoiding anonymous REST API rate-limit dependency.
-A bounded private-API fallback remains available through **Data & updates > UPDATE
-ACCESS**. Credentials are never forwarded to release-asset CDNs or included in logs.
+**v0.6.73 and later use the public stable release path only.** The current
+application does not expose UPDATE ACCESS and does not consult a saved GitHub
+credential. It resolves the canonical `github.com/.../releases/latest` redirect
+first and uses canonical public release-download URLs; an anonymous GitHub API
+request is only a bounded metadata fallback.
 
-The installed updater matters during migration: v0.6.68/v0.6.69 still require their
-previous valid update credential, even though this repository is now public. With
-that credential they can download the current public release from the same repository. Without it,
-use this complete portable ZIP once. v0.6.67 points at the retired repository and
-also needs the portable migration. After installing v0.6.71 or later, subsequent public updates need no token.
+The installed updater matters during migration: v0.6.68/v0.6.69 still require
+their previous valid update credential. With that credential they can download
+the current public release from this same repository. Without it, use a complete
+portable ZIP once. v0.6.67 points at the retired repository and also needs the
+portable migration. v0.6.72 already updates anonymously and can move directly to
+v0.6.73.
 
 CHECK FOR UPDATES verifies the ZIP checksum, complete payload manifest, executable
-version and repository assets. It stages before disturbing automation, then stops
-Temporary Actions and refuses installation while Cart/recovery owns input. Managed
-files are backed up, replacements verified, and ordinary copy/verification/early
-startup failure rolls back. Profiles remain outside the transaction. Backup and
+version and repository assets. After you accept an update, it downloads and stages
+immediately. Temporary Actions are stopped; if Cart/recovery is currently inside a
+serialized input step, the verified update remains pending until a safe quiescent
+point and then applies/restarts automatically without another click. Managed files
+are backed up, replacements verified, and ordinary copy/verification/early startup
+failure rolls back. Profiles remain outside the transaction. Backup and
 journal files are retained; this is **not** a power-loss-proof installer or a full
 application-health handshake. Offline use needs only a previously obtained ZIP.
 
@@ -156,8 +158,8 @@ the release script supports subsequent offline builds. Version must match
 `Properties/AssemblyInfo.cs`:
 
 ```powershell
-.\scripts\release-local.ps1 -Version 0.6.72 -Restore
-.\scripts\release-local.ps1 -Version 0.6.72 -Replace
+.\scripts\release-local.ps1 -Version 0.6.73 -Restore
+.\scripts\release-local.ps1 -Version 0.6.73 -Replace
 ```
 
 `-Publish` additionally requires authenticated GitHub CLI and exact clean remote

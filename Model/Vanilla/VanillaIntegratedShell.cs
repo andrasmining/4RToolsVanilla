@@ -279,13 +279,12 @@ namespace _4RTools.Forms
             var buttons = new FlowLayoutPanel { AutoSize = true, WrapContents = true };
             AddIntegratedButton(buttons, "OPEN DATA FOLDER", OpenDataFolder);
             AddIntegratedButton(buttons, "CHECK FOR UPDATES", () => CheckForUpdates(false));
-            AddIntegratedButton(buttons, "UPDATE ACCESS", () => { using (var dialog = new VanillaUpdateAccessDialog()) dialog.ShowDialog(this); });
             AddIntegratedButton(buttons, "OPEN GITHUB RELEASES", () => Process.Start(VanillaUpdater.ReleasesUrl));
             panel.Controls.Add(buttons);
             panel.Controls.Add(new Label
             {
                 AutoSize = true, MaximumSize = new Size(1100, 0), Margin = new Padding(3, 10, 3, 3),
-                Text = "Updates are checked at every normal startup. A newer verified GitHub Release is offered for download; its ZIP checksum and packaged SHA256SUMS manifest are verified before 4RTools restarts into the new version."
+                Text = "Updates are checked at every normal startup from the public GitHub Releases page. After you click Yes, the release is downloaded and verified immediately. If recovery or Cart currently owns input, the update waits for a safe point and then applies and restarts automatically; no second click is required."
             });
             vanillaAboutPage.Controls.Add(panel);
         }
@@ -324,16 +323,23 @@ namespace _4RTools.Forms
                 }
                 integratedUpdateStatus.Text = "Version " + VanillaUpdater.CurrentVersionText + " - update " + update.TagName + " available";
                 DialogResult answer = MessageBox.Show(this,
-                    "4RTools Vanilla " + update.Version.ToString(3) + " is available. Download the verified GitHub Release and restart now?\n\nYour profiles and recovery settings are stored outside the application folder and will be preserved.",
+                    "4RTools Vanilla " + update.Version.ToString(3) + " is available. Download the verified public GitHub Release and restart automatically?\n\nYour profiles and recovery settings are stored outside the application folder and will be preserved. If recovery or Cart is currently using input, the verified update will wait for a safe point and continue automatically.",
                     "4RTools Vanilla update", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
                 if (answer != DialogResult.Yes) return;
-                integratedUpdateStatus.Text = "Downloading and verifying " + update.TagName + "...";
+                integratedUpdateStatus.Text = "Downloading and verifying public release " + update.TagName + "...";
                 string payload = await VanillaUpdater.DownloadAndStageAsync(update);
                 // Staging does not interrupt gameplay. Stop temporary work only after the
                 // payload is verified, and never exit while Cart/recovery owns input.
                 integratedTemporaryActions?.StopForApplicationUpdate();
-                if (integratedReconnectSupervisor != null && !integratedReconnectSupervisor.TryPauseForApplicationUpdate())
-                    throw new InvalidOperationException("Update downloaded safely. Recovery/Cart is still active; retry Update after it completes. No files were replaced.");
+                if (integratedReconnectSupervisor != null)
+                {
+                    while (!integratedReconnectSupervisor.TryPauseForApplicationUpdate())
+                    {
+                        integratedUpdateStatus.Text = "Update verified. Waiting for active recovery/Cart input to finish...";
+                        await System.Threading.Tasks.Task.Delay(250);
+                        if (IsDisposed || Disposing) return;
+                    }
+                }
                 integratedUpdateStatus.Text = "Update verified. Restarting...";
                 VanillaUpdater.BeginApplyAndRestart(payload);
                 BeginInvoke((MethodInvoker)Application.Exit);

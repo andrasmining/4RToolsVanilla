@@ -65,12 +65,12 @@ namespace _4RTools.Model.Vanilla
 
             try
             {
-                return ParseRelease(await Releases.ReadLatestAsync().ConfigureAwait(false));
+                return ParseRelease(await Releases.ReadLatestAnonymousAsync().ConfigureAwait(false));
             }
             catch (Exception apiFailure)
             {
                 throw new InvalidOperationException(
-                    "GitHub release discovery failed through both the anonymous public release page and the API fallback. "
+                    "GitHub release discovery failed through both the anonymous public release page and the anonymous API fallback. "
                     + "The installed application was not changed.",
                     new AggregateException(publicFailure, apiFailure));
             }

@@ -39,10 +39,11 @@ non-destructive, and free of secrets in logs/artifacts. Do not add CI merely for
 ceremony; use it to obtain real Windows evidence and keep stable reusable
 workflows rather than one-off transport hacks.
 
-Local Windows execution remains preferred for live Vanilla/Gepard validation,
-desktop/input behavior, updater installation tests, and any check that hosted
-runners cannot reproduce. CI evidence is not live-game evidence. When both are
-available, use local validation plus Windows CI for stronger confidence.
+Windows GitHub Actions is the accepted release-completion validation environment
+for this project. Live Vanilla/Gepard/RDP execution is optional and is not a
+release blocker unless the user explicitly requests it for a specific task.
+Never describe hosted CI as live-game evidence; report it accurately as pipeline,
+synthetic, native test-process, mock-UI, packaging, or updater validation.
 
 GitHub is the source/publication endpoint. Use Git/GitHub tooling to fetch,
 reconcile, push verified commits/tags, and publish public stable GitHub Releases
@@ -302,7 +303,9 @@ existing exponential backoff.
 Test every meaningful change as far as available tooling permits. Appropriate
 checks include restore/build, full Release builds, unit/integration tests,
 syntax checks, configuration serialization, timers/cooldowns, state transitions,
-runtime diagnostics, live Vanilla validation, and portable-package launch tests.
+runtime diagnostics, native test-owned process checks, mock UI rendering, updater
+probes, and portable-package launch tests. Live Vanilla validation is optional
+unless explicitly requested.
 For documentation-only changes, review content and diff rather than claiming
 application behavior was tested.
 
@@ -656,28 +659,37 @@ may be folded into that configured row; user-configured rows must survive.
 Record screenshot provenance accurately; automated tests do not prove independent
 live relog/restart validation of a supplied address.
 
-## VPS update delivery is mandatory
+## Public GitHub update delivery is mandatory
 
-The user's VPS is updated through authenticated private GitHub releases built
-and published locally. End-user update installation must not require compiling
-the source tree. Portable ZIPs also support offline copying/installing; network
-access is required to publish to or download from GitHub.
-Every implementation task must finish with a tested private stable release,
-explicitly marked Latest, unless the user explicitly requests source-only work.
-A chat ZIP, branch, commit, PR or queued release is not an
-alternative deliverable. Do not stop at those intermediate states.
+The repository is public and public GitHub Releases are the normal distribution
+and in-app update path. Current application releases must not require a saved
+GitHub token, UPDATE ACCESS dialog, authenticated URL, compiler, source checkout,
+or GitHub CLI on the user's PC.
 
-Verify the authenticated releases/latest response and both expected portable ZIP and
-checksum assets. Exercise the application's real updater against the private
-endpoint, verify downloads and source identity, integrate all work
-into main and remove completed task branches. Diagnose and repair failures;
-replace unsuitable approaches instead of handing development back to the user.
-State a genuine unavoidable external blocker accurately only after exhausting
-practical authorized alternatives. Never claim publication or VPS installation
-without evidence; testing update discovery is not installing on the user's VPS.
-The old public v0.6.67 updater cannot discover the new private repository: the
-first private release requires a one-time portable upgrade. Never embed repository
-credentials in source, release packages, logs or command-line arguments.
+Resolve the stable version through the canonical public
+`https://github.com/andrasmining/4RToolsVanilla/releases/latest` path first and
+download only canonical public release assets from this repository. An anonymous
+GitHub API request may be used as a bounded fallback, but the current updater must
+not consult private credentials. Never fall back to the retired
+`andrasmining/4RTools` repository.
+
+When the user accepts an offered update, download and fully verify it immediately.
+If Temporary Actions, Cart, recovery, or another serialized input operation is
+currently active, keep the already-verified update pending and wait for a safe
+quiescent point. Once safe, pause supervision, apply the update, and restart
+automatically without requiring a second click. Do not interrupt an unsafe atomic
+input step merely to update. Failed replacement must leave the installed
+application runnable through the existing backup/rollback transaction.
+
+Legacy private-era v0.6.68/v0.6.69 clients may still require their historical
+credential for the one-time migration, and the release pipeline may test that
+legacy path. That compatibility does not authorize credential use in the current
+application.
+
+Every executable implementation task still finishes with a Windows-validated
+public stable release marked Latest. Verify the exact clean `main` source,
+portable ZIP/checksum/source identity, `releases/latest`, and the current public
+updater's discovery/download/staging path before declaring completion.
 
 ## Weight / Cart maintenance
 

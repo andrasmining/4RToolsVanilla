@@ -34,7 +34,7 @@ namespace _4RTools.Model.Vanilla
             ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
             var client = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false })
             { Timeout = Timeout.InfiniteTimeSpan };
-            return new VanillaPrivateReleaseClient(client, VanillaUpdateAccess.GetTokenAsync, publicFirst: true);
+            return new VanillaPrivateReleaseClient(client, () => Task.FromResult<string>(null), publicFirst: true);
         }
 
         internal static string AssetUrl(long id)
@@ -141,6 +141,11 @@ namespace _4RTools.Model.Vanilla
             return Encoding.UTF8.GetString(await ReadAsync(new Uri(LatestReleaseApi), false, 4 * 1024 * 1024, true).ConfigureAwait(false));
         }
 
+        internal async Task<string> ReadLatestAnonymousAsync()
+        {
+            return Encoding.UTF8.GetString(await ReadAsync(new Uri(LatestReleaseApi), false, 4 * 1024 * 1024, false).ConfigureAwait(false));
+        }
+
         internal Task<byte[]> ReadAssetAsync(string url, int maximumBytes)
         {
             Uri uri;
@@ -149,7 +154,7 @@ namespace _4RTools.Model.Vanilla
             if (IsPublicReleaseAsset(uri))
                 return ReadAsync(uri, true, maximumBytes, false);
             if (IsAssetApi(uri))
-                return ReadAsync(uri, true, maximumBytes, true);
+                return ReadAsync(uri, true, maximumBytes, !publicFirst);
             throw new InvalidDataException("Update asset must belong to the configured repository.");
         }
 
@@ -201,8 +206,8 @@ namespace _4RTools.Model.Vanilla
                                     continue;
                                 }
                                 if (status == 401 || status == 403 || status == 404)
-                                    throw new InvalidOperationException("GitHub update access was refused (HTTP " + status
-                                        + "). Check the published release or optional UPDATE ACCESS. The installed application was not changed.");
+                                    throw new InvalidOperationException((allowAuthentication ? "GitHub update access was refused" : "Public GitHub update access was refused")
+                                        + " (HTTP " + status + "). Check that the stable release is published. The installed application was not changed.");
                                 if (status != 200) throw new InvalidOperationException("GitHub update request failed (HTTP " + status + "). Try again later.");
                                 if (response.Content.Headers.ContentLength > maximumBytes)
                                     throw new InvalidDataException("GitHub update response exceeds the supported size.");

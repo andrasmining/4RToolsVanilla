@@ -19,6 +19,7 @@ namespace Vanilla.Diagnostics.Tests
         private const string Token = "test_update_token_not_a_credential";
         internal static int Run()
         {
+            Test("Public updater transport never resolves credentials", PublicAnonymousTransport);
             Test("Private release selects exact completed assets by API identity", ReleaseAssets);
             Test("Draft, prerelease, missing and duplicate assets are refused", InvalidReleases);
             Test("Private metadata is authenticated without Actions", Metadata);
@@ -33,7 +34,7 @@ namespace Vanilla.Diagnostics.Tests
             Test("Malformed credentials never reach HTTP", MalformedCredentials);
             Test("Saved update token is DPAPI encrypted and replaceable", SavedToken);
             Test("ZIP extraction refuses traversal, alternate streams and expansion bombs", ZipSafety);
-            Console.WriteLine("Private updater: {0} passed; {1} failed. Fake HTTP and isolated DPAPI storage only.", passed, failed);
+            Console.WriteLine("Updater transport: {0} passed; {1} failed. Fake HTTP and isolated DPAPI storage only.", passed, failed);
             return failed;
         }
 
@@ -71,6 +72,33 @@ namespace Vanilla.Diagnostics.Tests
             Throws<InvalidDataException>(() => VanillaUpdater.ParseRelease(invalidId.ToString()));
             foreach (string tag in new[] { "v0.6", "v0.6.68.0", "v0.6.68.1", "vv0.6.68", "v0.6.68-beta" })
             { var r = Release(); r["tag_name"] = tag; Throws<InvalidDataException>(() => VanillaUpdater.ParseRelease(r.ToString())); }
+        }
+
+        private static void PublicAnonymousTransport()
+        {
+            using (var h = new Harness((request, index) =>
+            {
+                Assert(index == 0 && request.RequestUri.AbsoluteUri == VanillaPrivateReleaseClient.LatestReleaseApi);
+                Assert(request.Headers.Authorization == null && !request.Headers.Contains("X-GitHub-Api-Version"));
+                Assert(request.Headers.Accept.Single().MediaType == "application/vnd.github+json");
+                return Ok(Encoding.UTF8.GetBytes(Release().ToString()));
+            }, publicFirst: true))
+            {
+                Assert(h.Client.ReadLatestAnonymousAsync().GetAwaiter().GetResult().Contains("v0.6.68"));
+                Assert(h.Calls == 1 && h.CredentialCalls == 0);
+            }
+
+            using (var h = new Harness((request, index) =>
+            {
+                Assert(index == 0 && request.Headers.Authorization == null && !request.Headers.Contains("X-GitHub-Api-Version"));
+                Assert(request.Headers.Accept.Single().MediaType == "application/octet-stream");
+                return Ok(new byte[] { 7, 8, 9 });
+            }, publicFirst: true))
+            {
+                Assert(h.Client.ReadAssetAsync(VanillaPrivateReleaseClient.AssetUrl(123), 1024).GetAwaiter().GetResult()
+                    .SequenceEqual(new byte[] { 7, 8, 9 }));
+                Assert(h.Calls == 1 && h.CredentialCalls == 0);
+            }
         }
 
         private static void Metadata()
@@ -248,10 +276,10 @@ namespace Vanilla.Diagnostics.Tests
             internal readonly VanillaPrivateReleaseClient Client;
             internal int CredentialCalls;
             internal int Calls { get { return handler.Calls; } }
-            internal Harness(Func<HttpRequestMessage, int, HttpResponseMessage> respond)
+            internal Harness(Func<HttpRequestMessage, int, HttpResponseMessage> respond, bool publicFirst = false)
             {
                 handler = new Handler(respond); http = new HttpClient(handler);
-                Client = new VanillaPrivateReleaseClient(http, () => { CredentialCalls++; return Task.FromResult(Token); });
+                Client = new VanillaPrivateReleaseClient(http, () => { CredentialCalls++; return Task.FromResult(Token); }, publicFirst);
             }
             internal byte[] Read() { return Client.ReadAssetAsync(VanillaPrivateReleaseClient.AssetUrl(123), 1024).GetAwaiter().GetResult(); }
             public void Dispose() { http.Dispose(); }
