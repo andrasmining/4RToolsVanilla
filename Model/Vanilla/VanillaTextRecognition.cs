@@ -69,7 +69,10 @@ namespace _4RTools.Model.Vanilla
             lines = new VanillaTextLine[0];
             evidence = "digit OCR requires a bounded observed numeric field";
             if (area.Width > 400 || area.Height > 80) return false;
-            return TryReadCore(bitmap, area, true, out lines, out evidence, true, 4, true);
+            // The caller already crops to the observed numeric glyph bounds. Keeping
+            // native glyph scale avoids nearest-neighbour enlargement distorting repeated
+            // narrow digits such as 9999 while the digit-only whitelist/PSM remains active.
+            return TryReadCore(bitmap, area, true, out lines, out evidence, true, 1, true);
         }
 
         internal static bool TryReadCompactLine(Bitmap bitmap, Rectangle area,
