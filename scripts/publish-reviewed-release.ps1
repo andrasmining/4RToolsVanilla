@@ -13,12 +13,17 @@ if ((git rev-parse HEAD).Trim() -cne $ExpectedCommit -or (git status --porcelain
 $main = gh api "repos/$repo/git/ref/heads/main" --jq '.object.sha'
 if ($LASTEXITCODE -ne 0 -or $main.Trim() -cne $ExpectedCommit) { throw 'Main advanced before publication; revalidate the current main.' }
 $tag = "v$Version"
-$tagJson = gh api "repos/$repo/git/matching-refs/tags/$tag"
-if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect existing version tags.' }
-$tags = @($tagJson | ConvertFrom-Json | Where-Object { $_.ref -ceq "refs/tags/$tag" })
-if ($tags.Count -gt 0 -and $tags[0].object.sha -cne $ExpectedCommit) {
-    Write-Host "Version $tag already belongs to an earlier commit; no release assets or tags changed."
-    return
+$existingTag = & gh api "repos/$repo/git/ref/tags/$tag" --jq '.object.sha' 2>$null
+$tagLookupExit = $LASTEXITCODE
+if ($tagLookupExit -eq 0) {
+    $existingTag = (@($existingTag) -join "`n").Trim()
+    if ($existingTag -cne $ExpectedCommit) {
+        Write-Host "Version $tag already belongs to an earlier commit; no release assets or tags changed."
+        return
+    }
+}
+elseif ($tagLookupExit -ne 1) {
+    throw 'Cannot inspect existing version tag.'
 }
 $artifactInput = Join-Path $root 'dist/published-input'
 New-Item -ItemType Directory -Path $artifactInput -Force | Out-Null
