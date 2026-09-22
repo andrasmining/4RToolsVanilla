@@ -69,10 +69,46 @@ namespace _4RTools.Model.Vanilla
             lines = new VanillaTextLine[0];
             evidence = "digit OCR requires a bounded observed numeric field";
             if (area.Width > 400 || area.Height > 80) return false;
-            // The caller already crops to the observed numeric glyph bounds. Keeping
-            // native glyph scale avoids nearest-neighbour enlargement distorting repeated
-            // narrow digits such as 9999 while the digit-only whitelist/PSM remains active.
-            return TryReadCore(bitmap, area, true, out lines, out evidence, true, 1, true);
+
+            // The caller already crops to the observed numeric glyph bounds. Windows
+            // Tesseract benefits from enlargement for some short numbers (for example
+            // 123), while repeated narrow glyphs such as 9999 can be distorted by that
+            // same enlargement. Read both independent pixel scales and accept only one
+            // unambiguous numeric interpretation. If both scales recognize digits they
+            // must agree exactly; disagreement is unknown and therefore authorizes no
+            // quantity input.
+            var candidates = new List<Tuple<int, VanillaTextLine>>();
+            var attempts = new List<string>();
+            foreach (int scale in new[] { 1, 4 })
+            {
+                VanillaTextLine[] observed;
+                string attemptEvidence;
+                bool completed = TryReadCore(bitmap, area, true, out observed, out attemptEvidence, true, scale, true);
+                attempts.Add(scale + "x=" + attemptEvidence);
+                if (!completed || observed == null || observed.Length != 1) continue;
+                string text = (observed[0].Text ?? string.Empty).Trim();
+                if (text.Length == 0 || text.Any(ch => ch < '0' || ch > '9')) continue;
+                candidates.Add(Tuple.Create(scale, observed[0]));
+            }
+            if (candidates.Count == 0)
+            {
+                evidence = "digit OCR produced no numeric candidate; " + string.Join("; ", attempts);
+                return false;
+            }
+            string value = candidates[0].Item2.Text.Trim();
+            if (candidates.Any(candidate => !string.Equals(candidate.Item2.Text.Trim(), value, StringComparison.Ordinal)))
+            {
+                evidence = "digit OCR scales disagreed; no numeric value accepted";
+                return false;
+            }
+            VanillaTextLine winner = candidates
+                .OrderByDescending(candidate => candidate.Item2.Confidence)
+                .ThenBy(candidate => candidate.Item1)
+                .First().Item2;
+            lines = new[] { winner };
+            evidence = "digit OCR agreed/was unambiguous across scales; valueLength=" + value.Length
+                + "; candidateScales=" + string.Join(",", candidates.Select(candidate => candidate.Item1 + "x"));
+            return true;
         }
 
         internal static bool TryReadCompactLine(Bitmap bitmap, Rectangle area,
