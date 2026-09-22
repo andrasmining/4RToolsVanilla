@@ -70,6 +70,7 @@ namespace Vanilla.Diagnostics.Tests
             failed += VanillaServiceSelectionTests.Run();
             failed += VanillaCredentialVerifierTests.Run();
             failed += VanillaCharacterSelectionTests.Run();
+            failed += VanillaStabilityTests.Run();
             failed += VanillaAuthPatternTests.Run();
             failed += VanillaSessionLogTests.Run();
             failed += VanillaReconnectRegressionTests.Run();

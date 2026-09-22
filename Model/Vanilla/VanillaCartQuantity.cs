@@ -21,7 +21,7 @@ namespace _4RTools.Model.Vanilla
     {
         internal static uint ConservativeAmount(uint carriedWeight, uint offeredAmount, uint cartWeight, uint cartMaximum)
         {
-            if (offeredAmount == 0 || cartMaximum == 0 || cartWeight > cartMaximum) return 0;
+            if (carriedWeight == 0 || offeredAmount == 0 || cartMaximum == 0 || cartWeight > cartMaximum) return 0;
             uint remaining = cartMaximum - cartWeight;
             if (remaining >= carriedWeight) return offeredAmount;
             // The unedited prompt offers N items already included in total carried W.

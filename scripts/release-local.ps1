@@ -11,7 +11,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $repositoryRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $repository = 'andrasmining/4RToolsVanilla'
-if ($env:GITHUB_ACTIONS -eq 'true') { throw 'This private repository uses local builds; GitHub Actions is disabled.' }
+# Manual Windows release entry point. The gated CI publisher is publish-reviewed-release.ps1.
 
 function Read-Git([string[]] $GitArguments) {
     $result = @(& git @GitArguments)
@@ -22,16 +22,16 @@ function Assert-PublishSource([string] $ExpectedCommit) {
     if ((Read-Git @('branch', '--show-current')) -cne 'main') { throw 'Publishing requires main.' }
     $origin = Read-Git @('remote', 'get-url', 'origin')
     if ($origin.TrimEnd('/') -notmatch '^(https://github\.com/|git@github\.com:)andrasmining/4RToolsVanilla(?:\.git)?$') {
-        throw 'Publishing is restricted to the private andrasmining/4RToolsVanilla origin.'
+        throw 'Publishing is restricted to the canonical andrasmining/4RToolsVanilla origin.'
     }
     if (Read-Git @('status', '--porcelain', '--untracked-files=normal')) { throw 'Commit all source changes before publishing.' }
     if ((Read-Git @('rev-parse', 'HEAD')) -cne $ExpectedCommit) { throw 'Source changed during release validation.' }
     $remote = Read-Git @('ls-remote', 'origin', 'refs/heads/main')
     if (($remote -split '\s+')[0] -cne $ExpectedCommit) { throw 'Push main before publishing; remote source must match exactly.' }
     $infoText = & gh repo view $repository --json nameWithOwner,isPrivate
-    if ($LASTEXITCODE -ne 0) { throw 'Authenticated private repository access failed.' }
+    if ($LASTEXITCODE -ne 0) { throw 'Authenticated repository access failed.' }
     $info = $infoText | ConvertFrom-Json
-    if (-not $info.isPrivate -or $info.nameWithOwner -cne $repository) { throw 'Unexpected repository identity or visibility.' }
+    if ($info.isPrivate -or $info.nameWithOwner -cne $repository) { throw 'Unexpected repository identity or visibility.' }
 }
 
 Push-Location $repositoryRoot
@@ -71,7 +71,7 @@ try {
     $exists = @($releaseListText | ConvertFrom-Json | Where-Object { $_.tagName -ceq $tag }).Count -gt 0
     if (-not $exists) {
         & gh release create $tag $zip $checksum --repo $repository --target $sourceCommit --title "4RTools Vanilla $tag" --notes-file (Join-Path $repositoryRoot 'RELEASE-NOTES.md') --latest
-        if ($LASTEXITCODE -ne 0) { throw 'Private release publication failed.' }
+        if ($LASTEXITCODE -ne 0) { throw 'Release publication failed.' }
     }
 
     # Verify exact remote source and assets before accepting/re-marking an existing release.
@@ -102,8 +102,8 @@ try {
     & (Join-Path $PSScriptRoot 'test-published-update.ps1') -ExpectedVersion $Version -Repository $repository -ExpectedCommit $sourceCommit -ExecutablePath (Join-Path $repositoryRoot "dist/$artifactBase/4RTools-Vanilla.exe")
     Assert-PublishSource $sourceCommit
     [ordered]@{ version = $Version; sourceCommit = $sourceCommit; releaseUrl = $latest.html_url;
-        zipSha256 = $receipt.zipSha256; latest = $true; private = $true; verifiedUtc = [DateTime]::UtcNow.ToString('o') } |
+        zipSha256 = $receipt.zipSha256; latest = $true; private = $false; verifiedUtc = [DateTime]::UtcNow.ToString('o') } |
         ConvertTo-Json | Out-File -LiteralPath (Join-Path $downloadRoot 'release-verification.json') -Encoding utf8
-    Write-Host "Published and verified private Latest release: $($latest.html_url)"
+    Write-Host "Published and verified public Latest release: $($latest.html_url)"
 }
 finally { Pop-Location }

@@ -1,46 +1,77 @@
-# 4RTools Vanilla 0.6.69
+# 4RTools Vanilla 0.6.70
 
-## Server-down detection and 15-minute checks
+## Recovery and character selection
 
-The exact **Server Closed.(1)** message now enters a dedicated outage state after
-two fresh matching observations. Recognition finds the Message form and its text;
-it does not click a fixed screen location or treat the separate Please wait...
-dialog as proof of an outage.
+- Repair service-title recognition at the edge of narrow dialogs. Match the named
+  proxy among all eight offered routes and verify the second Vanilla MMO service.
+- Use the observed character-card layout, unique selected card, and occupied-slot
+  evidence before navigation and confirmation. Reject empty/unknown targets rather
+  than opening character creation. Recheck expected gameplay identity before resume.
+- Preserve v0.6.69 server-outage detection, shared 15-minute retry timing, cancellation,
+  and isolation of healthy clients.
 
-Pending accounts share one retry schedule. After confirmed downtime, 4RTools
-waits **15 minutes** before trying the ordinary launcher/login recovery flow.
-Repeated failures keep that fixed interval rather than switching to faster
-retries or increasing toward an hour. Input/recovery ownership is released while
-waiting, and healthy clients continue normally.
+## Cart maintenance and input ownership
 
-Only the recovering account's freshly verified gameplay identity clears the
-outage state. Missing captures, unknown dialogs, a vanished popup or a healthy
-sibling's existing gameplay do not prove that the failed recovery succeeded.
-STOP and ownership/configuration changes cancel stale pending work. The normal
-recovery status and log show the next check.
+- Stop attempting transfers once the verified cart reaches the 99% maintenance
+  threshold. DONE still requires both cart >=99% and carried weight >=50%, with
+  verified Autobattle STOP. Cart and mail switches remain independent.
+- A category is no longer treated as proof of item identity or unit weight. Read a
+  stable quantity dialog, calculate a conservative capacity-safe amount from its
+  offered stack and verified carried/cart weights, focus the observed field, and
+  verify the value before confirmation. Verify actual weight progress after drops.
+- Use the verified mouse drag path with bounded holds and cancellation throughout.
+  Three-attempt lag handling and approximately 60-second maintenance retries remain.
+- Guard stopped cart work with fresh HP observations. Cumulative loss over ten
+  percentage points aborts cart work. Clear only positively recognized quantity
+  prompts, verify resumed movement, close panels where safe, minimize, and retry.
+  Failed paused-state recovery can queue only the owned client's supervised restart;
+  unknown ownership never authorizes input or closing another client.
+- Temporary Actions now shares the real fleet monitor and recovery supervisor.
+  Its input ownership blocks competing cart/recovery work rather than locking a
+  separate, unused supervisor.
 
-Generic failures outside confirmed server downtime keep their existing
-exponential backoff. Launcher updates, verified service/credential/character
-selection, post-login movement checks and healthy-client isolation remain in force.
-There are no direct game-server protocol requests or game-file changes.
+## Temporary Actions
 
-## Validation
+- Record keyboard chords directly instead of restricting actions to dropdown keys.
+- Capture and track the target within the selected client; verify foreground, hit
+  ownership, and cancellation before ordinary macro-compatible mouse input.
+- Finish an outstanding targeted cast, then verify a small move before requesting
+  sit for SP rest. Do not label an unobserved movement as successful; bound retries
+  and stop on invalid identity, death, or cancellation. Sitting itself is not a
+  mapped read-only state, so a sit request is not independently proven seating.
+- Compact controls with additional explanations in tooltips. Existing coordinate-only
+  targets need one new capture so the new image/identity proof can be stored.
 
-Full local Debug and Release suites passed with zero failures, including eight
-visual-recognition groups and 31 outage policy/supervisor regressions. Coverage
-includes moved/scaled and softened dialogs, the accompanying Please wait form,
-wrong-message rejection, fixed retry timing, shared ownership, cancellation,
-healthy-client isolation and recovery success. Four native test-owned process
-checks, 27 mock UI cases and portable OCR/smoke validation also passed. The seven
-existing compiler/reference warnings are unchanged.
+## Public updates and rollback
 
-Publication additionally verifies the private Latest release, exact tag/source
-commit, downloaded asset checksums and the application's authenticated update
-discovery/download/staging path. It does not install or launch the normal app.
+- Read public release metadata and assets anonymously first. Absent, corrupt, or
+  stale stored tokens do not block successful public access. A bounded private
+  fallback remains available and never forwards credentials to download CDNs.
+- Require the portable ZIP checksum, complete payload manifest, executable version,
+  and expected repository assets before staging.
+- Before replacement, stop temporary actions and require cart/recovery quiescence.
+  Back up managed destination files, verify replacement bytes, and roll back on
+  copy/verification/early-start failure. User profiles remain outside the managed
+  payload. This is not a power-loss-proof installer or a full application-health
+  handshake; retained backup/journal evidence must not be mistaken for either.
 
-Recognition fixtures are generated from the supplied screenshot's visible form
-and text; they are not captured from a live client. No live Vanilla/Gepard server
-outage/reconnection test, desktop interaction or user installation was performed.
+## Validation and scope
 
-The private repository and local build/update delivery introduced in v0.6.68 are
-retained. GitHub Actions remains disabled.
+Publication is gated on Windows Debug and Release builds and isolated regression
+suites, portable package/OCR smoke checks, native test-owned recovery processes,
+mock UI geometry/rendering, and exact clean-source provenance. Publication verifies
+real release bytes and the real anonymous updater's discovery/download/staging
+path, plus a v0.6.69 authenticated-client upgrade to this release. The verification
+artifacts record the tested commit and outcomes; no game accounts or live desktop
+credentials are used.
+
+Hosted tests are not live Vanilla/Gepard/RDP gameplay. No claim is made that all
+reported deaths have an established cause, that every skin/animation/DPI variant
+is recognized, or that game protection will accept every ordinary input request.
+Unknown or ambiguous observations fail closed rather than clicking guessed targets.
+
+The existing v0.6.68/v0.6.69 private-era updater can use its valid update credential
+against the same now-public repository. A client with no usable credential may
+need this portable package once; subsequent v0.6.70 public updates need no token.
+Pre-migration v0.6.67 points at the retired repository and also needs the portable
+migration. Extract the complete package; do not copy only the executable.

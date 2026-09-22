@@ -23,3 +23,10 @@ if ((Get-Content -LiteralPath $reportPath -Raw) -notmatch '(?m)^Failures: 0\s*$'
     throw 'UI harness did not report zero failures.'
 }
 Write-Host 'Native Windows UI layout checks passed with mock accounts; no game input or live services were enabled.'
+
+# Also render the production temporary-actions panel without starting its timer.
+$temporaryHarness = Join-Path (Split-Path $ApplicationPath -Parent) 'TemporaryUiHarness.exe'
+& $csc /nologo /target:exe /platform:x86 /reference:System.dll /reference:System.Core.dll /reference:System.Drawing.dll /reference:System.Windows.Forms.dll "/out:$temporaryHarness" (Join-Path $repositoryRoot 'Tests/TemporaryUi/Program.cs')
+if ($LASTEXITCODE -ne 0) { throw 'Temporary UI harness compilation failed.' }
+& (Join-Path $PSScriptRoot 'test-isolated.ps1') -Executable $temporaryHarness -TestArguments @($ApplicationPath, $OutputDirectory) -LogPath (Join-Path $OutputDirectory 'temporary-stdout.txt') -TimeoutMilliseconds 120000
+if ((Get-Content -LiteralPath (Join-Path $OutputDirectory 'temporary-report.txt') -Raw) -notmatch '(?m)^Failures: 0\s*$') { throw 'Temporary action UI checks failed.' }

@@ -220,7 +220,7 @@ namespace _4RTools.Forms
         {
             if (smokeTest) return;
             if (integratedTemporaryActions != null && !integratedTemporaryActions.IsDisposed) return;
-            integratedTemporaryActions = new VanillaTemporaryActionsPanel(AppDomain.CurrentDomain.BaseDirectory)
+            integratedTemporaryActions = new VanillaTemporaryActionsPanel(AppDomain.CurrentDomain.BaseDirectory, integratedFleetMonitor, integratedReconnectSupervisor)
             {
                 Dock = DockStyle.Fill,
                 AutoScroll = true
@@ -329,6 +329,11 @@ namespace _4RTools.Forms
                 if (answer != DialogResult.Yes) return;
                 integratedUpdateStatus.Text = "Downloading and verifying " + update.TagName + "...";
                 string payload = await VanillaUpdater.DownloadAndStageAsync(update);
+                // Staging does not interrupt gameplay. Stop temporary work only after the
+                // payload is verified, and never exit while Cart/recovery owns input.
+                integratedTemporaryActions?.StopForApplicationUpdate();
+                if (integratedReconnectSupervisor != null && !integratedReconnectSupervisor.TryPauseForApplicationUpdate())
+                    throw new InvalidOperationException("Update downloaded safely. Recovery/Cart is still active; retry Update after it completes. No files were replaced.");
                 integratedUpdateStatus.Text = "Update verified. Restarting...";
                 VanillaUpdater.BeginApplyAndRestart(payload);
                 BeginInvoke((MethodInvoker)Application.Exit);

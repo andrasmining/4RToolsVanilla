@@ -117,10 +117,11 @@ namespace Vanilla.Diagnostics.Tests
 
         private static void CartCapacityRules()
         {
-            Equal(3L, VanillaWeightCartAutomation.KnownItemUnitWeightForCategory(0).Value, "Mastela Fruit unit weight");
-            Equal(1L, VanillaWeightCartAutomation.KnownItemUnitWeightForCategory(2).Value, "Peco Feather unit weight");
-            if (VanillaWeightCartAutomation.KnownItemUnitWeightForCategory(1).HasValue)
-                throw new Exception("Equip must remain unknown until an item weight is explicitly verified.");
+            foreach (int category in new[] { 0, 1, 2 })
+                if (VanillaWeightCartAutomation.KnownItemUnitWeightForCategory(category).HasValue)
+                    throw new Exception("Inventory category must never imply a particular item identity/unit weight.");
+            if (VanillaWeightCartAutomation.CartFullPercent != 99m)
+                throw new Exception("Cart transfers must stop at 99%, including the reported 9993/10000 case.");
             Equal(16L, VanillaWeightCartAutomation.CapacitySafeQuantity(9950, 10000, 3), "Mastela capacity quantity");
             Equal(50L, VanillaWeightCartAutomation.CapacitySafeQuantity(9950, 10000, 1), "Peco Feather capacity quantity");
             Equal(0L, VanillaWeightCartAutomation.CapacitySafeQuantity(9998, 10000, 3), "Mastela cannot fill a 2-weight remainder");

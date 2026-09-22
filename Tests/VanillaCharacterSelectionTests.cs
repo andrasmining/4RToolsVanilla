@@ -19,6 +19,7 @@ namespace Vanilla.Diagnostics.Tests
         {
             Test("Every target from every initial slot uses observed layout and selection", EverySlot);
             Test("Unknown and stale observations authorize no character input", UnknownAndStale);
+            Test("Empty or unknown target slots never authorize input or final Enter", EmptySlots);
             Test("Wrapping at the origin never authorizes Enter", WrappedClamp);
             Test("Stalled navigation never authorizes Enter", StalledNavigation);
             Test("Changed layout and wrong final selection never authorize Enter", ChangedLayout);
@@ -45,7 +46,8 @@ namespace Vanilla.Diagnostics.Tests
                     FrameId = Stale ? 1 : ++Frame,
                     Cards = Enumerable.Range(0, 15).Select(i => new Rectangle((ChangeLayout && KeysSent > 0 ? 30 : 10)
                         + i % Columns * 90, 30 + i / Columns * 75, 80, 65)).ToArray(),
-                    Columns = Columns, Selected = LoseSelection && KeysSent > 0 ? -1 : Position
+                    Columns = Columns, Selected = LoseSelection && KeysSent > 0 ? -1 : Position,
+                    Occupied = Enumerable.Repeat(true, 15).ToArray()
                 };
             }
             internal void Press(Keys key)
@@ -80,6 +82,29 @@ namespace Vanilla.Diagnostics.Tests
                 Assert(sim.Moves > 0, "Selection was confirmed without any observed keyboard-driven movement.");
                 if (start == 0 && target == 1) Assert(sim.Moves == 2, "Slot one must verify an outward/return probe.");
             }
+        }
+
+        private static void EmptySlots()
+        {
+            foreach (bool unknown in new[] { false, true })
+            {
+                var sim = new Simulation(5, 14);
+                Reject(() => VanillaCharacterSelector.Select(3, () =>
+                {
+                    var observation = sim.Observe();
+                    if (unknown) observation.Occupied = null; else observation.Occupied[2] = false;
+                    return observation;
+                }, sim.Press, _ => { }, () => false));
+                Assert(sim.KeysSent == 0, "Empty/unknown target caused navigation or Enter.");
+            }
+            var changed = new Simulation(5, 14);
+            Reject(() => VanillaCharacterSelector.Select(3, () =>
+            {
+                var observation = changed.Observe();
+                if (changed.KeysSent > 0) observation.Occupied[2] = false;
+                return observation;
+            }, changed.Press, _ => { }, () => false));
+            Assert(changed.Enters == 0, "Disappeared character authorized final Enter.");
         }
 
         private static void UnknownAndStale()

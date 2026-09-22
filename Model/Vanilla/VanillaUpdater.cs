@@ -58,7 +58,7 @@ namespace _4RTools.Model.Vanilla
         {
             var root = JObject.Parse(json);
             if ((bool?)root["draft"] != false || (bool?)root["prerelease"] != false)
-                throw new InvalidDataException("Private updater requires a published stable release.");
+                throw new InvalidDataException("Updater requires a published stable release.");
             string tag = (string)root["tag_name"];
             if (string.IsNullOrWhiteSpace(tag)) throw new InvalidDataException("GitHub returned a release without a tag.");
             Version version;
@@ -156,12 +156,16 @@ namespace _4RTools.Model.Vanilla
                 string install = Path.GetFullPath(args[2]);
                 string payload = Path.GetFullPath(args[3]);
                 WaitForExit(parentPid, 60000);
-                CopyPayload(payload, install);
-                VanillaAppData.InitializeAndMigrateLegacy(install);
-                VanillaAppData.CleanupKnownLegacyDirectories(install);
-                string destinationExe = Path.Combine(install, "4RTools-Vanilla.exe");
-                if (!File.Exists(destinationExe)) throw new FileNotFoundException("Updated executable is missing after installation.", destinationExe);
-                Process.Start(new ProcessStartInfo { FileName = destinationExe, WorkingDirectory = install });
+                VanillaUpdateTransaction.Apply(payload, install, destinationExe =>
+                {
+                    // Persistent profiles live outside the installation. Do not migrate or
+                    // delete user data inside a managed-file transaction.
+                    using (var started = Process.Start(new ProcessStartInfo { FileName = destinationExe, WorkingDirectory = install }))
+                    {
+                        if (started == null) throw new IOException("Windows did not start the updated application.");
+                        if (started.WaitForExit(1500)) throw new IOException("Updated application exited during its startup check; restoring the previous files.");
+                    }
+                });
             }
             catch (Exception ex)
             {
@@ -185,35 +189,6 @@ namespace _4RTools.Model.Vanilla
                     if (!process.WaitForExit(timeoutMs)) throw new TimeoutException("The previous 4RTools process did not exit in time.");
             }
             catch (ArgumentException) { }
-        }
-
-        private static void CopyPayload(string payload, string install)
-        {
-            if (!Directory.Exists(payload)) throw new DirectoryNotFoundException("Update payload directory is missing.");
-            Directory.CreateDirectory(install);
-            string payloadRoot = Path.GetFullPath(payload).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
-            foreach (string directory in Directory.GetDirectories(payload, "*", SearchOption.AllDirectories))
-            {
-                string relative = directory.Substring(payloadRoot.Length);
-                Directory.CreateDirectory(Path.Combine(install, relative));
-            }
-            foreach (string file in Directory.GetFiles(payload, "*", SearchOption.AllDirectories))
-            {
-                string relative = file.Substring(payloadRoot.Length);
-                CopyFileWithRetry(file, Path.Combine(install, relative));
-            }
-        }
-
-        private static void CopyFileWithRetry(string source, string destination)
-        {
-            Directory.CreateDirectory(Path.GetDirectoryName(destination));
-            Exception last = null;
-            for (int attempt = 0; attempt < 10; attempt++)
-            {
-                try { File.Copy(source, destination, true); return; }
-                catch (Exception ex) { last = ex; Thread.Sleep(500); }
-            }
-            throw new IOException("Could not replace " + destination + ".", last);
         }
 
         internal static void SafeExtract(string zipPath, string destination)
@@ -249,23 +224,9 @@ namespace _4RTools.Model.Vanilla
             }
         }
 
-        private static void VerifyPayloadManifest(string payload)
+        internal static void VerifyPayloadManifest(string payload)
         {
-            string manifest = Path.Combine(payload, "SHA256SUMS.txt");
-            if (!File.Exists(manifest)) throw new InvalidDataException("Update package checksum manifest is missing.");
-            foreach (string raw in File.ReadAllLines(manifest))
-            {
-                string line = raw.Trim(); if (line.Length == 0) continue;
-                int split = line.IndexOf("  ", StringComparison.Ordinal);
-                if (split != 64) throw new InvalidDataException("Update payload checksum manifest is malformed.");
-                string expected = line.Substring(0, 64);
-                string relative = line.Substring(split + 2).Replace('/', Path.DirectorySeparatorChar);
-                string path = Path.GetFullPath(Path.Combine(payload, relative));
-                string root = Path.GetFullPath(payload).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) + Path.DirectorySeparatorChar;
-                if (!path.StartsWith(root, StringComparison.OrdinalIgnoreCase) || !File.Exists(path)) throw new InvalidDataException("Update payload manifest references an invalid file.");
-                string actual = Sha256(File.ReadAllBytes(path));
-                if (!string.Equals(actual, expected, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Update payload checksum failed for " + relative + ".");
-            }
+            VanillaUpdateTransaction.Verify(payload);
         }
 
         private static string Sha256(byte[] bytes)

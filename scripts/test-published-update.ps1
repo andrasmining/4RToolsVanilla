@@ -1,115 +1,103 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)][Alias('Version')][ValidatePattern('^[0-9]+\.[0-9]+\.[0-9]+$')][string] $ExpectedVersion,
     [ValidateSet('andrasmining/4RToolsVanilla')][string] $Repository = 'andrasmining/4RToolsVanilla',
-    [string] $ExecutablePath,
+    [Parameter(Mandatory = $true)][string] $ExecutablePath,
     [ValidatePattern('^[0-9a-f]{40}$')][string] $ExpectedCommit,
-    [string] $ReportPath
+    [string] $ReportPath,
+    [switch] $AllowOlderClient,
+    [switch] $UseApiToken
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
-if ($env:GITHUB_ACTIONS -eq 'true') { throw 'GitHub Actions is prohibited for this repository.' }
 $repositoryRoot = [IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
-if (-not $ExecutablePath) { $ExecutablePath = Join-Path $repositoryRoot 'bin/Release/4RTools-Vanilla.exe' }
 $ExecutablePath = [IO.Path]::GetFullPath($ExecutablePath)
 if (-not $ExecutablePath.StartsWith($repositoryRoot + '\', [StringComparison]::OrdinalIgnoreCase) -or
-    -not (Test-Path -LiteralPath $ExecutablePath -PathType Leaf)) { throw 'Updater probe requires a repository-owned compiled executable.' }
+    -not (Test-Path -LiteralPath $ExecutablePath -PathType Leaf)) { throw 'Probe executable must be inside this repository workspace.' }
 if (-not $ReportPath) { $ReportPath = Join-Path $repositoryRoot 'dist/published/updater-discovery.json' }
 $ReportPath = [IO.Path]::GetFullPath($ReportPath)
 if ([Environment]::Is64BitProcess) {
-    # Reflection-load the x86 release in a hidden, noninteractive x86 host. Never
-    # invoke the application's entry point, update installer, or normal UI.
-    $host32 = Join-Path $env:WINDIR 'SysWOW64/WindowsPowerShell/v1.0/powershell.exe'
-    $arguments = @('-NoProfile', '-NonInteractive', '-File', $PSCommandPath,
-        '-ExpectedVersion', $ExpectedVersion, '-Repository', $Repository,
-        '-ExecutablePath', $ExecutablePath, '-ReportPath', $ReportPath)
+    # Reflection-load only; never call the game companion entry point or installer.
+    $arguments = @('-NoProfile', '-NonInteractive', '-File', $PSCommandPath, '-ExpectedVersion', $ExpectedVersion,
+        '-Repository', $Repository, '-ExecutablePath', $ExecutablePath, '-ReportPath', $ReportPath)
     if ($ExpectedCommit) { $arguments += @('-ExpectedCommit', $ExpectedCommit) }
+    if ($AllowOlderClient) { $arguments += '-AllowOlderClient' }
+    if ($UseApiToken) { $arguments += '-UseApiToken' }
     $start = New-Object Diagnostics.ProcessStartInfo
-    $start.FileName = $host32
+    $start.FileName = Join-Path $env:WINDIR 'SysWOW64/WindowsPowerShell/v1.0/powershell.exe'
     $start.Arguments = ($arguments | ForEach-Object { '"' + $_.Replace('"', '\"') + '"' }) -join ' '
     $start.WorkingDirectory = $repositoryRoot
-    $start.UseShellExecute = $false
-    $start.CreateNoWindow = $true
-    $start.WindowStyle = [Diagnostics.ProcessWindowStyle]::Hidden
-    $start.RedirectStandardOutput = $true
-    $start.RedirectStandardError = $true
+    $start.UseShellExecute = $false; $start.CreateNoWindow = $true
+    $start.RedirectStandardOutput = $true; $start.RedirectStandardError = $true
     $process = [Diagnostics.Process]::Start($start)
     try {
-        $outputTask = $process.StandardOutput.ReadToEndAsync()
-        $errorTask = $process.StandardError.ReadToEndAsync()
-        if (-not $process.WaitForExit(660000)) { $process.Kill(); throw 'Private updater probe timed out.' }
-        $outputTask.Result | Write-Host
-        if ($process.ExitCode -ne 0) { $errorTask.Result | Write-Host; throw 'Private updater probe failed.' }
+        $stdout = $process.StandardOutput.ReadToEndAsync(); $stderr = $process.StandardError.ReadToEndAsync()
+        if (-not $process.WaitForExit(660000)) { $process.Kill(); throw 'Updater probe timed out.' }
+        $stdout.Result | Write-Host
+        if ($process.ExitCode -ne 0) { $stderr.Result | Write-Host; throw 'Updater probe failed.' }
     }
     finally { $process.Dispose() }
     return
 }
-$assembly = [Reflection.Assembly]::LoadFrom($ExecutablePath)
-$updater = $assembly.GetType('_4RTools.Model.Vanilla.VanillaUpdater', $true)
-$access = $assembly.GetType('_4RTools.Model.Vanilla.VanillaUpdateAccess', $true)
-$flags = [Reflection.BindingFlags]::NonPublic -bor [Reflection.BindingFlags]::Static
-$current = $updater.GetProperty('CurrentVersion').GetValue($null, $null)
-if ($current -ne [version]$ExpectedVersion) { throw 'Probe binary does not match the expected private release version.' }
-$oldDataRoot = [Environment]::GetEnvironmentVariable('FOURRTOOLS_DATA_ROOT')
-$oldToken = [Environment]::GetEnvironmentVariable('GH_TOKEN')
+$oldEnvironment = @{}
+foreach ($name in @('FOURRTOOLS_DATA_ROOT', 'GH_TOKEN', 'GITHUB_TOKEN', 'GH_CONFIG_DIR')) { $oldEnvironment[$name] = [Environment]::GetEnvironmentVariable($name) }
 $work = Join-Path $repositoryRoot ('dist/published/probe-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $work -Force | Out-Null
 try {
-    # Resolve using the actual portable credential provider before isolating user
-    # data. The credential stays only in this short-lived process; never print it.
-    $credentialTask = $access.GetMethod('GetTokenAsync', $flags).Invoke($null, $null)
-    if (-not $credentialTask.Wait(15000)) { throw 'Private updater credential lookup timed out.' }
-    [Environment]::SetEnvironmentVariable('GH_TOKEN', $credentialTask.Result)
-    [Environment]::SetEnvironmentVariable('FOURRTOOLS_DATA_ROOT', (Join-Path $work 'data'))
-    $task = $updater.GetMethod('ReadLatestReleaseAsync').Invoke($null, $null)
-    if (-not $task.Wait(45000)) { throw 'Private latest release lookup timed out.' }
-    $info = $task.Result
-    if ($null -eq $info -or $info.TagName -cne "v$ExpectedVersion" -or $info.Version -ne [version]$ExpectedVersion) {
-        throw 'Private Latest does not identify the expected published release.'
+    if (-not $UseApiToken) {
+        [Environment]::SetEnvironmentVariable('GH_TOKEN', $null)
+        [Environment]::SetEnvironmentVariable('GITHUB_TOKEN', $null)
     }
+    elseif (-not $env:GH_TOKEN -and -not $env:GITHUB_TOKEN) { throw 'Explicit legacy-auth probe requires an API token in the environment.' }
+    [Environment]::SetEnvironmentVariable('GH_CONFIG_DIR', (Join-Path $work 'empty-gh-config'))
+    [Environment]::SetEnvironmentVariable('FOURRTOOLS_DATA_ROOT', (Join-Path $work 'data'))
+    $assembly = [Reflection.Assembly]::LoadFrom($ExecutablePath)
+    $updater = $assembly.GetType('_4RTools.Model.Vanilla.VanillaUpdater', $true)
+    $current = $updater.GetProperty('CurrentVersion').GetValue($null, $null)
+    if ($current -gt [version]$ExpectedVersion -or ($current -ne [version]$ExpectedVersion -and -not $AllowOlderClient)) { throw 'Probe client version is unexpected.' }
+    $task = $updater.GetMethod('ReadLatestReleaseAsync').Invoke($null, $null)
+    if (-not $task.Wait(45000)) { throw 'Latest release lookup timed out.' }
+    $info = $task.Result
+    if ($null -eq $info -or $info.TagName -cne "v$ExpectedVersion" -or $info.Version -ne [version]$ExpectedVersion) { throw 'Latest does not identify the expected release.' }
     $assetPrefix = "https://api.github.com/repos/$Repository/releases/assets/"
     if ($info.ZipName -cne "4RTools-Vanilla-v$ExpectedVersion-portable.zip" -or
         $info.ZipUrl -notmatch ('^' + [regex]::Escape($assetPrefix) + '[0-9]+$') -or
-        $info.ChecksumUrl -notmatch ('^' + [regex]::Escape($assetPrefix) + '[0-9]+$')) { throw 'Updater asset identity does not match the private repository.' }
-    $checkTask = $updater.GetMethod('CheckAsync').Invoke($null, $null)
-    if (-not $checkTask.Wait(45000) -or $null -ne $checkTask.Result) { throw 'Equal-version private release should report up to date.' }
-    $stageTask = $updater.GetMethod('DownloadAndStageAsync').Invoke($null, [object[]]@($info))
-    if (-not $stageTask.Wait(620000)) { throw 'Authenticated updater download/staging timed out.' }
-    $payload = [string]$stageTask.Result
-    $resolvedPayload = [IO.Path]::GetFullPath($payload)
-    if (-not $resolvedPayload.StartsWith($work + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Updater staging escaped the isolated probe folder.' }
+        $info.ChecksumUrl -notmatch ('^' + [regex]::Escape($assetPrefix) + '[0-9]+$')) { throw 'Updater asset identity differs from the canonical repository.' }
+    $check = $updater.GetMethod('CheckAsync').Invoke($null, $null)
+    if (-not $check.Wait(45000)) { throw 'Version comparison timed out.' }
+    if ($current -eq [version]$ExpectedVersion) { if ($null -ne $check.Result) { throw 'Equal version should report up to date.' } }
+    elseif ($null -eq $check.Result -or $check.Result.Version -ne [version]$ExpectedVersion) { throw 'Older client did not discover the newer version.' }
+    $stage = $updater.GetMethod('DownloadAndStageAsync').Invoke($null, [object[]]@($info))
+    if (-not $stage.Wait(620000)) { throw 'Real updater staging timed out.' }
+    $payload = [IO.Path]::GetFullPath([string]$stage.Result)
+    if (-not $payload.StartsWith($work + '\', [StringComparison]::OrdinalIgnoreCase)) { throw 'Updater staging escaped its isolated directory.' }
     $versionInfo = [IO.File]::ReadAllText((Join-Path $payload 'VERSION.txt'))
     if ($versionInfo -notmatch '(?m)^Source commit: ([0-9a-f]{40})\r?$') { throw 'Packaged source identity is missing.' }
     $sourceCommit = $Matches[1]
-    if ($ExpectedCommit -and $sourceCommit -cne $ExpectedCommit) { throw 'Published package source commit differs from the tested release commit.' }
-    if ($versionInfo -notmatch '(?m)^Source working tree before packaging: clean\r?$') { throw 'Published package was not built from a clean source tree.' }
+    if ($ExpectedCommit -and $sourceCommit -cne $ExpectedCommit) { throw 'Published package does not match the tested commit.' }
+    if ($versionInfo -notmatch '(?m)^Source working tree before packaging: clean\r?$') { throw 'Package source was not clean.' }
     $downloadedExe = Join-Path $payload '4RTools-Vanilla.exe'
-    $localHash = (Get-FileHash -LiteralPath $ExecutablePath -Algorithm SHA256).Hash
-    $publishedHash = (Get-FileHash -LiteralPath $downloadedExe -Algorithm SHA256).Hash
-    if ($localHash -cne $publishedHash) { throw 'Published executable differs from the tested local release binary.' }
+    $downloadVersion = [Diagnostics.FileVersionInfo]::GetVersionInfo($downloadedExe)
+    if (("{0}.{1}.{2}" -f $downloadVersion.FileMajorPart, $downloadVersion.FileMinorPart, $downloadVersion.FileBuildPart) -cne $ExpectedVersion) { throw 'Downloaded binary version is wrong.' }
+    if ($current -eq [version]$ExpectedVersion -and
+        (Get-FileHash -LiteralPath $ExecutablePath -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath $downloadedExe -Algorithm SHA256).Hash) { throw 'Published executable differs from the validated artifact.' }
     New-Item -ItemType Directory -Path (Split-Path -Parent $ReportPath) -Force | Out-Null
     [ordered]@{
-        version = $info.Version.ToString(3)
+        installedClientVersion = $current.ToString(3)
+        publishedVersion = $info.Version.ToString(3)
         repository = $Repository
         sourceCommit = $sourceCommit
-        zipAssetApi = $info.ZipUrl
-        checksumAssetApi = $info.ChecksumUrl
-        authenticatedPrivateLatestVerified = $true
-        equalVersionCheckPassed = $true
+        anonymousPublicAccess = (-not [bool]$UseApiToken)
+        versionComparisonPassed = $true
         realUpdaterDownloadAndStagePassed = $true
         portableChecksumManifestAndVersionPassed = $true
-        publishedExecutableMatchesLocal = $true
+        equalVersionExecutableIdentityChecked = ($current -eq [version]$ExpectedVersion)
         installedOnUserMachine = $false
         applicationLaunched = $false
     } | ConvertTo-Json | Out-File -LiteralPath $ReportPath -Encoding utf8
-    Write-Host "Private updater verified v${ExpectedVersion}: authenticated discovery, assets, checksums, source and executable identity. No installation or application launch."
+    Write-Host "Updater $current verified published v${ExpectedVersion}: discovery, version, real download, checksums and source identity. No installation or UI launch."
 }
 finally {
-    [Environment]::SetEnvironmentVariable('GH_TOKEN', $oldToken)
-    [Environment]::SetEnvironmentVariable('FOURRTOOLS_DATA_ROOT', $oldDataRoot)
-    $safeWork = [IO.Path]::GetFullPath($work)
-    $safeParent = [IO.Path]::GetFullPath((Join-Path $repositoryRoot 'dist/published')) + '\'
-    if ($safeWork.StartsWith($safeParent, [StringComparison]::OrdinalIgnoreCase) -and (Test-Path -LiteralPath $safeWork)) {
-        Remove-Item -LiteralPath $safeWork -Recurse -Force
-    }
+    foreach ($name in $oldEnvironment.Keys) { [Environment]::SetEnvironmentVariable($name, $oldEnvironment[$name]) }
+    if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
 }
