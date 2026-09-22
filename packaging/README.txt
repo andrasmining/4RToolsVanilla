@@ -23,10 +23,11 @@ The canonical repository is now public: andrasmining/4RToolsVanilla.
 Windows GitHub Actions builds, validates and publishes portable packages.
 CHECK FOR UPDATES downloads a prebuilt binary; it never builds on your PC.
 
-v0.6.70 and later try public metadata/assets anonymously first. No token is needed
-for successful public access. Missing, expired or unreadable saved credentials do
-not block it. UPDATE ACCESS retains a bounded private fallback; credentials never
-follow redirects to download CDNs or enter logs/profile exports.
+v0.6.71 and later resolve the public stable release/assets anonymously first. No token is needed for successful public access. The normal public path resolves
+the canonical github.com latest-release redirect and direct release-download URLs,
+avoiding anonymous REST API rate-limit dependency. Missing, expired or unreadable
+saved credentials do not block it. UPDATE ACCESS retains a bounded private fallback;
+credentials never follow redirects to download CDNs or enter logs/profile exports.
 
 Installed v0.6.68/v0.6.69 clients still require their old valid update credential.
 With it, they can upgrade from the same now-public repository. Without it, extract
