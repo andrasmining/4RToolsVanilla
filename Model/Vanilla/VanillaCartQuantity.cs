@@ -33,29 +33,65 @@ namespace _4RTools.Model.Vanilla
 
         internal static bool TryObserve(Bitmap image, out VanillaQuantityObservation observation)
         {
+            string evidence;
+            return TryObserve(image, out observation, out evidence);
+        }
+
+        internal static bool TryObserve(Bitmap image, out VanillaQuantityObservation observation, out string evidence)
+        {
             observation = null;
-            if (image == null || image.Width > 4096 || image.Height > 4096) return false;
+            evidence = "quantity observation not evaluated";
+            if (image == null || image.Width > 4096 || image.Height > 4096)
+            {
+                evidence = "invalid quantity capture dimensions";
+                return false;
+            }
             var pixels = new QuantityPixels(image);
             Rectangle[] forms = pixels.Components(false);
             Rectangle[] fields = pixels.Components(true);
-            if (fields.Length > 16) return false;
+            evidence = "forms=" + forms.Length + ", selectedFields=" + fields.Length;
+            if (fields.Length > 16)
+            {
+                evidence += "; too many selected-field candidates";
+                return false;
+            }
+            string last = evidence;
             foreach (Rectangle field in fields)
             {
                 Rectangle[] parents = forms.Where(box => box.Contains(field) && field.Top >= box.Top + box.Height / 4).ToArray();
-                if (parents.Length != 1) continue;
+                if (parents.Length != 1)
+                {
+                    last = evidence + "; field=" + field + " parentForms=" + parents.Length;
+                    continue;
+                }
                 Rectangle dialog = parents[0];
-                VanillaTextLine[] lines; string evidence;
+                VanillaTextLine[] lines; string ocrEvidence;
                 // OCR expects dark glyphs on a light surface. The selected number is
                 // white on blue; grayscale of the whole selection creates a dark box
                 // and can erase or merge digits. Remove only the observed selection
                 // background, preserving glyph intensities without substituting text.
                 using (Bitmap textImage = pixels.SelectedText(field))
                 {
-                    if (textImage == null || !VanillaTextRecognition.TryReadDigitsPixelPreserving(textImage,
-                        new Rectangle(Point.Empty, textImage.Size), out lines, out evidence)) continue;
+                    if (textImage == null)
+                    {
+                        last = evidence + "; field=" + field + "; selected text reconstruction failed";
+                        continue;
+                    }
+                    if (!VanillaTextRecognition.TryReadDigitsPixelPreserving(textImage,
+                        new Rectangle(Point.Empty, textImage.Size), out lines, out ocrEvidence))
+                    {
+                        last = evidence + "; field=" + field + "; " + ocrEvidence;
+                        continue;
+                    }
                 }
-                if (lines.Length != 1) continue;
+                if (lines.Length != 1)
+                {
+                    last = evidence + "; field=" + field + "; OCR lines=" + lines.Length;
+                    continue;
+                }
                 string text = lines[0].Text.Trim(); uint value;
+                string confidence = lines[0].Confidence.ToString("0.0", CultureInfo.InvariantCulture);
+                string wordConfidence = string.Join(",", lines[0].Words.Select(w => w.Confidence.ToString("0.0", CultureInfo.InvariantCulture)));
                 // Numeric OCR has already passed the dedicated multi-view consensus
                 // gate (native/enlarged scale and independent segmentation modes).
                 // Repeated narrow digits such as 9999 score materially lower in
@@ -65,10 +101,22 @@ namespace _4RTools.Model.Vanilla
                 // fresh client captures before this value can authorize Cart input.
                 if (lines[0].Confidence < 55 || lines[0].Words.Any(w => w.Confidence < 55)
                     || text.Length == 0 || text.Length > 7 || text.Any(c => c < '0' || c > '9')
-                    || !uint.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out value) || value == 0 || value > 2000000) continue;
-                if (observation != null) { observation = null; return false; }
+                    || !uint.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out value) || value == 0 || value > 2000000)
+                {
+                    last = evidence + "; field=" + field + "; OCR='" + text + "' confidence=" + confidence
+                        + " words=[" + wordConfidence + "]; " + ocrEvidence + "; rejected by numeric bounds/confidence";
+                    continue;
+                }
+                if (observation != null)
+                {
+                    observation = null;
+                    evidence = "multiple independently valid quantity fields; ambiguous";
+                    return false;
+                }
                 observation = new VanillaQuantityObservation { Dialog = dialog, Field = Rectangle.Inflate(field, 2, 2), Amount = value };
+                last = "quantity=" + value + "; field=" + field + "; confidence=" + confidence + "; " + ocrEvidence;
             }
+            evidence = observation != null ? last : last + "; no unique valid quantity";
             return observation != null;
         }
 
