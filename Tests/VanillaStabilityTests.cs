@@ -175,7 +175,8 @@ namespace Vanilla.Diagnostics.Tests
                 graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                 graphics.DrawString(text, font, Brushes.White, 204, 212, StringFormat.GenericTypographic);
                 VanillaQuantityObservation observed;
-                bool found = VanillaCartQuantity.TryObserve(image, out observed);
+                string recognitionEvidence;
+                bool found = VanillaCartQuantity.TryObserve(image, out observed, out recognitionEvidence);
                 uint expected;
                 bool numeric = uint.TryParse(text, out expected) && expected > 0;
                 if (found != numeric || (found && observed.Amount != expected))
@@ -184,7 +185,8 @@ namespace Vanilla.Diagnostics.Tests
                     Directory.CreateDirectory(directory);
                     image.Save(Path.Combine(directory, "synthetic-" + text + "-" + selection.ToArgb() + ".png"));
                     throw new Exception("Selected numeric quantity recognition mismatch: synthetic='" + text
-                        + "' selection=" + selection + " found=" + found + " read=" + (found ? observed.Amount.ToString() : "none"));
+                        + "' selection=" + selection + " found=" + found + " read=" + (found ? observed.Amount.ToString() : "none")
+                        + " evidence=[" + recognitionEvidence + "]");
                 }
             }
         }
