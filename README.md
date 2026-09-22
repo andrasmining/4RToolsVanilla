@@ -28,7 +28,7 @@ Compatible profiles and recovery settings survive updates. Passwords use Windows
 DPAPI and must be entered separately for each Windows user/machine. Packages
 contain no personal credentials, profiles or mutable user-data directories.
 
-**v0.6.71 and later resolve the public stable release and assets anonymously first.**
+**v0.6.72 and later resolve the public stable release and assets anonymously first.**
 A missing, expired or unreadable saved token cannot block successful public access.
 The normal public path uses the canonical `github.com/.../releases/latest` redirect and
 canonical release-download URLs, avoiding anonymous REST API rate-limit dependency.
@@ -156,8 +156,8 @@ the release script supports subsequent offline builds. Version must match
 `Properties/AssemblyInfo.cs`:
 
 ```powershell
-.\scripts\release-local.ps1 -Version 0.6.71 -Restore
-.\scripts\release-local.ps1 -Version 0.6.71 -Replace
+.\scripts\release-local.ps1 -Version 0.6.72 -Restore
+.\scripts\release-local.ps1 -Version 0.6.72 -Replace
 ```
 
 `-Publish` additionally requires authenticated GitHub CLI and exact clean remote
