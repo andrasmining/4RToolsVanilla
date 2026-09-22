@@ -14,7 +14,7 @@ if (-not $Executable.StartsWith($repositoryRoot + '\', [StringComparison]::Ordin
     throw 'Only repository-owned inert test executables may use this runner.'
 }
 if (-not (Test-Path -LiteralPath $Executable -PathType Leaf)) { throw "Missing inert test executable: $Executable" }
-if ((Split-Path -Leaf $Executable) -notin @('Vanilla.Diagnostics.Tests.exe', 'UiLayoutHarness.exe', 'PortableSmokeHost.exe')) {
+if ((Split-Path -Leaf $Executable) -notin @('Vanilla.Diagnostics.Tests.exe', 'UiLayoutHarness.exe', 'TemporaryUiHarness.exe', 'PortableSmokeHost.exe')) {
     throw 'The isolated runner accepts only the dedicated inert test hosts, never the normal application.'
 }
 New-Item -ItemType Directory -Path (Split-Path -Parent $LogPath) -Force | Out-Null
