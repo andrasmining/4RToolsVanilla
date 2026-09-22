@@ -19,13 +19,11 @@ namespace _4RTools.Model.Vanilla
             internal Rectangle Bounds;
             internal int Area;
         }
-
         internal static bool TryDetect(Bitmap image, out VanillaCharacterSelectionObservation observation, out string evidence)
         {
             observation = null;
             evidence = "observed character cards/Character List control unavailable";
-            if (image == null || image.Width < 320 || image.Height < 240
-                || (long)image.Width * image.Height > 16000000) return false;
+            if (image == null || image.Width < 320 || image.Height < 240 || (long)image.Width * image.Height > 16000000) return false;
             var pixels = new Pixels(image);
             List<Component> components = pixels.Components();
             var candidates = components.Where(c => c.Bounds.Width >= 28 && c.Bounds.Height >= 36
@@ -42,53 +40,42 @@ namespace _4RTools.Model.Vanilla
                 if (group.Length != 15) continue;
                 string key = string.Join(";", group.Select(c => c.ToString()));
                 if (!tried.Add(key)) continue;
-                Rectangle[] cards;
-                int columns;
+                Rectangle[] cards; int columns;
                 if (!VanillaCharacterPattern.TryOrderGrid(group, out cards, out columns)) continue;
                 int[] selected = Enumerable.Range(0, 15).Where(i => pixels.SelectedOutline(cards[i])).ToArray();
                 if (selected.Length != 1) continue;
                 Rectangle grid = cards.Aggregate(Rectangle.Union);
-                // Locate a separate light control beside the grid. Its observed text
-                // must establish the screen's role; arbitrary photo/slot grids fail.
+                // Locate a separate light control beside the grid. Observed text must
+                // establish the role of this surface; arbitrary slot grids fail.
                 Component[] listControls = components.Where(c => c.Bounds.Left >= grid.Right
                     && c.Bounds.Width >= seed.Bounds.Width * .7 && c.Bounds.Width <= seed.Bounds.Width * 2
                     && c.Bounds.Height >= seed.Bounds.Height * .18 && c.Bounds.Height <= seed.Bounds.Height * .8
-                    && c.Bounds.Bottom >= grid.Bottom - seed.Bounds.Height
-                    && c.Bounds.Top < grid.Bottom && c.Area >= c.Bounds.Width * c.Bounds.Height * .6).ToArray();
+                    && c.Bounds.Bottom >= grid.Bottom - seed.Bounds.Height && c.Bounds.Top < grid.Bottom
+                    && c.Area >= c.Bounds.Width * c.Bounds.Height * .6).ToArray();
                 if (listControls.Length > 4 || !listControls.Any(c => HasCharacterListTitle(image, c.Bounds))) continue;
                 if (observation != null) { observation = null; evidence = "multiple character grids; input refused"; return false; }
                 observation = new VanillaCharacterSelectionObservation
-                {
-                    Cards = cards, Columns = columns, Selected = selected[0],
-                    Occupied = cards.Select(pixels.HasCharacterSprite).ToArray()
-                };
+                { Cards = cards, Columns = columns, Selected = selected[0], Occupied = cards.Select(pixels.HasCharacterSprite).ToArray() };
             }
             if (observation == null) return false;
-            evidence = "observed fifteen-card " + observation.Columns + "x" + observation.Rows
-                + " grid; Character List title; cyan selection at slot " + (observation.Selected + 1)
-                + "; occupied slots=" + string.Join(",", Enumerable.Range(0, 15).Where(i => observation.Occupied[i]).Select(i => i + 1));
+            var observed = observation;
+            evidence = "observed fifteen-card " + observed.Columns + "x" + observed.Rows
+                + " grid; Character List title; cyan selection at slot " + (observed.Selected + 1)
+                + "; occupied slots=" + string.Join(",", Enumerable.Range(0, 15).Where(i => observed.Occupied[i]).Select(i => i + 1));
             observation.Evidence = evidence;
             return true;
         }
-
         private static bool HasCharacterListTitle(Bitmap image, Rectangle control)
         {
-            VanillaTextLine[] lines;
-            string ignored;
-            if (VanillaTextRecognition.TryRead(image, control, false, out lines, out ignored)
-                && lines.Any(IsTitle)) return true;
+            VanillaTextLine[] lines; string ignored;
+            if (VanillaTextRecognition.TryRead(image, control, false, out lines, out ignored) && lines.Any(IsTitle)) return true;
             var recognition = new VanillaRecognitionPixels(image);
             foreach (Rectangle area in VanillaServiceRecognition.FindBodyTextAreas(recognition, control))
-                if (VanillaTextRecognition.TryReadPixelPreservingLine(image, area, out lines, out ignored)
-                    && lines.Any(IsTitle)) return true;
+                if (VanillaTextRecognition.TryReadPixelPreservingLine(image, area, out lines, out ignored) && lines.Any(IsTitle)) return true;
             return false;
         }
-
         private static bool IsTitle(VanillaTextLine line)
-        {
-            return line.Confidence >= 55 && VanillaServiceRecognition.Letters(line.Text) == "CHARACTERLIST";
-        }
-
+        { return line.Confidence >= 55 && VanillaServiceRecognition.Letters(line.Text) == "CHARACTERLIST"; }
         private sealed class Pixels
         {
             private readonly byte[] rgb;
