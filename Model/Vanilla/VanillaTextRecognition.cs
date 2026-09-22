@@ -79,7 +79,7 @@ namespace _4RTools.Model.Vanilla
             // quantity input.
             var candidates = new List<Tuple<int, VanillaTextLine>>();
             var attempts = new List<string>();
-            foreach (int scale in new[] { 1, 4 })
+            foreach (int scale in new[] { 1, 2, 3, 4 })
             {
                 VanillaTextLine[] observed;
                 string attemptEvidence;
@@ -90,24 +90,40 @@ namespace _4RTools.Model.Vanilla
                 if (text.Length == 0 || text.Any(ch => ch < '0' || ch > '9')) continue;
                 candidates.Add(Tuple.Create(scale, observed[0]));
             }
-            if (candidates.Count == 0)
+            if (candidates.Count < 2)
             {
-                evidence = "digit OCR produced no numeric candidate; " + string.Join("; ", attempts);
+                evidence = "digit OCR had fewer than two numeric observations; " + string.Join("; ", attempts);
                 return false;
             }
-            string value = candidates[0].Item2.Text.Trim();
-            if (candidates.Any(candidate => !string.Equals(candidate.Item2.Text.Trim(), value, StringComparison.Ordinal)))
+
+            var groups = candidates
+                .GroupBy(candidate => candidate.Item2.Text.Trim(), StringComparer.Ordinal)
+                .Select(group => new
+                {
+                    Text = group.Key,
+                    Count = group.Count(),
+                    Members = group.ToArray(),
+                    Confidence = group.Max(candidate => candidate.Item2.Confidence)
+                })
+                .OrderByDescending(group => group.Count)
+                .ThenByDescending(group => group.Confidence)
+                .ToArray();
+            if (groups[0].Count < 2 || (groups.Length > 1 && groups[1].Count == groups[0].Count))
             {
-                evidence = "digit OCR scales disagreed; no numeric value accepted";
+                evidence = "digit OCR had no unique two-view consensus; observations="
+                    + string.Join(",", candidates.Select(candidate => candidate.Item1 + "x:" + candidate.Item2.Text.Trim()));
                 return false;
             }
-            VanillaTextLine winner = candidates
+
+            var consensus = groups[0];
+            VanillaTextLine winner = consensus.Members
                 .OrderByDescending(candidate => candidate.Item2.Confidence)
                 .ThenBy(candidate => candidate.Item1)
                 .First().Item2;
             lines = new[] { winner };
-            evidence = "digit OCR agreed/was unambiguous across scales; valueLength=" + value.Length
-                + "; candidateScales=" + string.Join(",", candidates.Select(candidate => candidate.Item1 + "x"));
+            evidence = "digit OCR consensus=" + consensus.Count + "/" + candidates.Count
+                + "; valueLength=" + consensus.Text.Length
+                + "; agreeingScales=" + string.Join(",", consensus.Members.Select(candidate => candidate.Item1 + "x"));
             return true;
         }
 
