@@ -44,6 +44,26 @@ jobs:
           "VERSION=$($match.Groups[1].Value)" | Out-File $env:GITHUB_ENV -Encoding utf8 -Append
           "version=$($match.Groups[1].Value)" | Out-File $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
+      - name: Parse-check PowerShell engineering scripts
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $parseFailures = @()
+          foreach ($file in Get-ChildItem -LiteralPath scripts -Filter '*.ps1' -File -Recurse) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile(
+              $file.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            foreach ($error in @($errors)) {
+              $parseFailures += "$($file.FullName):$($error.Extent.StartLineNumber):$($error.Extent.StartColumnNumber) $($error.Message)"
+            }
+          }
+          if ($parseFailures.Count -gt 0) {
+            $parseFailures | ForEach-Object { Write-Error $_ }
+            throw 'PowerShell parse validation failed.'
+          }
+          Write-Host 'All repository PowerShell engineering scripts parse successfully.'
+
       - name: Validate shipped build profiles
         shell: powershell
         run: '& .\scripts\validate-vanilla-build-profiles.ps1'
