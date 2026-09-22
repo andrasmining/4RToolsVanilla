@@ -13,8 +13,10 @@ if ((git rev-parse HEAD).Trim() -cne $ExpectedCommit -or (git status --porcelain
 $main = gh api "repos/$repo/git/ref/heads/main" --jq '.object.sha'
 if ($LASTEXITCODE -ne 0 -or $main.Trim() -cne $ExpectedCommit) { throw 'Main advanced before publication; revalidate the current main.' }
 $tag = "v$Version"
-$existingTag = gh api "repos/$repo/git/ref/tags/$tag" --jq '.object.sha' 2>$null
-if ($LASTEXITCODE -eq 0 -and $existingTag.Trim() -cne $ExpectedCommit) {
+$tagJson = gh api "repos/$repo/git/matching-refs/tags/$tag"
+if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect existing version tags.' }
+$tags = @($tagJson | ConvertFrom-Json | Where-Object { $_.ref -ceq "refs/tags/$tag" })
+if ($tags.Count -gt 0 -and $tags[0].object.sha -cne $ExpectedCommit) {
     Write-Host "Version $tag already belongs to an earlier commit; no release assets or tags changed."
     return
 }
@@ -32,8 +34,10 @@ Expand-Archive -LiteralPath $zip -DestinationPath $reference -Force
 $executable = Join-Path $reference "4RTools-Vanilla-$tag/4RTools-Vanilla.exe"
 $notes = Join-Path $root 'RELEASE-NOTES.md'
 if (-not (Test-Path -LiteralPath $notes)) { throw 'Reviewed release notes are missing.' }
-$release = gh release view $tag --repo $repo --json tagName,isDraft 2>$null
-if ($LASTEXITCODE -ne 0) {
+$releaseJson = gh release list --repo $repo --limit 1000 --json tagName,isDraft
+if ($LASTEXITCODE -ne 0) { throw 'Cannot inspect existing releases.' }
+$existing = @($releaseJson | ConvertFrom-Json | Where-Object { $_.tagName -ceq $tag })
+if ($existing.Count -eq 0) {
     gh release create $tag $zip $checksum --repo $repo --target $ExpectedCommit --title "4RTools Vanilla $tag" --notes-file $notes --draft
     if ($LASTEXITCODE -ne 0) { throw 'Draft release/asset upload failed.' }
 }

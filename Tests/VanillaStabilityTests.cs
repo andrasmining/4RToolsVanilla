@@ -162,17 +162,30 @@ namespace Vanilla.Diagnostics.Tests
         }
         private static void QuantityVision()
         {
+            foreach (string text in new[] { "7", "123", "1000", "9999", "abc", "0" })
+            foreach (Color selection in new[] { Color.Blue, Color.FromArgb(111, 158, 242) })
             using (var image = new Bitmap(640, 480))
             using (Graphics graphics = Graphics.FromImage(image))
             using (var font = new Font("Tahoma", 16, FontStyle.Regular, GraphicsUnit.Pixel))
+            using (var background = new SolidBrush(selection))
             {
                 graphics.Clear(Color.FromArgb(90, 95, 90));
                 graphics.FillRectangle(Brushes.White, 180, 170, 270, 80);
-                graphics.FillRectangle(Brushes.Blue, 200, 210, 90, 24);
+                graphics.FillRectangle(background, 200, 210, 90, 24);
                 graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-                graphics.DrawString("123", font, Brushes.White, 204, 212, StringFormat.GenericTypographic);
+                graphics.DrawString(text, font, Brushes.White, 204, 212, StringFormat.GenericTypographic);
                 VanillaQuantityObservation observed;
-                Assert(VanillaCartQuantity.TryObserve(image, out observed) && observed.Amount == 123, "Selected numeric quantity not recognized.");
+                bool found = VanillaCartQuantity.TryObserve(image, out observed);
+                uint expected;
+                bool numeric = uint.TryParse(text, out expected) && expected > 0;
+                if (found != numeric || (found && observed.Amount != expected))
+                {
+                    string directory = Path.Combine(Environment.CurrentDirectory, "dist", "validation", "quantity-fixtures");
+                    Directory.CreateDirectory(directory);
+                    image.Save(Path.Combine(directory, "synthetic-" + text + "-" + selection.ToArgb() + ".png"));
+                    throw new Exception("Selected numeric quantity recognition mismatch: synthetic='" + text
+                        + "' selection=" + selection + " found=" + found + " read=" + (found ? observed.Amount.ToString() : "none"));
+                }
             }
         }
         private sealed class FakeTemporary : IVanillaTemporaryIo
@@ -265,7 +278,7 @@ namespace Vanilla.Diagnostics.Tests
         }
         private static void Reject(Action action)
         {
-            try { action(); } catch (IOException) { return; } catch (InvalidOperationException) { return; } catch (OperationCanceledException) { return; }
+            try { action(); } catch (InvalidDataException) { return; } catch (IOException) { return; } catch (InvalidOperationException) { return; } catch (OperationCanceledException) { return; }
             throw new Exception("Unsafe operation was accepted.");
         }
         private static void Assert(bool value, string message) { if (!value) throw new Exception(message); }

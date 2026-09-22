@@ -1,205 +1,126 @@
 4RTools Vanilla
 ==============
-
-Independent fork of 4RTools, not an official upstream or Vanilla MMO release.
+Independent 4RTools fork; not an official upstream or Vanilla MMO release.
 Copyright (c) 2022 4RTools. See LICENSE and THIRD-PARTY-NOTICES.txt.
 
-Starting the application
------------------------
-Extract the entire release folder and run 4RTools-Vanilla.exe. Keep its .config,
-VanillaBuilds, x86, tessdata and tessdata-best folders and the bundled runtime DLLs beside it.
-Windows with Microsoft .NET Framework 4.7.2
-or a later 4.x runtime is required. The application targets x86, supports x64
-Windows and requests administrator privileges to match elevated game clients.
-No Visual Studio, Git, NuGet, SDK or source tree is needed to run the package.
+Starting and preserving settings
+-------------------------------
+Extract the complete version folder and run 4RTools-Vanilla.exe. Keep its .config,
+VanillaBuilds, x86, tessdata, tessdata-best and all runtime DLLs together. Do not
+copy only the executable. Windows with .NET Framework 4.7.2 or a later 4.x runtime
+is required; the application is x86 and supports x64 Windows. It requests elevation
+to match elevated clients. No compiler, SDK, source tree or GitHub CLI is required.
+Minimizing keeps the taskbar window; closing exits the application.
 
-Vanilla is the primary workspace. Original 4RTools remains a compatibility tab.
-The redundant Vanilla Automation tab has been removed; Smart Teleport is configured
-directly on each character in Recovery & relog.
-Minimizing keeps the main window on the Windows taskbar; it does not hide it
-exclusively in the system tray. Closing the main window exits the application.
+Persistent data is under %LOCALAPPDATA%\4RTools Vanilla, outside release folders.
+Compatible profiles and recovery settings survive updates. Passwords use Windows
+DPAPI and must be entered separately per Windows user/machine. Packages contain
+no private credentials, profiles or mutable user-data directories.
 
-Recovery and Autobattle
------------------------
-Set the Launcher path, then add character profiles with credentials, character
-slot, per-character proxy and the resume hotkey configured for Vanilla Autobattle.
-Settings auto-save; there is no separate Save button. Any number of profiles may
-be stored, but at most two characters may be enabled and managed simultaneously.
-
-START completes one client's startup before advancing to the next. After a real
-login/relog/replacement reaches verified gameplay, the client settles for 10 seconds,
-then the configured resume hotkey is sent. Fresh verified X/Y is checked for movement
-for 10 seconds. Without movement, ownership/focus is revalidated and the hotkey is
-retried, for THREE TOTAL hotkey attempts.
-
-The three-hotkey sequence belongs to startup/recovery only. Healthy already-running
-clients are adopted without toggling, and steady-state stillness does not send an
-Autobattle wakeup hotkey. Smart Teleport is the first stationary self-heal. Recovery &
-relog also has a no-movement restart threshold, default 180 seconds and configurable
-from 60 to 3600 seconds. If no verified X/Y movement occurs by that threshold, only
-the affected client is restarted.
-
-Known Now Logging Out. / Disconnected from Server. dialogs may recover sooner after
-two fresh matching captures. A stable return to the login shell after confirmed
-gameplay also triggers recovery. Unknown popups receive no blind input.
-
-Failed close/launch/login/restart cycles retry indefinitely with exponential backoff.
-The delay starts from the configured base, doubles after failures and is capped at one
-hour between attempts. There is no finite three-client-restart shutdown budget.
-Healthy siblings remain untouched and recovery input stays globally serialized.
-
-Server downtime is a specific exception: two fresh Server Closed.(1) Message
-observations start a shared 15-minute retry schedule. 4RTools checks by using its
-normal verified launcher/login flow, keeps waiting if recovery fails, and clears
-outage mode only after the recovering account's gameplay identity is verified.
-Please wait... alone is not an outage or online signal. The next-check status is
-shown in Recovery; waiting releases input ownership and leaves healthy clients alone.
-
-STOP and active configuration/client-ownership changes cancel stale input.
-
-Automatic minimization is user-presence aware for ordinary/adopted clients: they are
-left visible until at least 60 seconds visible and 60 seconds without cursor movement.
-A client freshly launched/relogged by 4RTools is minimized immediately after verified
-Autobattle movement.
-
-Smart Teleport
+Public updates
 --------------
-Configure Smart Teleport in each character row. It is keyed by username + character
-name and automatically follows the verified running PID; no process selector is used.
-Each character stores its own enable flag, live-captured teleport hotkey and idle X/Y
-timeout (60 seconds by default). Fresh verified X/Y movement resets the timer; target,
-combat and casting state are not required.
+The canonical repository is now public: andrasmining/4RToolsVanilla.
+Windows GitHub Actions builds, validates and publishes portable packages.
+CHECK FOR UPDATES downloads a prebuilt binary; it never builds on your PC.
 
-At timeout, 4RTools sends the configured hotkey to that owned Vanilla window using
-ordinary background Windows messages, then positively detects the Select an Area to
-Warp popup before sending Enter to the selected first option. If the popup is not
-recognized, Enter is never sent. Unknown/stale coordinates and ownership changes fail
-closed.
+v0.6.70 and later try public metadata/assets anonymously first. No token is needed
+for successful public access. Missing, expired or unreadable saved credentials do
+not block it. UPDATE ACCESS retains a bounded private fallback; credentials never
+follow redirects to download CDNs or enter logs/profile exports.
 
-Weight / Cart management
-------------------------
-The Weight tab can trigger ordinary UI-only Cart maintenance from verified read-only
-CurrentWeight/MaxWeight. Each character row has its own Weight switch; shared Weight-tab settings apply only to rows whose Weight switch is enabled. The default trigger is 50% and is configurable. Use, Equip
-and Etc inventory categories are selectable. Weight has its own configurable Autobattle
-STOP hotkey (Alt+3 by default), plus Inventory and Cart hotkeys. 4RTools sends that STOP
-command before opening Inventory/Cart; it never reuses the character ResumeHotkey to stop.
-After cleanup it starts Autobattle again through the existing verified per-character
-ResumeHotkey/X-Y path and minimizes.
+Installed v0.6.68/v0.6.69 clients still require their old valid update credential.
+With it, they can upgrade from the same now-public repository. Without it, extract
+this complete portable ZIP once. v0.6.67 points at the retired repository and also
+needs the portable migration. Existing per-user settings remain in place.
 
-Use/Equip/Etc category tabs are detected from the live Inventory panel, slot grid and
-separator structure; no fixed or percentage category coordinates are used. The blue Fav
-appearance is only styling, not an active-tab signal. The selected category is detected
-structurally from the tab whose right edge is open into the Inventory body while inactive
-tabs retain their right border. If a click is not positively confirmed, 4RTools re-detects
-the rail and retries through a bounded deterministic set of safe interior points while
-polling fresh visual state. For item traversal, only the first inventory slot is authoritative:
-4RTools classifies it against a fresh detected empty-slot reference, requiring two consecutive
-occupied captures before dragging and two consecutive empty captures before advancing. Cart
-drops may land anywhere inside the detected Cart item body and rotate deterministically among
-safe detected interior points; an empty destination slot is not required. For stack transfers
-Enter is pressed only after a quantity dialog is positively detected. A quantity-one item has no
-dialog and receives no Enter. Major Cart steps are visible in the Recovery log and global debug
-log. If the UI cannot be identified safely, first-slot state stays ambiguous, the Cart rejects a
-transfer, or progress cannot be verified, input stops and only that character
-is held for manual Cart emptying with Autobattle left OFF. That hold survives unrelated
-settings and supervisor STOP/START changes and is removed only by the explicit hold-clear
-action. Memory access remains read-only; inventory state is never read/written from game memory.
+The updater verifies ZIP checksum, complete manifest, repository assets and binary
+version. Staging precedes interruption of automation; active Cart/recovery blocks
+installation. Managed destination files are backed up before replacement; copy,
+verification or early-start failure rolls back. User profiles are not replaced.
+Backups/journals are retained, but this is not a power-loss-proof transaction or
+a full application-health handshake. Offline use only needs an obtained ZIP.
 
-Persistent configuration and updates
-------------------------------------
-User data is stored outside the versioned release folder under:
+Recovery and identity
+---------------------
+Set launcher, credentials, character slot/name, proxy and Autobattle resume hotkey.
+Settings auto-save. Many character rows may be stored; at most two can be enabled.
+Rows use username plus character identity. Discovery does not guess unknown slots,
+passwords or proxies. Existing configured slots/secrets remain preserved.
 
-  %LOCALAPPDATA%\4RTools Vanilla\
+Startup/recovery is sequential. Named services require observed text/highlights;
+credentials require verified focus and readback. Character selection observes its
+15-card layout and unique selected frame. Empty/unknown targets receive no final
+Enter; expected gameplay identity is checked before resume. No fixed character-slot
+or GAME START coordinates are used. Supported evidence may still fail on an
+unrecognized skin, scaling, animation or remote-desktop capture.
 
-Compatible old profile/settings data is migrated without deleting the original
-copy. The release ZIP contains no personal profiles, recovery credentials or
-mutable user-data folders. Passwords are protected with Windows DPAPI, are not
-logged and must be entered separately on each Windows user/machine.
+Actual login/relog settles for ten seconds, then attempts the configured resume
+hotkey up to three times with fresh X/Y movement verification. Failed recovery
+cycles retry with exponential backoff capped at one hour. Healthy siblings are
+not toggled/restarted. Known disconnect/logout dialogs can trigger earlier recovery
+with two fresh matching observations. Unknown popups receive no blind Enter.
+A verified Server Closed.(1) outage uses a shared fixed fifteen-minute retry schedule.
+Please wait... alone proves neither outage nor successful recovery.
 
-CHECK FOR UPDATES and version status are at the right of the Vanilla header.
-The updater verifies the downloaded ZIP checksum and its payload manifest before
-applying an update. The Data & updates page displays the actual paths in use.
+Smart Teleport defaults to sixty seconds per enabled character and sends ordinary
+background messages to the owned client. Enter requires a positively observed warp
+popup. The longer restart threshold defaults to 180 seconds, configurable 60-3600;
+teleport attempts do not reset it without actual verified movement. Only the owned
+failing client is replaced. STOP/identity changes cancel stale input.
 
-Releases now come from the private andrasmining/4RToolsVanilla repository.
-GitHub Actions is not used: packages are built/tested locally and uploaded when
-online. Updating downloads the prebuilt package, without compiling on your PC.
-Private downloads require an account or token with read access to that repository.
-In Data & updates > UPDATE ACCESS, save a fine-grained GitHub token scoped to
-4RToolsVanilla with Contents: Read permission. Windows DPAPI protects it for the
-current Windows user/PC. CLEAR removes the saved token. A saved token needs no
-GitHub CLI; existing GH_TOKEN/GITHUB_TOKEN environment credentials take priority,
-followed by the saved token and then an existing GitHub CLI login. The token is
-never included in profile exports, debug logs or portable releases.
-The old public v0.6.67 updater cannot discover the new repository; install the
-first private portable ZIP once. Existing local settings remain in place.
-For offline use, copy the whole portable ZIP from an authorized online PC and
-extract it into a new folder. Offline publishing to GitHub is not possible.
+Weight and Cart
+---------------
+Cart and Mail are independently switchable globally and per character. Mail-only
+mode uses its warning threshold. Cart DONE requires verified Cart >=99%, carried
+weight >=50% and verified Autobattle STOP. Normal Cart triggering defaults to 50%.
+STOP defaults to Alt+3 and is separate from the configured resume hotkey.
 
-Validation and integrity
-------------------------
-VERSION.txt records the version, architecture, source commit and build status.
-RELEASE-NOTES.md distinguishes automated Windows build, regression, package and
-mock-data UI validation from actual live Vanilla/Gepard gameplay testing.
-SHA256SUMS.txt lists the payload hashes; the release ZIP has an adjacent .sha256
-file. A passing build or mock UI test does not prove live-game behavior.
+STOP must establish continuous fresh X/Y stillness before panel input. The HP guard
+uses the pre-STOP baseline: a cumulative drop over ten percentage points or missing
+fresh HP aborts Cart work. Only recognized quantity prompts are cleared before
+verified resume, minimization and roughly sixty-second retry. A failed resume may
+queue an identity-bound supervised restart. User STOP/changed ownership withholds
+further input and retains a manual hold when pause may have occurred.
 
-Vanilla observation remains read-only. No game-memory writes, injections,
-packet manipulation, game-file changes or Gepard bypasses are performed.
-Unknown observations are never reinterpreted as valid gameplay state.
+Tabs are recognized structurally; blue Favorite styling does not mean selected.
+Two fresh first-slot observations authorize a drag or an empty-tab transition.
+Drops use the detected Cart interior, not an empty slot. Real drag holds and bounded
+retries tolerate lag; delayed Cart progress is checked before duplicate input.
+At Cart >=99%, no more transfer is attempted (including 9993/10000).
 
-Autofarming health watchdog
+A category is not an item identity/unit weight. Read the stable offered stack count,
+calculate a conservative amount from verified weights/capacity, focus the observed
+field and verify the typed value before Enter. Unknown prompts or values receive
+no guessed input. Conservative quantities can leave some space unused.
+
+Temporary Actions, UI and logs
 ------------------------------
-Fresh verified X/Y is the primary steady-state health signal. Smart Teleport defaults
-to 60 seconds per enabled character and gets the first chance to recover ordinary
-stationary gameplay. The longer restart threshold defaults to 180 seconds. Unchanged,
-missing, unreadable, unverified and stale coordinates never count as movement.
+Record action and sit/stand chords directly. Capture a target within the selected
+client; the captured image and identity are revalidated before ordinary mouse input.
+Old coordinate-only targets need a new capture. Capture reachable nearby ground
+for SP rest. Finish a pending targeted cast, then observe a short move settling
+before requesting sit. Unverified movement/death/identity changes/STOP cancel input.
+Sitting itself is not mapped: sit requested is not proof of seating. Lack of SP
+recovery has a bounded stop. Temporary Actions shares the main fleet/supervisor
+input lease with Cart and recovery.
 
-Smart Teleport attempts do not reset the restart deadline unless verified movement
-actually occurs. At the restart threshold only the affected client is replaced.
-Replacement startup again uses the 10-second settle + up to three verified resume
-hotkey attempts. Failed cycles continue through exponential backoff capped at one hour.
+The Characters/Log divider is draggable. TESTS includes Smart Teleport now and
+Weight/Cart clean now with production guards. Per-launch debug histories rotate
+at ten MB; COPY DEBUG LOG includes recent Cart/teleport action summaries. Do not
+publish personal incident logs, credentials or screenshots with private details.
 
-Both known disconnect/logout messages can trigger replacement sooner after fresh
-two-sample confirmation. If both clients fail, recovery stays sequential through close,
-exit confirmation, relaunch, login, movement verification and minimization. A healthy
-sibling remains untouched. STOP/configuration/client replacement cancels delayed work.
+Validation and limits
+---------------------
+VERSION.txt records version, architecture and exact source commit. SHA256SUMS.txt
+covers payload files; the release ZIP has an adjacent .sha256 file. RELEASE-NOTES.md
+distinguishes implemented fixes, Windows tests and real-world limitations.
 
-Manual diagnostics and debug history
-------------------------------------
-The Recovery TESTS menu contains Smart Teleport now (selected) and Weight/Cart clean
-now (selected). These run the production identity/ownership/visual/input paths and
-bypass only the automatic idle/weight trigger.
+CI covers Debug/Release regressions, package/OCR smoke checks, native test-owned
+process lifecycle, and isolated mock UI rendering. Published updater probes use
+real new anonymous and old authenticated discovery/download/staging paths without
+installing on a user's machine or launching gameplay. This is not live Vanilla,
+Gepard or remote-desktop testing, proof of every skin/DPI, or a diagnosis of all
+previously reported deaths.
 
-Every automatic/manual Smart Teleport and Cart-maintenance action is timestamped in the
-global debug log. COPY DEBUG LOG starts with a last-24-hours action summary showing
-teleport attempts/completions and Cart attempts/completions/items moved, followed by the
-detailed event trail.
-
-Character roster
-----------------
-One row represents one character, not one account. Several rows may share a
-username; at most two may be enabled. The Recovery Characters/Log divider is draggable so the
-user can temporarily enlarge either pane. The list starts with Enabled, Weight and
-Smart Teleport, then Smart Teleport seconds and hotkey. Description, Username,
-Slot and Character name follow. Weight remains on/off only in this list; detailed
-Weight/Cart settings are on the Weight tab. Running characters are discovered automatically
-from fresh verified memory and added once, disabled. Existing secrets/proxies stay
-unchanged. The unique key is username plus character name, not name alone.
-The shared reader includes both supplied username addresses; agreeing values fill
-the username automatically. Both values/addresses are visible in Diagnostics as
-UserName and UserNameMirror. Missing/conflicting usernames do not create new rows.
-A unique configured legacy username row learns its matching character name in
-place, keeping its slot, password, proxy, enabled state and ID. Ambiguous matches
-are not guessed. Slots remain unmapped; configured slots are preserved and unknown
-slots stay blank. Discovery never guesses slot 1, passwords or proxies.
-
-Service selection recognizes the configured name and verifies its highlight before
-submitting. All eight proxy services are available; saved choices keep their meaning.
-Login requires verified field focus, the exact visible username and password masks.
-Recognition runs locally using the included OCR engine and English model.
-
-Character selection detects fifteen cards and their selected frame, then verifies
-keyboard transitions before confirming the configured slot. TESTS uses the same
-selector. Fixed character-slot and GAME START coordinates are not used. Unknown
-layouts, unreadable text and ambiguous selection stop input; the actual character
-screen has not yet been validated live. See RELEASE-NOTES.md for validation limits.
+Game memory remains read-only. No injections, packets, game-file changes or Gepard
+bypasses are used. Unknown state is not reinterpreted as successful gameplay/input.

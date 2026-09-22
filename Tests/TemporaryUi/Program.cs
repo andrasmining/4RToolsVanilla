@@ -30,6 +30,8 @@ internal static class TemporaryUiHarness
             app.GetType("_4RTools.Program", true).GetMethod("LoadStockClients", All).Invoke(null, null);
             using (var main = (Form)Activator.CreateInstance(app.GetType("_4RTools.Forms.Container", true), new object[] { true }))
             {
+                main.MaximumSize = new Size(4096, 4096);
+                main.StartPosition = FormStartPosition.Manual; main.Location = Point.Empty;
                 main.Show(); Application.DoEvents();
                 var panelType = app.GetType("_4RTools.Model.Vanilla.VanillaTemporaryActionsPanel", true);
                 using (var panel = (Control)Activator.CreateInstance(panelType, All, null,
@@ -44,6 +46,7 @@ internal static class TemporaryUiHarness
                     {
                         main.WindowState = FormWindowState.Normal; main.ClientSize = new Size(width, 900);
                         main.PerformLayout(); Application.DoEvents();
+                        Require(main.ClientSize == new Size(width, 900), "Native viewport does not match the requested test size.");
                         foreach (string name in new[] { "actionKey", "sitKey" })
                         {
                             var box = (TextBox)Field(panel, name);

@@ -45,8 +45,15 @@ namespace _4RTools.Model.Vanilla
                 if (parents.Length != 1) continue;
                 Rectangle dialog = parents[0];
                 VanillaTextLine[] lines; string evidence;
-                Rectangle crop = Rectangle.Intersect(new Rectangle(Point.Empty, image.Size), Rectangle.Inflate(field, 2, 2));
-                if (!VanillaTextRecognition.TryReadPixelPreservingLine(image, crop, out lines, out evidence)) continue;
+                // OCR expects dark glyphs on a light surface. The selected number is
+                // white on blue; grayscale of the whole selection creates a dark box
+                // and can erase or merge digits. Remove only the observed selection
+                // background, preserving glyph intensities without substituting text.
+                using (Bitmap textImage = pixels.SelectedText(field))
+                {
+                    if (textImage == null || !VanillaTextRecognition.TryReadPixelPreservingLine(textImage,
+                        new Rectangle(Point.Empty, textImage.Size), out lines, out evidence)) continue;
+                }
                 if (lines.Length != 1) continue;
                 string text = lines[0].Text.Trim(); uint value;
                 if (lines[0].Confidence < 70 || lines[0].Words.Any(w => w.Confidence < 65)
@@ -183,6 +190,41 @@ namespace _4RTools.Model.Vanilla
                 int i = (y * width + x) * 3;
                 return rgb[i] >= 180 && rgb[i] - rgb[i + 2] >= 60 && rgb[i] - rgb[i + 1] >= 30;
             }
+            internal Bitmap SelectedText(Rectangle field)
+            {
+                var background = new Dictionary<int, int>();
+                for (int y = field.Top; y < field.Bottom; y++)
+                for (int x = field.Left; x < field.Right; x++)
+                {
+                    if (!Blue(x, y)) continue;
+                    int i = (y * width + x) * 3;
+                    int value = rgb[i] | rgb[i + 1] << 8 | rgb[i + 2] << 16;
+                    int count; background.TryGetValue(value, out count); background[value] = count + 1;
+                }
+                if (background.Count == 0) return null;
+                var mode = background.OrderByDescending(item => item.Value).First();
+                if (mode.Value < field.Width * field.Height / 3) return null;
+                int[] color = { mode.Key & 255, mode.Key >> 8 & 255, mode.Key >> 16 & 255 };
+                const int padding = 4;
+                var result = new Bitmap(field.Width + padding * 2, field.Height + padding * 2, PixelFormat.Format24bppRgb);
+                using (Graphics graphics = Graphics.FromImage(result)) graphics.Clear(Color.White);
+                for (int y = field.Top; y < field.Bottom; y++)
+                for (int x = field.Left; x < field.Right; x++)
+                {
+                    int i = (y * width + x) * 3, channels = 0;
+                    double alpha = 0;
+                    for (int channel = 0; channel < 3; channel++)
+                    {
+                        if (color[channel] >= 240) continue;
+                        alpha += Math.Max(0, Math.Min(1, (rgb[i + channel] - color[channel]) / (255.0 - color[channel])));
+                        channels++;
+                    }
+                    int gray = (int)Math.Round(255 * (1 - alpha / Math.Max(1, channels)));
+                    result.SetPixel(x - field.Left + padding, y - field.Top + padding, Color.FromArgb(gray, gray, gray));
+                }
+                return result;
+            }
+
             internal Rectangle[] Components(bool selected)
             {
                 var remaining = new bool[width * height];
