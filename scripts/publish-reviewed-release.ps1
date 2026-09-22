@@ -51,15 +51,46 @@ if ($LASTEXITCODE -ne 0) { throw 'Release assets were not retrievable.' }
 foreach ($name in @($zipName, "$zipName.sha256")) {
     if ((Get-FileHash -LiteralPath (Join-Path $verify $name) -Algorithm SHA256).Hash -cne (Get-FileHash -LiteralPath (Join-Path $artifactInput $name) -Algorithm SHA256).Hash) { throw 'Uploaded release asset differs from its validated artifact.' }
 }
-gh release edit $tag --repo $repo --draft=false --latest
-if ($LASTEXITCODE -ne 0) { throw 'Stable release publication failed.' }
-& (Join-Path $PSScriptRoot 'test-published-update.ps1') -ExpectedVersion $Version -ExpectedCommit $ExpectedCommit -ExecutablePath $executable -ReportPath (Join-Path $root 'dist/published/updater-public.json')
-# Exercise the previously published private-era updater against the now-public repo.
-$legacy = Join-Path $root 'dist/legacy-reference'
-New-Item -ItemType Directory -Path $legacy -Force | Out-Null
-gh release download v0.6.69 --repo $repo --pattern '4RTools-Vanilla-v0.6.69-portable.zip' --dir $legacy --clobber
-if ($LASTEXITCODE -ne 0) { throw 'Legacy update client could not be retrieved.' }
-Expand-Archive -LiteralPath (Join-Path $legacy '4RTools-Vanilla-v0.6.69-portable.zip') -DestinationPath $legacy -Force
-$legacyExe = Join-Path $legacy '4RTools-Vanilla-v0.6.69/4RTools-Vanilla.exe'
-& (Join-Path $PSScriptRoot 'test-published-update.ps1') -ExpectedVersion $Version -ExpectedCommit $ExpectedCommit -ExecutablePath $legacyExe -AllowOlderClient -UseApiToken -ReportPath (Join-Path $root 'dist/published/updater-legacy-v069.json')
+$publishedForProbe = $false
+try {
+    # The real updater can discover only a published stable release. Expose it
+    # temporarily, run both end-to-end probes, and revert it to draft if either
+    # probe fails so a broken candidate never remains the stable/latest release.
+    gh release edit $tag --repo $repo --draft=false --latest
+    if ($LASTEXITCODE -ne 0) { throw 'Stable release publication failed.' }
+    $publishedForProbe = $true
+
+    & (Join-Path $PSScriptRoot 'test-published-update.ps1') -ExpectedVersion $Version -ExpectedCommit $ExpectedCommit -ExecutablePath $executable -ReportPath (Join-Path $root 'dist/published/updater-public.json')
+
+    # Exercise the previously published private-era updater against the now-public repo.
+    $legacy = Join-Path $root 'dist/legacy-reference'
+    New-Item -ItemType Directory -Path $legacy -Force | Out-Null
+    gh release download v0.6.69 --repo $repo --pattern '4RTools-Vanilla-v0.6.69-portable.zip' --dir $legacy --clobber
+    if ($LASTEXITCODE -ne 0) { throw 'Legacy update client could not be retrieved.' }
+    Expand-Archive -LiteralPath (Join-Path $legacy '4RTools-Vanilla-v0.6.69-portable.zip') -DestinationPath $legacy -Force
+    $legacyExe = Join-Path $legacy '4RTools-Vanilla-v0.6.69/4RTools-Vanilla.exe'
+    & (Join-Path $PSScriptRoot 'test-published-update.ps1') -ExpectedVersion $Version -ExpectedCommit $ExpectedCommit -ExecutablePath $legacyExe -AllowOlderClient -UseApiToken -ReportPath (Join-Path $root 'dist/published/updater-legacy-v069.json')
+
+    $latest = gh api "repos/$repo/releases/latest" | ConvertFrom-Json
+    if ($LASTEXITCODE -ne 0 -or $latest.tag_name -cne $tag -or $latest.draft -or $latest.prerelease) {
+        throw 'Verified release is not the public stable Latest release.'
+    }
+    $latestNames = @($latest.assets | ForEach-Object { $_.name })
+    if (@($latestNames | Where-Object { $_ -ceq $zipName }).Count -ne 1 -or
+        @($latestNames | Where-Object { $_ -ceq "$zipName.sha256" }).Count -ne 1) {
+        throw 'Latest release does not expose exactly the verified portable ZIP and checksum.'
+    }
+}
+catch {
+    if ($publishedForProbe) {
+        & gh release edit $tag --repo $repo --draft 2>$null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning "Updater verification failed and the candidate could not be returned to draft automatically. Inspect $tag before treating it as stable."
+        }
+        else {
+            Write-Host "Updater verification failed; $tag was returned to draft and is no longer a stable/latest candidate."
+        }
+    }
+    throw
+}
 "Published and verified [$tag](https://github.com/$repo/releases/tag/$tag) from clean main $ExpectedCommit. Public anonymous updater and v0.6.69 authenticated upgrade both passed." | Out-File -LiteralPath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
