@@ -56,7 +56,14 @@ namespace _4RTools.Model.Vanilla
                 }
                 if (lines.Length != 1) continue;
                 string text = lines[0].Text.Trim(); uint value;
-                if (lines[0].Confidence < 70 || lines[0].Words.Any(w => w.Confidence < 65)
+                // Numeric OCR has already passed the dedicated multi-view consensus
+                // gate (native/enlarged scale and independent segmentation modes).
+                // Repeated narrow digits such as 9999 score materially lower in
+                // Tesseract than ordinary words even when every agreeing view reads the
+                // same digits, so use a numeric-specific floor here instead of the
+                // generic text threshold. Stability is still required again on two
+                // fresh client captures before this value can authorize Cart input.
+                if (lines[0].Confidence < 55 || lines[0].Words.Any(w => w.Confidence < 55)
                     || text.Length == 0 || text.Length > 7 || text.Any(c => c < '0' || c > '9')
                     || !uint.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out value) || value == 0 || value > 2000000) continue;
                 if (observation != null) { observation = null; return false; }
