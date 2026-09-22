@@ -51,7 +51,7 @@ namespace _4RTools.Model.Vanilla
                 // background, preserving glyph intensities without substituting text.
                 using (Bitmap textImage = pixels.SelectedText(field))
                 {
-                    if (textImage == null || !VanillaTextRecognition.TryReadPixelPreservingLine(textImage,
+                    if (textImage == null || !VanillaTextRecognition.TryReadDigitsPixelPreserving(textImage,
                         new Rectangle(Point.Empty, textImage.Size), out lines, out evidence)) continue;
                 }
                 if (lines.Length != 1) continue;
