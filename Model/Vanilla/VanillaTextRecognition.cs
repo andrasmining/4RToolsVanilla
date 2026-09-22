@@ -93,13 +93,23 @@ namespace _4RTools.Model.Vanilla
                 if (text.Length == 0 || text.Any(ch => ch < '0' || ch > '9')) continue;
                 candidates.Add(Tuple.Create(profile, observed[0]));
             }
-            if (candidates.Count < 2)
+            if (candidates.Count == 0)
             {
-                evidence = "digit OCR had fewer than two numeric observations; " + string.Join("; ", attempts);
+                evidence = "digit OCR produced no numeric observations; " + string.Join("; ", attempts);
                 return false;
             }
 
-            var groups = candidates
+            // Digit count is independently observable from the reconstructed monochrome
+            // glyph image. Use it to reject OCR hallucinations that add/drop digits when
+            // enlargement changes a narrow repeated glyph (the 9999 regression). This is
+            // not character recognition: it only counts bounded connected ink components.
+            int glyphCount = CountDigitGlyphs(bitmap, area);
+            var geometryMatched = glyphCount > 0 && glyphCount <= 7
+                ? candidates.Where(candidate => candidate.Item2.Text.Trim().Length == glyphCount).ToList()
+                : new List<Tuple<string, VanillaTextLine>>();
+            var votingPool = geometryMatched.Count > 0 ? geometryMatched : candidates;
+
+            var groups = votingPool
                 .GroupBy(candidate => candidate.Item2.Text.Trim(), StringComparer.Ordinal)
                 .Select(group => new
                 {
@@ -111,23 +121,87 @@ namespace _4RTools.Model.Vanilla
                 .OrderByDescending(group => group.Count)
                 .ThenByDescending(group => group.Confidence)
                 .ToArray();
-            if (groups[0].Count < 2 || (groups.Length > 1 && groups[1].Count == groups[0].Count))
+            bool uniqueConsensus = groups[0].Count >= 2
+                && !(groups.Length > 1 && groups[1].Count == groups[0].Count);
+            bool geometryBackedSingle = geometryMatched.Count == 1
+                && geometryMatched[0].Item2.Confidence >= 65;
+
+            if (!uniqueConsensus && !geometryBackedSingle)
             {
-                evidence = "digit OCR had no unique two-view consensus; observations="
-                    + string.Join(",", candidates.Select(candidate => candidate.Item1 + ":" + candidate.Item2.Text.Trim()));
+                evidence = "digit OCR had no unique geometry-backed consensus; glyphs=" + glyphCount
+                    + "; observations=" + string.Join(",", candidates.Select(candidate => candidate.Item1 + ":" + candidate.Item2.Text.Trim()));
                 return false;
             }
 
-            var consensus = groups[0];
+            var consensus = geometryBackedSingle
+                ? new { Text = geometryMatched[0].Item2.Text.Trim(), Count = 1,
+                    Members = new[] { geometryMatched[0] }, Confidence = geometryMatched[0].Item2.Confidence }
+                : groups[0];
             VanillaTextLine winner = consensus.Members
                 .OrderByDescending(candidate => candidate.Item2.Confidence)
                 .ThenBy(candidate => candidate.Item1, StringComparer.Ordinal)
                 .First().Item2;
             lines = new[] { winner };
             evidence = "digit OCR consensus=" + consensus.Count + "/" + candidates.Count
-                + "; valueLength=" + consensus.Text.Length
+                + "; glyphs=" + glyphCount + "; valueLength=" + consensus.Text.Length
                 + "; agreeingProfiles=" + string.Join(",", consensus.Members.Select(candidate => candidate.Item1));
             return true;
+        }
+
+        private static int CountDigitGlyphs(Bitmap bitmap, Rectangle area)
+        {
+            if (bitmap == null || area.Width < 1 || area.Height < 1) return 0;
+            using (var copy = bitmap.Clone(area, PixelFormat.Format24bppRgb))
+            {
+                int width = copy.Width, height = copy.Height;
+                var dark = new bool[width * height];
+                BitmapData data = copy.LockBits(new Rectangle(0, 0, width, height), ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+                try
+                {
+                    byte[] row = new byte[Math.Abs(data.Stride)];
+                    for (int y = 0; y < height; y++)
+                    {
+                        Marshal.Copy(IntPtr.Add(data.Scan0, y * data.Stride), row, 0, row.Length);
+                        for (int x = 0; x < width; x++)
+                        {
+                            int i = x * 3;
+                            int luminance = (row[i] * 114 + row[i + 1] * 587 + row[i + 2] * 299) / 1000;
+                            dark[y * width + x] = luminance < 210;
+                        }
+                    }
+                }
+                finally { copy.UnlockBits(data); }
+
+                int[] queue = new int[dark.Length];
+                int glyphs = 0;
+                int minimumArea = Math.Max(2, area.Height / 8);
+                for (int seed = 0; seed < dark.Length; seed++)
+                {
+                    if (!dark[seed]) continue;
+                    dark[seed] = false;
+                    int head = 0, tail = 0, pixels = 0;
+                    queue[tail++] = seed;
+                    while (head < tail)
+                    {
+                        int point = queue[head++], y = point / width, x = point - y * width;
+                        pixels++;
+                        for (int dy = -1; dy <= 1; dy++)
+                        for (int dx = -1; dx <= 1; dx++)
+                        {
+                            if (dx == 0 && dy == 0) continue;
+                            int nx = x + dx, ny = y + dy;
+                            if (nx < 0 || ny < 0 || nx >= width || ny >= height) continue;
+                            int next = ny * width + nx;
+                            if (!dark[next]) continue;
+                            dark[next] = false;
+                            queue[tail++] = next;
+                        }
+                    }
+                    if (pixels >= minimumArea) glyphs++;
+                    if (glyphs > 7) return glyphs;
+                }
+                return glyphs;
+            }
         }
 
         internal static bool TryReadCompactLine(Bitmap bitmap, Rectangle area,
