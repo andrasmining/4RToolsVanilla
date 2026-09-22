@@ -77,18 +77,21 @@ namespace _4RTools.Model.Vanilla
             // unambiguous numeric interpretation. If both scales recognize digits they
             // must agree exactly; disagreement is unknown and therefore authorizes no
             // quantity input.
-            var candidates = new List<Tuple<int, VanillaTextLine>>();
+            var candidates = new List<Tuple<string, VanillaTextLine>>();
             var attempts = new List<string>();
-            foreach (int scale in new[] { 1, 2, 3, 4 })
+            foreach (int scale in new[] { 1, 4 })
+            foreach (PageSegMode mode in new[] { PageSegMode.SingleWord, PageSegMode.SingleLine })
             {
                 VanillaTextLine[] observed;
                 string attemptEvidence;
-                bool completed = TryReadCore(bitmap, area, true, out observed, out attemptEvidence, true, scale, true);
-                attempts.Add(scale + "x=" + attemptEvidence);
+                bool completed = TryReadCore(bitmap, area, true, out observed, out attemptEvidence,
+                    true, scale, true, mode);
+                string profile = scale + "x/" + mode;
+                attempts.Add(profile + "=" + attemptEvidence);
                 if (!completed || observed == null || observed.Length != 1) continue;
                 string text = (observed[0].Text ?? string.Empty).Trim();
                 if (text.Length == 0 || text.Any(ch => ch < '0' || ch > '9')) continue;
-                candidates.Add(Tuple.Create(scale, observed[0]));
+                candidates.Add(Tuple.Create(profile, observed[0]));
             }
             if (candidates.Count < 2)
             {
@@ -111,19 +114,19 @@ namespace _4RTools.Model.Vanilla
             if (groups[0].Count < 2 || (groups.Length > 1 && groups[1].Count == groups[0].Count))
             {
                 evidence = "digit OCR had no unique two-view consensus; observations="
-                    + string.Join(",", candidates.Select(candidate => candidate.Item1 + "x:" + candidate.Item2.Text.Trim()));
+                    + string.Join(",", candidates.Select(candidate => candidate.Item1 + ":" + candidate.Item2.Text.Trim()));
                 return false;
             }
 
             var consensus = groups[0];
             VanillaTextLine winner = consensus.Members
                 .OrderByDescending(candidate => candidate.Item2.Confidence)
-                .ThenBy(candidate => candidate.Item1)
+                .ThenBy(candidate => candidate.Item1, StringComparer.Ordinal)
                 .First().Item2;
             lines = new[] { winner };
             evidence = "digit OCR consensus=" + consensus.Count + "/" + candidates.Count
                 + "; valueLength=" + consensus.Text.Length
-                + "; agreeingScales=" + string.Join(",", consensus.Members.Select(candidate => candidate.Item1 + "x"));
+                + "; agreeingProfiles=" + string.Join(",", consensus.Members.Select(candidate => candidate.Item1));
             return true;
         }
 
@@ -139,7 +142,8 @@ namespace _4RTools.Model.Vanilla
         }
 
         private static bool TryReadCore(Bitmap bitmap, Rectangle area, bool singleLine,
-            out VanillaTextLine[] lines, out string evidence, bool accurate, int pixelScale = 0, bool digitsOnly = false)
+            out VanillaTextLine[] lines, out string evidence, bool accurate, int pixelScale = 0,
+            bool digitsOnly = false, PageSegMode? pageModeOverride = null)
         {
             lines = new VanillaTextLine[0];
             evidence = "OCR region is invalid";
@@ -205,8 +209,10 @@ namespace _4RTools.Model.Vanilla
                                     else if (accurate) accurateEngine = activeEngine;
                                     else engine = activeEngine;
                                 }
-                                using (Page page = activeEngine.Process(pix, digitsOnly ? PageSegMode.SingleWord
-                                    : singleLine ? PageSegMode.SingleLine : PageSegMode.SparseText))
+                                PageSegMode pageMode = pageModeOverride
+                                    ?? (digitsOnly ? PageSegMode.SingleWord
+                                        : singleLine ? PageSegMode.SingleLine : PageSegMode.SparseText);
+                                using (Page page = activeEngine.Process(pix, pageMode))
                                 using (ResultIterator iterator = page.GetIterator())
                                 {
                                     var output = new List<VanillaTextLine>();
