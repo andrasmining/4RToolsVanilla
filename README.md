@@ -28,16 +28,18 @@ Compatible profiles and recovery settings survive updates. Passwords use Windows
 DPAPI and must be entered separately for each Windows user/machine. Packages
 contain no personal credentials, profiles or mutable user-data directories.
 
-**v0.6.70 and later try public release metadata and assets anonymously first.**
+**v0.6.71 and later resolve the public stable release and assets anonymously first.**
 A missing, expired or unreadable saved token cannot block successful public access.
+The normal public path uses the canonical `github.com/.../releases/latest` redirect and
+canonical release-download URLs, avoiding anonymous REST API rate-limit dependency.
 A bounded private-API fallback remains available through **Data & updates > UPDATE
 ACCESS**. Credentials are never forwarded to release-asset CDNs or included in logs.
 
 The installed updater matters during migration: v0.6.68/v0.6.69 still require their
 previous valid update credential, even though this repository is now public. With
-that credential they can download v0.6.70 from the same repository. Without it,
+that credential they can download the current public release from the same repository. Without it,
 use this complete portable ZIP once. v0.6.67 points at the retired repository and
-also needs the portable migration. Subsequent public updates need no token.
+also needs the portable migration. After installing v0.6.71 or later, subsequent public updates need no token.
 
 CHECK FOR UPDATES verifies the ZIP checksum, complete payload manifest, executable
 version and repository assets. It stages before disturbing automation, then stops
@@ -154,8 +156,8 @@ the release script supports subsequent offline builds. Version must match
 `Properties/AssemblyInfo.cs`:
 
 ```powershell
-.\scripts\release-local.ps1 -Version 0.6.70 -Restore
-.\scripts\release-local.ps1 -Version 0.6.70 -Replace
+.\scripts\release-local.ps1 -Version 0.6.71 -Restore
+.\scripts\release-local.ps1 -Version 0.6.71 -Replace
 ```
 
 `-Publish` additionally requires authenticated GitHub CLI and exact clean remote
