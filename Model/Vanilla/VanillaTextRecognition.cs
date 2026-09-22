@@ -141,12 +141,17 @@ namespace _4RTools.Model.Vanilla
                                     activeEngine.SetVariable("user_defined_dpi", 300);
                                     // Do not adapt the model from another account's username.
                                     activeEngine.SetVariable("classify_enable_learning", 0);
-                                    if (digitsOnly) activeEngine.SetVariable("tessedit_char_whitelist", "0123456789");
+                                    if (digitsOnly)
+                                    {
+                                        activeEngine.SetVariable("tessedit_char_whitelist", "0123456789");
+                                        activeEngine.SetVariable("classify_bln_numeric_mode", 1);
+                                    }
                                     if (digitsOnly) digitsEngine = activeEngine;
                                     else if (accurate) accurateEngine = activeEngine;
                                     else engine = activeEngine;
                                 }
-                                using (Page page = activeEngine.Process(pix, singleLine ? PageSegMode.SingleLine : PageSegMode.SparseText))
+                                using (Page page = activeEngine.Process(pix, digitsOnly ? PageSegMode.SingleWord
+                                    : singleLine ? PageSegMode.SingleLine : PageSegMode.SparseText))
                                 using (ResultIterator iterator = page.GetIterator())
                                 {
                                     var output = new List<VanillaTextLine>();
