@@ -208,6 +208,7 @@ namespace _4RTools.Model.Vanilla
                 const int padding = 4;
                 var result = new Bitmap(field.Width + padding * 2, field.Height + padding * 2, PixelFormat.Format24bppRgb);
                 using (Graphics graphics = Graphics.FromImage(result)) graphics.Clear(Color.White);
+                int minX = result.Width, minY = result.Height, maxX = -1, maxY = -1;
                 for (int y = field.Top; y < field.Bottom; y++)
                 for (int x = field.Left; x < field.Right; x++)
                 {
@@ -220,9 +221,21 @@ namespace _4RTools.Model.Vanilla
                         channels++;
                     }
                     int gray = (int)Math.Round(255 * (1 - alpha / Math.Max(1, channels)));
-                    result.SetPixel(x - field.Left + padding, y - field.Top + padding, Color.FromArgb(gray, gray, gray));
+                    int px = x - field.Left + padding, py = y - field.Top + padding;
+                    result.SetPixel(px, py, Color.FromArgb(gray, gray, gray));
+                    if (gray < 245)
+                    {
+                        minX = Math.Min(minX, px); minY = Math.Min(minY, py);
+                        maxX = Math.Max(maxX, px); maxY = Math.Max(maxY, py);
+                    }
                 }
-                return result;
+                if (maxX < minX || maxY < minY) { result.Dispose(); return null; }
+                const int inkPadding = 4;
+                Rectangle crop = Rectangle.FromLTRB(Math.Max(0, minX - inkPadding), Math.Max(0, minY - inkPadding),
+                    Math.Min(result.Width, maxX + inkPadding + 1), Math.Min(result.Height, maxY + inkPadding + 1));
+                Bitmap cropped = result.Clone(crop, PixelFormat.Format24bppRgb);
+                result.Dispose();
+                return cropped;
             }
 
             internal Rectangle[] Components(bool selected)
