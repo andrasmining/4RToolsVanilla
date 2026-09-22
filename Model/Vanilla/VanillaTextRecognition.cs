@@ -35,6 +35,7 @@ namespace _4RTools.Model.Vanilla
         private static readonly object Gate = new object();
         private static TesseractEngine engine;
         private static TesseractEngine accurateEngine;
+        private static TesseractEngine digitsEngine;
 
         internal static bool TryRead(Bitmap bitmap, Rectangle area, bool singleLine,
             out VanillaTextLine[] lines, out string evidence)
@@ -62,6 +63,15 @@ namespace _4RTools.Model.Vanilla
             return TryReadCore(bitmap, area, true, out lines, out evidence, true, 4);
         }
 
+        internal static bool TryReadDigitsPixelPreserving(Bitmap bitmap, Rectangle area,
+            out VanillaTextLine[] lines, out string evidence)
+        {
+            lines = new VanillaTextLine[0];
+            evidence = "digit OCR requires a bounded observed numeric field";
+            if (area.Width > 400 || area.Height > 80) return false;
+            return TryReadCore(bitmap, area, true, out lines, out evidence, true, 4, true);
+        }
+
         internal static bool TryReadCompactLine(Bitmap bitmap, Rectangle area,
             out VanillaTextLine[] lines, out string evidence)
         {
@@ -74,7 +84,7 @@ namespace _4RTools.Model.Vanilla
         }
 
         private static bool TryReadCore(Bitmap bitmap, Rectangle area, bool singleLine,
-            out VanillaTextLine[] lines, out string evidence, bool accurate, int pixelScale = 0)
+            out VanillaTextLine[] lines, out string evidence, bool accurate, int pixelScale = 0, bool digitsOnly = false)
         {
             lines = new VanillaTextLine[0];
             evidence = "OCR region is invalid";
@@ -123,7 +133,7 @@ namespace _4RTools.Model.Vanilla
                         {
                             lock (Gate)
                             {
-                                TesseractEngine activeEngine = accurate ? accurateEngine : engine;
+                                TesseractEngine activeEngine = digitsOnly ? digitsEngine : (accurate ? accurateEngine : engine);
                                 if (activeEngine == null)
                                 {
                                     activeEngine = new TesseractEngine(Path.Combine(AppDomain.CurrentDomain.BaseDirectory,
@@ -131,7 +141,9 @@ namespace _4RTools.Model.Vanilla
                                     activeEngine.SetVariable("user_defined_dpi", 300);
                                     // Do not adapt the model from another account's username.
                                     activeEngine.SetVariable("classify_enable_learning", 0);
-                                    if (accurate) accurateEngine = activeEngine;
+                                    if (digitsOnly) activeEngine.SetVariable("tessedit_char_whitelist", "0123456789");
+                                    if (digitsOnly) digitsEngine = activeEngine;
+                                    else if (accurate) accurateEngine = activeEngine;
                                     else engine = activeEngine;
                                 }
                                 using (Page page = activeEngine.Process(pix, singleLine ? PageSegMode.SingleLine : PageSegMode.SparseText))
