@@ -1,4 +1,4 @@
-# 4RTools Vanilla 0.6.71
+# 4RTools Vanilla 0.6.72
 
 ## Public updater and release-pipeline hardening
 
@@ -12,8 +12,10 @@
   unwraps asynchronous updater failures into actionable diagnostics, and still
   exercises the private-era v0.6.69 updater with authenticated API access.
 - The release publisher now handles missing version tags safely under strict
-  PowerShell mode. Publication remains gated on the exact clean `main` commit,
-  uploaded asset hash verification, and real updater discovery/download/staging.
+  PowerShell mode. Every engineering PowerShell script is parser-validated before
+  builds, preventing malformed publication helpers from reaching the release job.
+  Publication remains gated on the exact clean `main` commit, uploaded asset hash
+  verification, and real updater discovery/download/staging.
 
 ## Recovery and character selection
 
@@ -87,6 +89,6 @@ Unknown or ambiguous observations fail closed rather than clicking guessed targe
 
 The existing v0.6.68/v0.6.69 private-era updater can use its valid update credential
 against the same now-public repository. A client with no usable credential may
-need this portable package once; v0.6.71 and later public updates need no token.
+need this portable package once; v0.6.72 and later public updates need no token.
 Pre-migration v0.6.67 points at the retired repository and also needs the portable
 migration. Extract the complete package; do not copy only the executable.
