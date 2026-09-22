@@ -22,6 +22,7 @@ namespace Vanilla.Diagnostics.Tests
         internal static int Run()
         {
             Test("Public releases never resolve stale or absent credentials", PublicAccess);
+            Test("Public web latest and direct assets require no credentials", PublicWebRelease);
             Test("Public fallback authenticates only the original API and never its CDN", PublicFallback);
             Test("Update success preserves unrelated user files and previous managed files", UpdateSuccess);
             Test("Partial copy failure restores old bytes and removes newly added files", UpdateCopyRollback);
@@ -51,6 +52,44 @@ namespace Vanilla.Diagnostics.Tests
                 Assert(calls == 2, "Unexpected public retries.");
             }
         }
+        private static void PublicWebRelease()
+        {
+            int calls = 0, credentials = 0;
+            using (var http = new HttpClient(new Handler(request =>
+            {
+                calls++;
+                Assert(request.Headers.Authorization == null, "Anonymous public web path carried credentials.");
+                string absolute = request.RequestUri.AbsoluteUri;
+                if (absolute == "https://github.com/andrasmining/4RToolsVanilla/releases/latest")
+                {
+                    var response = new HttpResponseMessage(HttpStatusCode.Found);
+                    response.Headers.Location = new Uri("/andrasmining/4RToolsVanilla/releases/tag/v0.6.71", UriKind.Relative);
+                    return response;
+                }
+                if (absolute == "https://github.com/andrasmining/4RToolsVanilla/releases/download/v0.6.71/test.zip")
+                {
+                    var response = new HttpResponseMessage(HttpStatusCode.Found);
+                    response.Headers.Location = new Uri("https://release-assets.githubusercontent.com/test.zip?signature=synthetic");
+                    return response;
+                }
+                if (absolute.StartsWith("https://release-assets.githubusercontent.com/", StringComparison.Ordinal))
+                    return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(new byte[] { 4, 7, 1 }) };
+                throw new Exception("Unexpected public updater request: " + absolute);
+            })))
+            {
+                var client = new VanillaPrivateReleaseClient(http,
+                    () => { credentials++; return Task.FromResult("stale_token_must_not_be_used"); }, true);
+                Assert(client.ReadLatestPublicTagAsync().GetAwaiter().GetResult() == "v0.6.71", "Public latest tag was not resolved.");
+                string direct = VanillaPrivateReleaseClient.PublicAssetUrl("v0.6.71", "test.zip");
+                Assert(VanillaPrivateReleaseClient.IsPublicReleaseAsset(new Uri(direct)), "Canonical public asset URL was rejected.");
+                Assert(client.ReadAssetAsync(direct, 1024).GetAwaiter().GetResult().SequenceEqual(new byte[] { 4, 7, 1 }),
+                    "Public direct asset did not follow its credential-free CDN redirect.");
+                Assert(credentials == 0 && calls == 3, "Public web update path touched credentials or retried unexpectedly.");
+                Assert(!VanillaPrivateReleaseClient.IsPublicReleaseAsset(new Uri("https://github.com/other/repo/releases/download/v0.6.71/test.zip")),
+                    "Foreign public asset was accepted.");
+            }
+        }
+
         private static void PublicFallback()
         {
             int calls = 0, credentials = 0;
