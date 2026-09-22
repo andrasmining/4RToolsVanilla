@@ -23,7 +23,7 @@ namespace Vanilla.Diagnostics.Tests
         {
             Test("Public releases never resolve stale or absent credentials", PublicAccess);
             Test("Public web latest and direct assets require no credentials", PublicWebRelease);
-            Test("Public fallback authenticates only the original API and never its CDN", PublicFallback);
+            Test("Public API asset fallback remains anonymous through its CDN", PublicFallback);
             Test("Update success preserves unrelated user files and previous managed files", UpdateSuccess);
             Test("Partial copy failure restores old bytes and removes newly added files", UpdateCopyRollback);
             Test("Application start failure rolls back the managed installation", UpdateStartRollback);
@@ -96,21 +96,23 @@ namespace Vanilla.Diagnostics.Tests
             using (var http = new HttpClient(new Handler(request =>
             {
                 calls++;
-                if (calls == 1) { Assert(request.Headers.Authorization == null, "Not public first."); return new HttpResponseMessage(HttpStatusCode.NotFound); }
-                if (calls == 2)
+                Assert(request.Headers.Authorization == null && !request.Headers.Contains("X-GitHub-Api-Version"),
+                    "Public API/CDN fallback carried credentials.");
+                if (calls == 1)
                 {
-                    Assert(request.Headers.Authorization?.Parameter == "synthetic_test_token_not_real", "Fallback API was not authenticated.");
+                    Assert(request.RequestUri.AbsoluteUri == VanillaPrivateReleaseClient.AssetUrl(123),
+                        "Unexpected public API asset URL.");
                     var response = new HttpResponseMessage(HttpStatusCode.Found);
                     response.Headers.Location = new Uri("https://release-assets.githubusercontent.com/test.zip?signature=synthetic");
                     return response;
                 }
-                Assert(request.Headers.Authorization == null && !request.Headers.Contains("X-GitHub-Api-Version"), "Credential escaped onto CDN.");
+                Assert(request.RequestUri.Host == "release-assets.githubusercontent.com", "Public asset redirect did not reach the release CDN.");
                 return new HttpResponseMessage(HttpStatusCode.OK) { Content = new ByteArrayContent(new byte[] { 1 }) };
             })))
             {
                 var client = new VanillaPrivateReleaseClient(http, () => { credentials++; return Task.FromResult("synthetic_test_token_not_real"); }, true);
                 Assert(client.ReadAssetAsync(VanillaPrivateReleaseClient.AssetUrl(123), 1024).GetAwaiter().GetResult().Length == 1, "Fallback failed.");
-                Assert(calls == 3 && credentials == 1, "Fallback is not bounded.");
+                Assert(calls == 2 && credentials == 0, "Current public fallback resolved credentials or retried unexpectedly.");
             }
         }
         private static void UpdateSuccess()
