@@ -48,10 +48,47 @@ namespace _4RTools.Model.Vanilla
         }
 
         // Also used by the headless published-release probe to verify an equal-version
-        // release through the identical authenticated discovery and staging path.
+        // release through the identical discovery and staging path. Public repositories
+        // resolve the stable tag from github.com first so anonymous REST rate limits and
+        // stale saved credentials cannot block normal update discovery.
         public static async Task<VanillaUpdateInfo> ReadLatestReleaseAsync()
         {
-            return ParseRelease(await Releases.ReadLatestAsync().ConfigureAwait(false));
+            Exception publicFailure = null;
+            try
+            {
+                return FromPublicTag(await Releases.ReadLatestPublicTagAsync().ConfigureAwait(false));
+            }
+            catch (Exception ex)
+            {
+                publicFailure = ex;
+            }
+
+            try
+            {
+                return ParseRelease(await Releases.ReadLatestAsync().ConfigureAwait(false));
+            }
+            catch (Exception apiFailure)
+            {
+                throw new InvalidOperationException(
+                    "GitHub release discovery failed through both the anonymous public release page and the API fallback. "
+                    + "The installed application was not changed.",
+                    new AggregateException(publicFailure, apiFailure));
+            }
+        }
+
+        private static VanillaUpdateInfo FromPublicTag(string tag)
+        {
+            Version version = ParseTagVersion(tag);
+            string zipName = "4RTools-Vanilla-v" + version.ToString(3) + "-portable.zip";
+            return new VanillaUpdateInfo
+            {
+                Version = version,
+                TagName = tag,
+                ReleaseUrl = ReleasesUrl + "/tag/" + Uri.EscapeDataString(tag),
+                ZipUrl = VanillaPrivateReleaseClient.PublicAssetUrl(tag, zipName),
+                ChecksumUrl = VanillaPrivateReleaseClient.PublicAssetUrl(tag, zipName + ".sha256"),
+                ZipName = zipName
+            };
         }
 
         internal static VanillaUpdateInfo ParseRelease(string json)
@@ -61,11 +98,7 @@ namespace _4RTools.Model.Vanilla
                 throw new InvalidDataException("Updater requires a published stable release.");
             string tag = (string)root["tag_name"];
             if (string.IsNullOrWhiteSpace(tag)) throw new InvalidDataException("GitHub returned a release without a tag.");
-            Version version;
-            if (!Version.TryParse(tag.Trim().TrimStart('v', 'V'), out version)) throw new InvalidDataException("Unsupported release tag: " + tag);
-            if (version.Revision >= 0 || version.Build < 0 || !System.Text.RegularExpressions.Regex.IsMatch(tag, "^[vV]?[0-9]+\\.[0-9]+\\.[0-9]+$"))
-                throw new InvalidDataException("Release tag must contain three version components.");
-            version = new Version(version.Major, version.Minor, Math.Max(0, version.Build));
+            Version version = ParseTagVersion(tag);
 
             string zipName = "4RTools-Vanilla-v" + version.ToString(3) + "-portable.zip";
             var assets = root["assets"] as JArray;
@@ -81,6 +114,17 @@ namespace _4RTools.Model.Vanilla
                 ChecksumUrl = checksumUrl,
                 ZipName = zipName
             };
+        }
+
+        private static Version ParseTagVersion(string tag)
+        {
+            Version version;
+            if (!Version.TryParse((tag ?? string.Empty).Trim().TrimStart('v', 'V'), out version))
+                throw new InvalidDataException("Unsupported release tag: " + tag);
+            if (version.Revision >= 0 || version.Build < 0
+                || !System.Text.RegularExpressions.Regex.IsMatch(tag ?? string.Empty, "^[vV][0-9]+\\.[0-9]+\\.[0-9]+$"))
+                throw new InvalidDataException("Release tag must contain exactly three version components.");
+            return new Version(version.Major, version.Minor, Math.Max(0, version.Build));
         }
 
         private static string AssetUrl(JArray assets, string name)
