@@ -70,7 +70,10 @@ namespace _4RTools.Model.Vanilla
 
         private void ClickFreshField(VanillaCredentialField field)
         {
-            for (int attempt = 0; attempt < 30; attempt++)
+            // Proxy submission can leave the native login controls repainting for
+            // several seconds on RDP. Wait up to about 15 seconds, but never type
+            // until the named form and both credential controls are recognized.
+            for (int attempt = 0; attempt < 75; attempt++)
             {
                 input.CheckCancelled();
                 using (Bitmap image = input.Capture())
@@ -194,6 +197,7 @@ namespace _4RTools.Model.Vanilla
         private readonly VanillaForegroundInput input;
         private Rectangle focusField;
         private VanillaVisualInputProof proof;
+        private string lastDetectionEvidence;
         internal VanillaCredentialInput(VanillaForegroundInput input)
         {
             this.input = input;
@@ -211,7 +215,23 @@ namespace _4RTools.Model.Vanilla
         public bool Detect(Bitmap image, out VanillaLoginLayout layout)
         {
             string evidence;
-            return VanillaAuthPattern.TryDetectLogin(image, out layout, out evidence);
+            bool detected = VanillaAuthPattern.TryDetectLogin(image, out layout, out evidence);
+            if (!detected)
+            {
+                // Evidence contains only geometry/fixed-label scores, never credential
+                // contents. Keep one copy per changed failure mode for field diagnostics.
+                if (!string.Equals(lastDetectionEvidence, evidence, StringComparison.Ordinal))
+                {
+                    lastDetectionEvidence = evidence;
+                    VanillaDebugLog.Write("CREDENTIAL", "Login form detection blocked: " + evidence);
+                }
+            }
+            else if (lastDetectionEvidence != null)
+            {
+                VanillaDebugLog.Write("CREDENTIAL", "Login form detection recovered after a prior blocked frame.");
+                lastDetectionEvidence = null;
+            }
+            return detected;
         }
         public VanillaFieldFocus Focus(VanillaLoginLayout layout, VanillaCredentialField field)
         {
