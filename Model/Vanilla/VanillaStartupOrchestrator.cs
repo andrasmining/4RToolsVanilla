@@ -95,6 +95,16 @@ namespace _4RTools.Model.Vanilla
             return disposed || generation != Volatile.Read(ref hardenedStartupGeneration);
         }
 
+        private bool StartupAccountCancelled(int generation, VanillaReconnectAccount account)
+        {
+            lock (gate)
+            {
+                Runtime runtime;
+                return StartupCancelled(generation) || FarmingEmergencyHeld(account)
+                    || (runtimes.TryGetValue(account.Id, out runtime) && FarmingEmergencyHeld(runtime));
+            }
+        }
+
         private void HardenedStartupWorker(int generation, VanillaReconnectAccount[] accounts, VanillaReconnectSettings config,
             System.Action<bool, string> completed)
         {
@@ -107,115 +117,136 @@ namespace _4RTools.Model.Vanilla
                 {
                     if (StartupCancelled(generation)) throw new OperationCanceledException("Sequential startup cancelled.");
                     VanillaReconnectAccount account = accounts[index];
-                    Runtime runtime;
-                    int? existingPid;
-                    lock (gate)
+                    try
                     {
-                        if (!runtimes.TryGetValue(account.Id, out runtime)) throw new InvalidOperationException("Runtime disappeared for " + account.Label + ".");
-                        existingPid = runtime.ProcessId.HasValue && IsAlive(runtime.ProcessId.Value) ? runtime.ProcessId : null;
-
-                    }
-
-                    if (existingPid.HasValue)
-                    {
-                        using (var process = Process.GetProcessById(existingPid.Value))
-                        {
-                            try
-                            {
-                                if (CloseTerminalBeforeStartup(runtime, existingPid.Value, generation, config,
-                                    () => { process.Refresh(); return VanillaVisualProbe.Classify(process.MainWindowHandle); },
-                                    () => process.StartTime.ToUniversalTime(), milliseconds => BriefPause(generation, milliseconds)))
-                                    existingPid = null;
-                            }
-                            catch (OperationCanceledException) { throw; }
-                            catch (Exception) when (runtime.ServerOutagePending)
-                            {
-                                // The verified outage remains a scheduled retry even if its
-                                // owned close failed. The next attempt must close before launch.
-                                existingPid = null;
-                            }
-                        }
-                    }
-                    if (existingPid.HasValue)
-                    {
+                        Runtime runtime;
+                        int? existingPid;
                         lock (gate)
                         {
-                            if (!CanAdoptExistingGameplayClient(runtime.ResumeSent, runtime.ResumeVerificationFailed, runtime.ScriptRunning))
-                                throw new InvalidOperationException(account.Label + ": existing client has an unfinished or failed startup. Verify it with the Resume hotkey test before starting later clients.");
+                            if (!runtimes.TryGetValue(account.Id, out runtime)) throw new InvalidOperationException("Runtime disappeared for " + account.Label + ".");
+                            if (FarmingEmergencyHeld(runtime))
+                            {
+                                Log(account.Label + ": farming emergency hold; sequential startup skipped this character.");
+                                continue;
+                            }
+                            existingPid = runtime.ProcessId.HasValue && IsAlive(runtime.ProcessId.Value) ? runtime.ProcessId : null;
+
                         }
-                        Log(account.Label + ": existing PID " + existingPid.Value + " found. Verifying gameplay before releasing the sequential gate.");
-                        VanillaDebugLog.Write("STARTUP", account.Label + ": existing PID " + existingPid.Value + " verification begin.");
-                        try
-                        {
-                            WaitForExistingClientGameplayReady(account, existingPid.Value,
-                                () => StartupCancelled(generation), 15000, account.Label + " existing client");
-                        }
-                        catch (VanillaServerClosedException)
-                        {
-                            lock (gate) { ConfirmServerOutageLocked(runtime); ParkForServerOutageLocked(runtime); }
-                            RunOneColdStart(generation, account, config, index + 1, accounts.Length);
-                            continue;
-                        }
-                        VanillaVisualState supplementalVisual = VanillaVisualState.Unknown;
-                        try
+
+                        if (existingPid.HasValue)
                         {
                             using (var process = Process.GetProcessById(existingPid.Value))
                             {
-                                process.Refresh();
-                                supplementalVisual = VanillaVisualProbe.Classify(process.MainWindowHandle);
+                                try
+                                {
+                                    if (CloseTerminalBeforeStartup(runtime, existingPid.Value, generation, config,
+                                        () => { process.Refresh(); return VanillaVisualProbe.Classify(process.MainWindowHandle); },
+                                        () => process.StartTime.ToUniversalTime(), milliseconds => PauseCharacterSelection(
+                                            () => StartupAccountCancelled(generation, account), milliseconds)))
+                                        existingPid = null;
+                                }
+                                catch (OperationCanceledException) { throw; }
+                                catch (Exception) when (runtime.ServerOutagePending)
+                                {
+                                    // The verified outage remains a scheduled retry even if its
+                                    // owned close failed. The next attempt must close before launch.
+                                    existingPid = null;
+                                }
                             }
                         }
-                        catch (Exception ex)
+                        if (existingPid.HasValue)
                         {
-                            VanillaDebugLog.Write("STARTUP", account.Label
-                                + ": supplemental visual probe failed after memory verification: " + ex.Message);
-                        }
-                        VanillaDebugLog.Write("STARTUP", account.Label + ": existing PID " + existingPid.Value
-                            + " accepted by fresh verified memory gameplay state; supplemental visual=" + supplementalVisual
-                            + (supplementalVisual == VanillaVisualState.Unknown ? " (Unknown is non-blocking)." : "."));
-                        if (supplementalVisual == VanillaVisualState.ServerClosed)
-                        {
-                            try { ThrowIfConfirmedServerClosed(existingPid.Value, () => StartupCancelled(generation)); }
+                            lock (gate)
+                            {
+                                if (!CanAdoptExistingGameplayClient(runtime.ResumeSent, runtime.ResumeVerificationFailed, runtime.ScriptRunning))
+                                    throw new InvalidOperationException(account.Label + ": existing client has an unfinished or failed startup. Verify it with the Resume hotkey test before starting later clients.");
+                            }
+                            Log(account.Label + ": existing PID " + existingPid.Value + " found. Verifying gameplay before releasing the sequential gate.");
+                            VanillaDebugLog.Write("STARTUP", account.Label + ": existing PID " + existingPid.Value + " verification begin.");
+                            try
+                            {
+                                WaitForExistingClientGameplayReady(account, existingPid.Value,
+                                    () => StartupAccountCancelled(generation, account), 15000, account.Label + " existing client");
+                            }
                             catch (VanillaServerClosedException)
                             {
                                 lock (gate) { ConfirmServerOutageLocked(runtime); ParkForServerOutageLocked(runtime); }
                                 RunOneColdStart(generation, account, config, index + 1, accounts.Length);
                                 continue;
                             }
+                            VanillaVisualState supplementalVisual = VanillaVisualState.Unknown;
+                            try
+                            {
+                                using (var process = Process.GetProcessById(existingPid.Value))
+                                {
+                                    process.Refresh();
+                                    supplementalVisual = VanillaVisualProbe.Classify(process.MainWindowHandle);
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                VanillaDebugLog.Write("STARTUP", account.Label
+                                    + ": supplemental visual probe failed after memory verification: " + ex.Message);
+                            }
+                            VanillaDebugLog.Write("STARTUP", account.Label + ": existing PID " + existingPid.Value
+                                + " accepted by fresh verified memory gameplay state; supplemental visual=" + supplementalVisual
+                                + (supplementalVisual == VanillaVisualState.Unknown ? " (Unknown is non-blocking)." : "."));
+                            if (supplementalVisual == VanillaVisualState.ServerClosed)
+                            {
+                                try { ThrowIfConfirmedServerClosed(existingPid.Value, () => StartupAccountCancelled(generation, account)); }
+                                catch (VanillaServerClosedException)
+                                {
+                                    lock (gate) { ConfirmServerOutageLocked(runtime); ParkForServerOutageLocked(runtime); }
+                                    RunOneColdStart(generation, account, config, index + 1, accounts.Length);
+                                    continue;
+                                }
+                            }
+                            if (ExistingClientVisualBlocksMemoryAdoption(supplementalVisual))
+                                throw new InvalidOperationException(account.Label
+                                    + ": fresh verified memory says gameplay, but supplemental visual is " + supplementalVisual
+                                    + "; existing client was not adopted.");
+
+                            if (!WaitForOwnedClientSafeMinimize(runtime, existingPid.Value, () => StartupAccountCancelled(generation, account),
+                                account.Label + ": existing client", false))
+                                throw new InvalidOperationException(account.Label + ": existing gameplay client could not be confirmed minimized; next client was NOT started.");
+
+                            lock (gate)
+                            {
+                                Runtime current;
+                                if (StartupAccountCancelled(generation, account) || !runtimes.TryGetValue(account.Id, out current)
+                                    || !ReferenceEquals(current, runtime) || runtime.ProcessId != existingPid.Value)
+                                    throw new OperationCanceledException("Sequential startup client changed.");
+                                runtime.ResumeSent = true; // never toggle an adopted already-running client.
+                                runtime.HasBeenOnline = true;
+                                runtime.ScriptRunning = false;
+                                runtime.RecoveryOwned = false;
+                                SetStage(runtime, VanillaReconnectStage.Online, "Existing gameplay client verified and minimized");
+                            }
+                            Log(account.Label + ": existing client verified/minimized. Sequential gate released for next account.");
+                            RaiseUpdated();
+                            continue;
                         }
-                        if (ExistingClientVisualBlocksMemoryAdoption(supplementalVisual))
-                            throw new InvalidOperationException(account.Label
-                                + ": fresh verified memory says gameplay, but supplemental visual is " + supplementalVisual
-                                + "; existing client was not adopted.");
 
-                        if (!WaitForOwnedClientSafeMinimize(runtime, existingPid.Value, () => StartupCancelled(generation),
-                            account.Label + ": existing client", false))
-                            throw new InvalidOperationException(account.Label + ": existing gameplay client could not be confirmed minimized; next client was NOT started.");
-
-                        lock (gate)
+                        RunOneColdStart(generation, account, config, index + 1, accounts.Length);
+                        if (updateSerial != launcherUpdateResetSerial)
                         {
-                            Runtime current;
-                            if (StartupCancelled(generation) || !runtimes.TryGetValue(account.Id, out current)
-                                || !ReferenceEquals(current, runtime) || runtime.ProcessId != existingPid.Value)
-                                throw new OperationCanceledException("Sequential startup client changed.");
-                            runtime.ResumeSent = true; // never toggle an adopted already-running client.
-                            runtime.HasBeenOnline = true;
-                            runtime.ScriptRunning = false;
-                            runtime.RecoveryOwned = false;
-                            SetStage(runtime, VanillaReconnectStage.Online, "Existing gameplay client verified and minimized");
+                            // The update may have closed an earlier completed row: revisit before supervision starts.
+                            updateSerial = launcherUpdateResetSerial;
+                            index = -1;
+                            Log("Launcher update completed; rechecking all enabled characters sequentially.");
                         }
-                        Log(account.Label + ": existing client verified/minimized. Sequential gate released for next account.");
-                        RaiseUpdated();
-                        continue;
                     }
-
-                    RunOneColdStart(generation, account, config, index + 1, accounts.Length);
-                    if (updateSerial != launcherUpdateResetSerial)
+                    catch (Exception) when (!StartupCancelled(generation) && StartupAccountCancelled(generation, account))
                     {
-                        // The update may have closed an earlier completed row: revisit before supervision starts.
-                        updateSerial = launcherUpdateResetSerial;
-                        index = -1;
-                        Log("Launcher update completed; rechecking all enabled characters sequentially.");
+                        // The synchronous account operation has fully unwound before
+                        // the next eligible character may acquire startup ownership.
+                        // An emergency close can also make an in-flight process query fail.
+                        Log(account.Label + ": farming emergency hold cancelled this startup; continuing with eligible characters.");
+                        if (updateSerial != launcherUpdateResetSerial)
+                        {
+                            updateSerial = launcherUpdateResetSerial; index = -1;
+                            Log("Launcher update reset interrupted by an emergency hold; rechecking eligible characters sequentially.");
+                        }
                     }
                 }
 
@@ -226,7 +257,7 @@ namespace _4RTools.Model.Vanilla
                     Start();
                 }
                 success = true;
-                result = "Sequential startup complete. Every enabled client reached gameplay, completed autobattle movement verification (or was adopted without toggling), and was minimized before the next client started. Continuous supervisor is ON.";
+                result = "Sequential startup complete. Eligible enabled clients reached verified gameplay and minimization; farming emergency holds remain stopped. Continuous supervisor is ON.";
                 Log(result);
                 VanillaDebugLog.Write("STARTUP", result);
             }
@@ -257,6 +288,7 @@ namespace _4RTools.Model.Vanilla
 
         private void RunOneColdStart(int generation, VanillaReconnectAccount account, VanillaReconnectSettings config, int ordinal, int total)
         {
+            if (StartupAccountCancelled(generation, account)) throw new OperationCanceledException("Sequential startup cancelled for this character.");
             if (string.IsNullOrWhiteSpace(config.LaunchExecutable) || !File.Exists(config.LaunchExecutable))
                 throw new InvalidOperationException("Set the Vanilla launch executable before starting the supervisor.");
             string missing = MissingCharacterConfiguration(account);
@@ -268,7 +300,7 @@ namespace _4RTools.Model.Vanilla
                 Runtime runtime;
                 lock (gate)
                 {
-                    if (StartupCancelled(generation)) throw new OperationCanceledException("Sequential startup cancelled.");
+                    if (StartupAccountCancelled(generation, account)) throw new OperationCanceledException("Sequential startup cancelled.");
                     runtime = runtimes[account.Id];
                 }
                 WaitForStartupServerAvailability(generation, runtime);
@@ -284,7 +316,7 @@ namespace _4RTools.Model.Vanilla
 
                 lock (gate)
                 {
-                    if (StartupCancelled(generation)) throw new OperationCanceledException("Sequential startup cancelled.");
+                    if (StartupAccountCancelled(generation, account)) throw new OperationCanceledException("Sequential startup cancelled.");
                     if (last is VanillaServerClosedException) ConfirmServerOutageLocked(runtime);
                 }
                 Log(account.Label + ": startup/restart attempt failed: " + last.Message + ". Closing any failed client before retry.");
@@ -298,7 +330,7 @@ namespace _4RTools.Model.Vanilla
                 }
                 lock (gate)
                 {
-                    if (StartupCancelled(generation)) throw new OperationCanceledException("Sequential startup cancelled.");
+                    if (StartupAccountCancelled(generation, account)) throw new OperationCanceledException("Sequential startup cancelled.");
                     if (serverOutage.Active)
                     {
                         FinishServerOutageFailureLocked(runtime, last.Message);
@@ -308,7 +340,7 @@ namespace _4RTools.Model.Vanilla
                 int delay = VanillaRecoveryPolicy.RetryDelayMs(failureCount, config.RetryBackoffMs, config.MaxRetryBackoffMs);
                 Log(account.Label + ": next sequential restart/login attempt in " + FormatDelay(delay)
                     + "; retry intervals double and cap at 1 hour. Later clients remain blocked behind this recovery lease.");
-                PauseStartupRetry(generation, delay);
+                PauseStartupRetryCore(() => StartupAccountCancelled(generation, account), delay);
             }
         }
 
@@ -320,15 +352,15 @@ namespace _4RTools.Model.Vanilla
                 {
                     Runtime current;
                     if (StartupCancelled(generation) || !runtimes.TryGetValue(runtime.Account.Id, out current)
-                        || !ReferenceEquals(runtime, current) || !runtime.Account.Enabled)
+                        || !ReferenceEquals(runtime, current) || !runtime.Account.Enabled || FarmingEmergencyHeld(runtime))
                         throw new OperationCanceledException("Sequential startup cancelled during server wait.");
                     if (MayStartServerOutageProbeLocked(runtime)) return;
                     foreach (Runtime queued in runtimes.Values.Where(r => r.Account.Enabled && !ReferenceEquals(r, runtime)
-                        && !r.HasBeenOnline && !r.ScriptRunning))
+                        && !r.HasBeenOnline && !r.ScriptRunning && !FarmingEmergencyHeld(r)))
                         SetStage(queued, VanillaReconnectStage.WaitingForServer, "Queued behind server availability check; " + ServerOutageDetail());
                 }
                 RaiseUpdated();
-                PauseStartupRetry(generation, 500);
+                PauseStartupRetryCore(() => StartupAccountCancelled(generation, runtime.Account), 500);
             }
         }
 
@@ -344,16 +376,13 @@ namespace _4RTools.Model.Vanilla
             }
         }
 
-        private void PauseStartupRetry(int generation, int milliseconds)
-        { PauseStartupRetryCore(() => StartupCancelled(generation), milliseconds); }
-
         private void CloseColdStartClientForRestart(int generation, Runtime runtime, int failureCount, string reason)
         {
             int? pid;
             int operation = 0;
             lock (gate)
             {
-                if (StartupCancelled(generation)) throw new OperationCanceledException("Sequential startup cancelled.");
+                if (StartupAccountCancelled(generation, runtime.Account)) throw new OperationCanceledException("Sequential startup cancelled.");
                 pid = runtime.ProcessId;
                 runtime.MovementRecoveryPending = false;
                 runtime.ResumeSent = false;
@@ -413,6 +442,7 @@ namespace _4RTools.Model.Vanilla
 
         private void RunOneColdStartAttempt(int generation, VanillaReconnectAccount account, VanillaReconnectSettings config, int ordinal, int total)
         {
+            if (StartupAccountCancelled(generation, account)) throw new OperationCanceledException("Sequential startup cancelled for this character.");
             if (string.IsNullOrWhiteSpace(config.LaunchExecutable) || !File.Exists(config.LaunchExecutable))
                 throw new InvalidOperationException("Set the Vanilla launch executable before starting the supervisor.");
             string missing = MissingCharacterConfiguration(account);
@@ -432,7 +462,7 @@ namespace _4RTools.Model.Vanilla
             int resumeGeneration;
             lock (gate)
             {
-                if (StartupCancelled(generation)) throw new OperationCanceledException("Sequential startup cancelled.");
+                if (StartupAccountCancelled(generation, account)) throw new OperationCanceledException("Sequential startup cancelled.");
                 resumeGeneration = Interlocked.Increment(ref resumeVerificationGeneration);
                 runtime = runtimes[account.Id];
                 runtime.ResumeOperationGeneration = resumeGeneration;
@@ -459,18 +489,18 @@ namespace _4RTools.Model.Vanilla
                         Log(account.Label + ": " + message);
                         VanillaDebugLog.Write("LAUNCHER", account.Label + ": " + message);
                     },
-                    () => StartupCancelled(generation),
+                    () => StartupAccountCancelled(generation, account),
                     debugDirectory: Path.Combine(baseDirectory, "Logs"),
                     recoverUpdate: (blocked, stillBlocked) => RecoverLauncherUpdate(runtime, resumeGeneration,
-                        () => StartupCancelled(generation), blocked, stillBlocked),
+                        () => StartupAccountCancelled(generation, account), blocked, stillBlocked),
                     startOwned: start => RunOwnedLauncherStart(runtime, resumeGeneration,
-                        () => StartupCancelled(generation), start));
+                        () => StartupAccountCancelled(generation, account), start));
 
                 if (!pid.HasValue) throw new InvalidOperationException(account.Label + ": launcher did not produce a Vanilla MMO PID.");
                 lock (gate)
                 {
                     Runtime current;
-                    if (StartupCancelled(generation) || !runtimes.TryGetValue(account.Id, out current)
+                    if (StartupAccountCancelled(generation, account) || !runtimes.TryGetValue(account.Id, out current)
                         || !ReferenceEquals(runtime, current) || runtime.ResumeOperationGeneration != resumeGeneration)
                         throw new OperationCanceledException("Sequential startup cancelled before client binding.");
                     Bind(runtime, pid.Value, true, "Sequential startup: launcher produced Vanilla client");
@@ -480,7 +510,8 @@ namespace _4RTools.Model.Vanilla
                 RaiseUpdated();
                 VanillaDebugLog.Write("STARTUP", account.Label + ": bound PID " + pid.Value + ". Waiting for expected UI states, not fixed loading delays.");
 
-                WaitForWindow(pid.Value, 60000);
+                WaitForWindow(pid.Value, 60000, () => StartupAccountCancelled(generation, account)
+                    || ResumeWorkerCancelled(runtime, pid.Value, resumeGeneration));
                 using (var input = new VanillaForegroundInput(pid.Value))
                 {
                     input.CancellationRequested = () => StartupCancelled(generation)
@@ -489,7 +520,7 @@ namespace _4RTools.Model.Vanilla
 
                     string password = store.UnprotectPassword(account.ProtectedPassword);
                     if (string.IsNullOrEmpty(password)) throw new InvalidOperationException(account.Label + ": decrypted password is empty.");
-                    BriefPause(generation, 160);
+                    PauseCharacterSelection(() => StartupAccountCancelled(generation, account), 160);
                     input.Activate();
                     FillDetectedCredentials(input, account, password, pid.Value, true, account.Label + ": sequential: ");
                     VanillaDebugLog.Write("STARTUP", account.Label + ": credentials submitted after login controls were detected and focus verified.");
@@ -508,7 +539,7 @@ namespace _4RTools.Model.Vanilla
                         () => StartupCancelled(generation) || ResumeWorkerCancelled(runtime, pid.Value, resumeGeneration),
                         60000, "Sequential startup post-character");
                     ResumeProgress(runtime, pid.Value, resumeGeneration, "Sequential startup: verified character online; settling 10s before recovery cycle 1/3 (" + account.HotkeyText + " -> 10s -> teleport -> 10s)");
-                    BriefPause(generation, VanillaAutobattleResumeVerifier.PostLoginSettleMs);
+                    PauseCharacterSelection(() => StartupAccountCancelled(generation, account), VanillaAutobattleResumeVerifier.PostLoginSettleMs);
                     ResumeProgress(runtime, pid.Value, resumeGeneration, "Sequential startup: 10s settle complete; starting shared 3-cycle autoattack + verified teleport recovery with 180s restart deadline");
                     VerifyAutobattleResumeAsync(account, pid.Value,
                         () => StartupCancelled(generation) || ResumeWorkerCancelled(runtime, pid.Value, resumeGeneration),
@@ -639,7 +670,7 @@ namespace _4RTools.Model.Vanilla
         private void SelectProxyWhenVisible(VanillaForegroundInput input, int pid, VanillaReconnectAccount account,
             VanillaReconnectSettings config, int generation)
         {
-            if (StartupCancelled(generation)) throw new OperationCanceledException("Sequential startup cancelled.");
+            if (StartupAccountCancelled(generation, account)) throw new OperationCanceledException("Sequential startup cancelled.");
             SelectNamedService(input, VanillaAccountProxyPreferences.Get(account.Id, config.Proxy), account.Label + ": ");
         }
 
@@ -690,18 +721,6 @@ namespace _4RTools.Model.Vanilla
             }
             throw new InvalidOperationException(context + ": gameplay not stably confirmed within " + (timeoutMs / 1000)
                 + "s (last=" + last + "). No autobattle hotkey was sent.");
-        }
-
-        private void BriefPause(int generation, int milliseconds)
-        {
-            int remaining = Math.Max(0, milliseconds);
-            while (remaining > 0)
-            {
-                if (StartupCancelled(generation)) throw new OperationCanceledException("Sequential startup cancelled.");
-                int slice = Math.Min(60, remaining);
-                Thread.Sleep(slice);
-                remaining -= slice;
-            }
         }
 
         private static bool IsAlive(int pid)

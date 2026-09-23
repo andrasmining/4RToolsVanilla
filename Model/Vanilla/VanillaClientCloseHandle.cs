@@ -21,7 +21,7 @@ namespace _4RTools.Model.Vanilla
         [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint pid);
         [DllImport("user32.dll", SetLastError = true)] private static extern bool PostMessage(IntPtr window, uint message, IntPtr w, IntPtr l);
 
-        internal VanillaClientCloseHandle(int pid, DateTime expectedStart)
+        internal VanillaClientCloseHandle(int pid, DateTime expectedStart, bool resolveWindow = true)
         {
             this.pid = pid;
             handle = OpenProcess(RequiredAccess, false, pid);
@@ -37,7 +37,8 @@ namespace _4RTools.Model.Vanilla
                     throw new Win32Exception(Marshal.GetLastWin32Error(), "Client creation time unavailable.");
                 if (DateTime.FromFileTimeUtc(created) != expectedStart)
                     throw new InvalidOperationException("Client PID was replaced; no close sent.");
-                using (var process = Process.GetProcessById(pid)) window = process.MainWindowHandle;
+                if (resolveWindow)
+                    using (var process = Process.GetProcessById(pid)) window = process.MainWindowHandle;
             }
             catch { handle.Dispose(); throw; }
         }

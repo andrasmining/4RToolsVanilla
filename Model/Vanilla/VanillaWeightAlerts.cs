@@ -222,6 +222,8 @@ namespace _4RTools.Model.Vanilla
         private readonly object gate = new object();
         private readonly Dictionary<string, AlertState> states = new Dictionary<string, AlertState>(StringComparer.OrdinalIgnoreCase);
         private System.Threading.Timer timer;
+        private System.Threading.Timer emergencyTimer;
+        private int emergencyPolling;
         private VanillaWeightAlertSettings settings;
         private IReadOnlyList<VanillaWeightObservation> latest = new VanillaWeightObservation[0];
         private string status = "Weight alerts stopped.";
@@ -234,6 +236,9 @@ namespace _4RTools.Model.Vanilla
         public string Status { get { lock (gate) return status; } }
         public IReadOnlyList<VanillaWeightObservation> Latest { get { lock (gate) return latest.ToArray(); } }
         public VanillaWeightAlertSettings Settings { get { lock (gate) return settings.Clone(); } }
+        public string EmergencyStatus { get { return supervisor.FarmingEmergencyStatus; } }
+        public bool HasEmergencyHolds { get { return supervisor.HasFarmingEmergencyHolds; } }
+        public void ClearEmergencyHolds() { supervisor.ClearFarmingEmergencyHolds(); }
 
         public VanillaWeightAlertService(string baseDirectory, VanillaFleetMonitor fleetMonitor, VanillaReconnectSupervisor supervisor)
         {
@@ -252,6 +257,7 @@ namespace _4RTools.Model.Vanilla
             {
                 if (disposed || timer != null) return;
                 timer = new System.Threading.Timer(_ => Poll(), null, TimeSpan.Zero, TimeSpan.FromSeconds(settings.PollSeconds));
+                emergencyTimer = new System.Threading.Timer(_ => PollEmergency(), null, 0, 500);
                 SetStatusLocked(settings.AutoCartEnabled ? "Weight manager started; automatic cart maintenance is enabled."
                     : settings.Enabled ? "Weight manager started; e-mail alerts are enabled."
                     : "Weight manager started. Verified weight memory remains visible while actions are disabled.");
@@ -295,6 +301,27 @@ namespace _4RTools.Model.Vanilla
             SendMail(value, "SMTP test", "4RTools Vanilla weight-alert SMTP test succeeded at " + DateTimeOffset.Now.ToString("u", CultureInfo.InvariantCulture) + ".");
         }
 
+        private void PollEmergency()
+        {
+            if (disposed || Interlocked.Exchange(ref emergencyPolling, 1) != 0) return;
+            try
+            {
+                // Separate from configurable Cart/mail polling and supervisor START/STOP.
+                // Poll releases the reader lock before any supervisor/close work begins.
+                foreach (var client in fleetMonitor.Poll())
+                {
+                    if (disposed) return;
+                    supervisor.ObserveFarmingEmergency(client);
+                }
+            }
+            catch (Exception ex)
+            {
+                SetStatus("Emergency observation failed: " + ex.Message);
+                VanillaDebugLog.Write("EMERGENCY", "Observation failed: " + ex.Message);
+            }
+            finally { Interlocked.Exchange(ref emergencyPolling, 0); }
+        }
+
         private void Poll()
         {
             if (disposed || Interlocked.Exchange(ref polling, 1) != 0) return;
@@ -302,7 +329,9 @@ namespace _4RTools.Model.Vanilla
             {
                 VanillaWeightAlertSettings current;
                 lock (gate) current = settings.Clone();
-                IReadOnlyList<VanillaWeightObservation> observations = fleetMonitor.Poll().Select(FromFleet).ToArray();
+                var clients = fleetMonitor.Poll();
+                foreach (var client in clients) supervisor.ObserveFarmingEmergency(client);
+                IReadOnlyList<VanillaWeightObservation> observations = clients.Select(FromFleet).ToArray();
                 lock (gate) latest = observations.ToArray();
                 bool anyVerified = false;
                 foreach (VanillaWeightObservation observation in observations)
@@ -728,6 +757,7 @@ namespace _4RTools.Model.Vanilla
                 if (disposed) return;
                 disposed = true;
                 timer?.Dispose(); timer = null;
+                emergencyTimer?.Dispose(); emergencyTimer = null;
             }
         }
 

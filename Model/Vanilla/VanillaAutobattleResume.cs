@@ -443,6 +443,7 @@ namespace _4RTools.Model.Vanilla
 
         private void RequestVerifiedResume(Runtime runtime, string trigger, bool movementRecovery)
         {
+            if (FarmingEmergencyHeld(runtime)) return;
             var hook = autobattleResumeTestHook;
             if (hook != null) { hook(runtime.Account.Id, trigger, movementRecovery); return; }
             QueueVerifiedResume(runtime, trigger, movementRecovery);
@@ -462,7 +463,8 @@ namespace _4RTools.Model.Vanilla
                 return disposed || generation != Volatile.Read(ref resumeVerificationGeneration)
                     || !runtimes.TryGetValue(owner.Account.Id, out current) || !ReferenceEquals(owner, current)
                     || current.ProcessId != pid || current.ResumeOperationGeneration != generation
-                    || !current.Account.Enabled || !current.ScriptRunning || CharacterOwnershipChanged(current, pid);
+                    || !current.Account.Enabled || !current.ScriptRunning || FarmingEmergencyHeld(current)
+                    || CharacterOwnershipChanged(current, pid);
             }
         }
 
@@ -473,7 +475,7 @@ namespace _4RTools.Model.Vanilla
                 Runtime current;
                 if (generation != Volatile.Read(ref resumeVerificationGeneration) || disposed || !runtimes.TryGetValue(owner.Account.Id, out current)
                     || !ReferenceEquals(owner, current) || current.ProcessId != pid
-                    || current.ResumeOperationGeneration != generation || !current.ScriptRunning) return;
+                    || current.ResumeOperationGeneration != generation || !current.ScriptRunning || FarmingEmergencyHeld(current)) return;
                 SetStage(current, VanillaReconnectStage.VerifyingAutobattle, detail);
             }
             Log(owner.Account.Label + ": " + detail);
@@ -566,6 +568,8 @@ namespace _4RTools.Model.Vanilla
         private async Task VerifyAutobattleResumeAsync(VanillaReconnectAccount account, int pid,
             Func<bool> cancelled, System.Action<string> progress)
         {
+            Func<bool> callerCancelled = cancelled;
+            cancelled = () => callerCancelled() || FarmingEmergencyHeld(account) || FarmingEmergencyHeld(pid);
             if (cancelled()) throw new OperationCanceledException("Autobattle verification cancelled.");
             using (var memory = new ReadOnlyProcessMemory(pid))
             {
@@ -644,7 +648,8 @@ namespace _4RTools.Model.Vanilla
             {
                 Runtime current;
                 if (cancelled() || disposed || !runtimes.TryGetValue(owner.Account.Id, out current)
-                    || !ReferenceEquals(owner, current) || current.ProcessId != pid || !current.Account.Enabled || CharacterOwnershipChanged(current, pid))
+                    || !ReferenceEquals(owner, current) || current.ProcessId != pid || !current.Account.Enabled
+                    || FarmingEmergencyHeld(current) || CharacterOwnershipChanged(current, pid))
                     throw new OperationCanceledException("Client ownership changed; no window action performed.");
                 return action();
             }
@@ -672,6 +677,7 @@ namespace _4RTools.Model.Vanilla
 
         private void QueueAutobattleClientRestartLocked(Runtime runtime, DateTimeOffset now, string reason)
         {
+            if (FarmingEmergencyHeld(runtime)) return;
             runtime.RecoveryOwned = false;
             runtime.ScriptRunning = false;
             runtime.ResumeSent = false;
@@ -703,7 +709,7 @@ namespace _4RTools.Model.Vanilla
 
         private void QueueVerifiedResume(Runtime runtime, string trigger, bool movementRecovery)
         {
-            if (runtime.ScriptRunning || !runtime.ProcessId.HasValue) return;
+            if (runtime.ScriptRunning || !runtime.ProcessId.HasValue || FarmingEmergencyHeld(runtime)) return;
             if (runtime.ResumeVerificationFailed && !movementRecovery) return;
             Runtime owner = OtherRecoveryOwner(runtime);
             if (owner != null)

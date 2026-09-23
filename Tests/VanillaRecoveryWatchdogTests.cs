@@ -76,6 +76,15 @@ namespace Vanilla.Diagnostics.Tests
             Test("STOP during close wait prevents termination", StopDuringClose);
             Test("Unknown exit observation cannot become successful exit", UnknownExit);
             Test("Close permission denial does not try another access path", CloseDenied);
+            Test("Emergency close terminates immediately without WM_CLOSE or graceful wait", EmergencyClose);
+            Test("Emergency close skips an already exited client", EmergencyAlreadyExited);
+            Test("Cancelled emergency close never terminates", EmergencyCancelled);
+            Test("Emergency cancellation after exit query prevents termination", EmergencyCancelledAtBoundary);
+            Test("Emergency cancellation during exit verification stops waiting", EmergencyCancelledDuringWait);
+            Test("Denied emergency termination is a failure without retries", EmergencyDenied);
+            Test("Emergency exit timeout is bounded and remains a failure", EmergencyExitTimeout);
+            Test("Unknown emergency exit state never authorizes termination", EmergencyUnknownExit);
+            Test("Unknown exit after emergency termination cannot confirm success", EmergencyUnknownExitAfterTermination);
             Test("Process close requests no memory-write or injection rights", CloseRights);
             Test("Position cache clears only the confirmed exited client's reader", FleetCache);
             foreach (string name in new[] { "LoggingOut", "Disconnected" })
@@ -169,7 +178,7 @@ namespace Vanilla.Diagnostics.Tests
             public TimeSpan MonotonicNow { get { return TimeSpan.FromSeconds(Seconds); } }
             public DateTime GetStartTimeUtc(int pid) { return Epoch.UtcDateTime; }
             public void Queue(Action work) { Work.Enqueue(work); }
-            public void CloseClient(int pid, DateTime expected, Func<bool> cancelled, Action<Action> owned)
+            public void CloseClient(int pid, DateTime expected, Func<bool> cancelled, Action<Action> owned, bool immediate = false)
             { BeforeClose?.Invoke(); if (cancelled()) throw new OperationCanceledException(); if (FailClose) throw new InvalidOperationException("denied"); owned(() => { if (cancelled()) throw new OperationCanceledException(); Closed.Add(pid); }); }
         }
         private sealed class H : IDisposable
@@ -616,8 +625,25 @@ namespace Vanilla.Diagnostics.Tests
         { using(var h=new H()){Set(h.Supervisor,"running",false);Set(h.Supervisor,"hardenedStartupRunning",true);int reads=0;Expect<InvalidOperationException>(()=>Call(h.Supervisor,"CloseTerminalBeforeStartup",h.A,101,0,h.Supervisor.Settings,(Func<VanillaVisualState>)(()=>++reads==1?VanillaVisualState.LoggingOut:VanillaVisualState.Gameplay),(Func<DateTime>)(()=>Epoch.UtcDateTime),(Action<int>)(ms=>h.E.Seconds+=ms/1000.0)));Assert(h.E.Closed.Count==0);} }
         private sealed class Protocol
         {
-            internal int Ms,Closes,Kills;internal bool Exited,Cancelled,NeverExit,BadRead,Denied;internal Action OnWait;
-            internal void Run(){VanillaClientCloseProtocol.Run(()=>{if(BadRead)throw new InvalidOperationException();return Exited;},()=>{Closes++;if(Denied)throw new InvalidOperationException();},()=>{Kills++;if(!NeverExit)Exited=true;},()=>Cancelled,()=>TimeSpan.FromMilliseconds(Ms),ms=>{Ms+=ms;OnWait?.Invoke();});}
+            internal int Ms, Closes, Kills;
+            internal bool Exited, Cancelled, NeverExit, BadRead, Denied, TerminationDenied;
+            internal Action OnWait, OnExitQuery, OnTerminate;
+            internal void Run() { Run(false); }
+            internal void Run(bool immediate)
+            {
+                VanillaClientCloseProtocol.Run(
+                    () => { OnExitQuery?.Invoke(); if (BadRead) throw new InvalidOperationException("Exit query denied"); return Exited; },
+                    () => { Closes++; if (Denied) throw new InvalidOperationException("Close denied"); },
+                    () =>
+                    {
+                        Kills++;
+                        if (TerminationDenied) throw new InvalidOperationException("Termination denied");
+                        OnTerminate?.Invoke();
+                        if (!NeverExit) Exited = true;
+                    },
+                    () => Cancelled, () => TimeSpan.FromMilliseconds(Ms),
+                    ms => { Ms += ms; OnWait?.Invoke(); }, immediate);
+            }
         }
         private static void NormalClose(){var p=new Protocol();p.OnWait=()=>p.Exited=true;p.Run();Assert(p.Closes==1&&p.Kills==0);}
         private static void ForcedClose(){var p=new Protocol();p.Run();Assert(p.Closes==1&&p.Kills==1&&p.Ms==3000);}
@@ -625,6 +651,64 @@ namespace Vanilla.Diagnostics.Tests
         private static void StopDuringClose(){var p=new Protocol();p.OnWait=()=>p.Cancelled=true;Expect<OperationCanceledException>(p.Run);Assert(p.Kills==0&&p.Ms==50);}
         private static void UnknownExit(){var p=new Protocol{BadRead=true};Expect<InvalidOperationException>(p.Run);Assert(p.Closes+p.Kills==0);}
         private static void CloseDenied(){var p=new Protocol{Denied=true};Expect<InvalidOperationException>(p.Run);Assert(p.Kills==0);}
+        private static void EmergencyClose()
+        {
+            var p = new Protocol();
+            p.Run(true);
+            Assert(p.Closes == 0 && p.Kills == 1 && p.Ms == 0 && p.Exited,
+                "Emergency close spent time on the graceful path or failed to terminate.");
+        }
+        private static void EmergencyAlreadyExited()
+        {
+            var p = new Protocol { Exited = true };
+            p.Run(true);
+            Assert(p.Closes == 0 && p.Kills == 0 && p.Ms == 0);
+        }
+        private static void EmergencyCancelled()
+        {
+            var p = new Protocol { Cancelled = true };
+            Expect<OperationCanceledException>(() => p.Run(true));
+            Assert(p.Closes == 0 && p.Kills == 0 && p.Ms == 0);
+        }
+        private static void EmergencyCancelledAtBoundary()
+        {
+            var p = new Protocol();
+            p.OnExitQuery = () => p.Cancelled = true;
+            Expect<OperationCanceledException>(() => p.Run(true));
+            Assert(p.Closes == 0 && p.Kills == 0 && p.Ms == 0);
+        }
+        private static void EmergencyCancelledDuringWait()
+        {
+            var p = new Protocol { NeverExit = true };
+            p.OnWait = () => p.Cancelled = true;
+            Expect<OperationCanceledException>(() => p.Run(true));
+            Assert(p.Closes == 0 && p.Kills == 1 && p.Ms == 50 && !p.Exited);
+        }
+        private static void EmergencyDenied()
+        {
+            var p = new Protocol { TerminationDenied = true };
+            Expect<InvalidOperationException>(() => p.Run(true));
+            Assert(p.Closes == 0 && p.Kills == 1 && p.Ms == 0 && !p.Exited);
+        }
+        private static void EmergencyExitTimeout()
+        {
+            var p = new Protocol { NeverExit = true };
+            Expect<TimeoutException>(() => p.Run(true));
+            Assert(p.Closes == 0 && p.Kills == 1 && p.Ms == VanillaClientCloseProtocol.TerminationWaitMs && !p.Exited);
+        }
+        private static void EmergencyUnknownExit()
+        {
+            var p = new Protocol { BadRead = true };
+            Expect<InvalidOperationException>(() => p.Run(true));
+            Assert(p.Closes == 0 && p.Kills == 0 && p.Ms == 0);
+        }
+        private static void EmergencyUnknownExitAfterTermination()
+        {
+            var p = new Protocol { NeverExit = true };
+            p.OnTerminate = () => p.BadRead = true;
+            Expect<InvalidOperationException>(() => p.Run(true));
+            Assert(p.Closes == 0 && p.Kills == 1 && p.Ms == 0 && !p.Exited);
+        }
         private static void CloseRights(){Assert(VanillaClientCloseHandle.RequiredAccess==0x101001 && (VanillaClientCloseHandle.RequiredAccess&0x003A)==0);}
         private sealed class Meta:VanillaFleetMonitor.IProcessMetadata{public int ProcessId{get;set;}public bool HasExited{get{throw new Exception("Not needed");}}public IntPtr MainWindowHandle{get{throw new Exception("Not needed");}}public void Dispose(){}}
         private sealed class Reader:VanillaFleetMonitor.IClientReader{internal int Pid;internal VanillaPositionSample Frame;internal bool Disposed;public bool IsStopped{get{return Disposed;}}public VanillaFleetClientInfo Poll(TimeSpan now){return new VanillaFleetClientInfo{ProcessId=Pid,Position=Frame??S(0,pid:Pid)};}public void Dispose(){Disposed=true;}}

@@ -15,7 +15,9 @@ namespace _4RTools.Model.Vanilla
     {
         private VanillaFleetClientInfo CurrentClient(int pid)
         {
-            return fleet.Poll().FirstOrDefault(item => item.ProcessId == pid);
+            var client = fleet.Poll().FirstOrDefault(item => item.ProcessId == pid);
+            supervisor.ObserveFarmingEmergency(client);
+            return client;
         }
 
         private uint? CurrentWeight(int pid)
@@ -183,7 +185,7 @@ namespace _4RTools.Model.Vanilla
             var verifier = new VanillaAutobattleStopVerifier();
             Func<VanillaClientState> read = () =>
             {
-                VanillaFleetClientInfo client = fleet.Poll().FirstOrDefault(item => item.ProcessId == token.ProcessId);
+                VanillaFleetClientInfo client = CurrentClient(token.ProcessId);
                 if (client == null || client.Snapshot == null)
                     throw new InvalidOperationException("Fresh fleet state is unavailable for Autobattle STOP verification.");
                 return client.Snapshot;
@@ -222,7 +224,7 @@ namespace _4RTools.Model.Vanilla
             var verifier = new VanillaAutobattleResumeVerifier();
             Func<VanillaClientState> read = () =>
             {
-                VanillaFleetClientInfo client = fleet.Poll().FirstOrDefault(item => item.ProcessId == token.ProcessId);
+                VanillaFleetClientInfo client = CurrentClient(token.ProcessId);
                 if (client == null || client.Snapshot == null) throw new InvalidOperationException("Fresh fleet state is unavailable for autobattle verification.");
                 return client.Snapshot;
             };

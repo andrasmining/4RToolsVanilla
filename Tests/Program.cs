@@ -76,6 +76,7 @@ namespace Vanilla.Diagnostics.Tests
             failed += VanillaReconnectRegressionTests.Run();
             failed += VanillaAutobattleResumeTests.Run();
             failed += VanillaRecoveryWatchdogTests.Run();
+            failed += VanillaFarmingEmergencyTests.Run();
             failed += VanillaServerClosedPatternTests.Run();
             failed += VanillaServerOutageTests.Run();
             failed += VanillaCharacterRosterTests.Run();

@@ -175,7 +175,7 @@ namespace Vanilla.Diagnostics.Tests
             public TimeSpan MonotonicNow { get { return TimeSpan.FromSeconds(Seconds); } }
             public DateTime GetStartTimeUtc(int pid) { return Epoch.UtcDateTime; }
             public void Queue(Action work) { Work.Enqueue(work); }
-            public void CloseClient(int pid, DateTime expected, Func<bool> cancelled, Action<Action> ownedStep)
+            public void CloseClient(int pid, DateTime expected, Func<bool> cancelled, Action<Action> ownedStep, bool immediate = false)
             {
                 if (cancelled()) throw new OperationCanceledException();
                 if (FailClose) throw new InvalidOperationException("Synthetic close denial");

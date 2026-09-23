@@ -518,7 +518,7 @@ namespace _4RTools.Model.Vanilla
             this.baseDirectory = Path.GetFullPath(baseDirectory);
             sessionLog = new VanillaSessionLog(this.baseDirectory);
             store = new VanillaReconnectStore(this.baseDirectory);
-            settings = store.Load(); RebuildRuntimes();
+            settings = store.Load(); InitializeFarmingEmergency(); RebuildRuntimes();
         }
         public VanillaReconnectSettings Settings { get { lock (gate) return settings.Clone(); } }
         public bool IsRunning { get { lock (gate) return running; } }
@@ -534,6 +534,7 @@ namespace _4RTools.Model.Vanilla
                 if (string.IsNullOrWhiteSpace(accountId) || !runtimes.TryGetValue(accountId, out runtime))
                 { reason = "the selected character is not part of the active supervisor"; return false; }
                 if (!runtime.Account.Enabled) { reason = "the selected character is disabled"; return false; }
+                if (FarmingEmergencyHeld(runtime)) { reason = FarmingEmergencyDetail(runtime); return false; }
                 if (!runtime.ProcessId.HasValue) { reason = "the selected character has no verified running client"; return false; }
                 if (runtime.Stage != VanillaReconnectStage.Online) { reason = "the selected character is not in the stable Online stage"; return false; }
                 VanillaCharacterIdentity observed = CurrentCharacter(runtime.ProcessId.Value);
@@ -717,7 +718,7 @@ namespace _4RTools.Model.Vanilla
             {
                 if (runtime.ProcessId.HasValue && !aliveIds.Contains(runtime.ProcessId.Value))
                 {
-                    if (runtime.ClosingForRecovery && runtime.ScriptRunning) continue;
+                    if (runtime.ScriptRunning && (runtime.ClosingForRecovery || FarmingEmergencyHeld(runtime))) continue;
                     int old = runtime.ProcessId.Value;
                     if (positionClientExited != null) positionClientExited(old);
                     runtime.MovementWatchdog.Reset(); runtime.MovementRecoveryPending = false;
@@ -726,7 +727,9 @@ namespace _4RTools.Model.Vanilla
                     runtime.Visual = VanillaVisualState.Unknown; runtime.LoginLikeSince = runtime.GameplaySince = null;
                     runtime.ScriptRunning = false; runtime.RecoveryOwned = false; runtime.HasBeenOnline = false;
                     ResetTerminalEvidence(runtime);
-                    if (failedDuringRecovery) ScheduleRecoveryFailureLocked(runtime, now, "PID " + old + " exited during recovery");
+                    if (FarmingEmergencyHeld(runtime))
+                    { runtime.NextRecoveryAt = null; SetStage(runtime, VanillaReconnectStage.Error, FarmingEmergencyDetail(runtime)); }
+                    else if (failedDuringRecovery) ScheduleRecoveryFailureLocked(runtime, now, "PID " + old + " exited during recovery");
                     else
                     {
                         runtime.NextRecoveryAt = now;
@@ -738,6 +741,8 @@ namespace _4RTools.Model.Vanilla
             var claimed = new HashSet<int>(runtimes.Values.Where(r => r.ProcessId.HasValue).Select(r => r.ProcessId.Value));
             foreach (var runtime in desired.Select(a => runtimes[a.Id]))
             {
+                if (FarmingEmergencyHeld(runtime))
+                { SetStage(runtime, VanillaReconnectStage.Error, FarmingEmergencyDetail(runtime)); continue; }
                 if (runtime.ProcessId.HasValue && TemporaryActionRegistered(runtime.ProcessId.Value))
                 {
                     // Only the explicitly controlled character is exempt. Siblings can
@@ -839,7 +844,7 @@ namespace _4RTools.Model.Vanilla
         }
         private bool CanLaunch(Runtime runtime, int aliveCount, DateTimeOffset now)
         {
-            if (!settings.AutoRecover || runtime.ScriptRunning) return false;
+            if (!settings.AutoRecover || runtime.ScriptRunning || FarmingEmergencyHeld(runtime)) return false;
             if (aliveCount >= settings.MaxClients) { DeferReservedServerProbeLocked(runtime, "No free client slot for the server availability check"); return false; }
             string missing = MissingCharacterConfiguration(runtime.Account);
             if (missing != null)
@@ -870,6 +875,7 @@ namespace _4RTools.Model.Vanilla
         }
         private void Launch(Runtime runtime, DateTimeOffset now)
         {
+            if (FarmingEmergencyHeld(runtime)) return;
             string executable = settings.LaunchExecutable, arguments = settings.LaunchArguments ?? "";
             string accountId = runtime.Account.Id, label = runtime.Account.Label;
             int generation = Interlocked.Increment(ref resumeVerificationGeneration);
@@ -887,7 +893,7 @@ namespace _4RTools.Model.Vanilla
                         Runtime current;
                         aborted = disposed || !running || generation != Volatile.Read(ref resumeVerificationGeneration)
                             || !runtimes.TryGetValue(accountId, out current) || !ReferenceEquals(runtime, current)
-                            || current.ResumeOperationGeneration != generation || !current.ScriptRunning;
+                            || current.ResumeOperationGeneration != generation || !current.ScriptRunning || FarmingEmergencyHeld(current);
                         return aborted;
                     }
                 };
@@ -937,7 +943,7 @@ namespace _4RTools.Model.Vanilla
         }
         private void QueueLogin(Runtime runtime, bool freshLaunch, string reason)
         {
-            if (runtime.ScriptRunning || !runtime.ProcessId.HasValue) return;
+            if (runtime.ScriptRunning || !runtime.ProcessId.HasValue || FarmingEmergencyHeld(runtime)) return;
             Runtime owner = OtherRecoveryOwner(runtime);
             if (owner != null)
             { SetStage(runtime, VanillaReconnectStage.WaitingForGameplay, "Queued: waiting for " + owner.Account.Label + " recovery to finish before login input"); return; }
@@ -967,7 +973,7 @@ namespace _4RTools.Model.Vanilla
             {
                 string password = store.UnprotectPassword(account.ProtectedPassword);
                 if (string.IsNullOrEmpty(password)) throw new InvalidOperationException("Password is empty.");
-                WaitForWindow(pid, 60000);
+                WaitForWindow(pid, 60000, cancelled);
                 using (var input = new VanillaForegroundInput(pid))
                 {
                     input.CancellationRequested = cancelled; input.Activate();
@@ -1001,6 +1007,13 @@ namespace _4RTools.Model.Vanilla
                 lock (gate)
                 {
                     Runtime runtime;
+                    if (runtimes.TryGetValue(accountId, out runtime) && ReferenceEquals(owner, runtime)
+                        && runtime.ProcessId == pid && runtime.ResumeOperationGeneration == generation && FarmingEmergencyHeld(runtime))
+                    {
+                        // This worker has disposed input; only now release its emergency-cancelled lease.
+                        runtime.ScriptRunning = runtime.RecoveryOwned = runtime.ClosingForRecovery = false;
+                        SetStage(runtime, VanillaReconnectStage.Error, FarmingEmergencyDetail(runtime));
+                    }
                     if (!cancelled() && runtimes.TryGetValue(accountId, out runtime) && ReferenceEquals(owner, runtime) && runtime.ProcessId == pid)
                     {
                         runtime.ScriptRunning = false; runtime.LoginLikeSince = runtime.GameplaySince = null;
@@ -1102,11 +1115,12 @@ namespace _4RTools.Model.Vanilla
             }
             catch (Exception ex) { evidence = "client close failed: " + ex.Message; try { process.Refresh(); return process.HasExited; } catch { return false; } }
         }
-        private static void WaitForWindow(int pid, int timeoutMs)
+        private static void WaitForWindow(int pid, int timeoutMs, Func<bool> cancelled = null)
         {
             Stopwatch watch = Stopwatch.StartNew();
             while (watch.ElapsedMilliseconds < timeoutMs)
             {
+                if (cancelled?.Invoke() == true) throw new OperationCanceledException("Waiting for Vanilla window cancelled.");
                 using (var p = Process.GetProcessById(pid))
                 {
                     p.Refresh(); if (p.MainWindowHandle != IntPtr.Zero) return;
@@ -1165,6 +1179,8 @@ namespace _4RTools.Model.Vanilla
                         || !VanillaCharacterRoster.Same(runtime.Account.UserName, account.UserName) || runtime.Account.CharacterSlot != account.CharacterSlot) ReleaseChangedCharacter(runtime);
                     runtime.Account = account.Clone();
                 }
+                if (FarmingEmergencyHeld(runtime))
+                    SetStage(runtime, VanillaReconnectStage.Error, FarmingEmergencyDetail(runtime));
             }
         }
         private void RecreateTimer()
@@ -1174,6 +1190,8 @@ namespace _4RTools.Model.Vanilla
         }
         private void SetStage(Runtime runtime, VanillaReconnectStage stage, string detail)
         {
+            if (FarmingEmergencyHeld(runtime))
+            { stage = VanillaReconnectStage.Error; detail = FarmingEmergencyDetail(runtime); }
             if (runtime.Stage == stage && runtime.Detail == detail) return;
             runtime.Stage = stage; runtime.Detail = detail; runtime.StageAt = DateTimeOffset.UtcNow;
         }

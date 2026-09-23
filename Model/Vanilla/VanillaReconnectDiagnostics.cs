@@ -45,12 +45,35 @@ namespace _4RTools.Model.Vanilla
             return disposed || generation != Volatile.Read(ref diagnosticGeneration);
         }
 
+        private bool DiagnosticWorkerCancelled(Runtime owner, VanillaReconnectAccount account, int? pid, int generation)
+        {
+            lock (gate)
+            {
+                Runtime current;
+                return DiagnosticCancelled(generation) || !runtimes.TryGetValue(account.Id, out current)
+                    || !ReferenceEquals(current, owner) || !current.ScriptRunning
+                    || (pid.HasValue && current.ProcessId != pid)
+                    || FarmingEmergencyHeld(current) || FarmingEmergencyHeld(account);
+            }
+        }
+
+        private Process RunOwnedDiagnosticStart(Runtime owner, VanillaReconnectAccount account, int generation, Func<Process> start)
+        {
+            lock (gate)
+            {
+                if (DiagnosticWorkerCancelled(owner, account, null, generation))
+                    throw new OperationCanceledException("Diagnostic launcher ownership changed.");
+                return start();
+            }
+        }
+
         public void AssignSingleDiagnosticClient(string accountId)
         {
             lock (gate)
             {
                 Runtime runtime;
                 if (!runtimes.TryGetValue(accountId, out runtime)) throw new ArgumentException("Unknown account.");
+                if (FarmingEmergencyHeld(runtime)) throw new InvalidOperationException(FarmingEmergencyDetail(runtime));
 
                 if (runtime.ProcessId.HasValue && IsProcessAlive(runtime.ProcessId.Value))
                 {
@@ -100,10 +123,12 @@ namespace _4RTools.Model.Vanilla
             VanillaReconnectSettings config;
             int? pid = null;
             int generation;
+            Runtime owner;
             lock (gate)
             {
                 Runtime runtime;
                 if (!runtimes.TryGetValue(accountId, out runtime)) throw new ArgumentException("Unknown account.");
+                if (FarmingEmergencyHeld(runtime)) throw new InvalidOperationException(FarmingEmergencyDetail(runtime));
                 if (running || hardenedStartupRunning || OtherRecoveryOwner(runtime) != null || runtime.ScriptRunning)
                     throw new InvalidOperationException("Stop the active startup/recovery action before running a diagnostic.");
                 if (step != VanillaReconnectTestStep.LauncherGameStart)
@@ -112,35 +137,39 @@ namespace _4RTools.Model.Vanilla
                     pid = runtime.ProcessId.Value;
                 }
                 generation = Interlocked.Increment(ref diagnosticGeneration);
+                owner = runtime;
                 runtime.ScriptRunning = true;
                 account = runtime.Account.Clone();
                 config = settings.Clone();
                 SetStage(runtime, VanillaReconnectStage.LoggingIn, "Diagnostic step running: " + step);
             }
-            ThreadPool.QueueUserWorkItem(_ => DiagnosticStepWorker(accountId, account, config, pid, step, generation));
+            ThreadPool.QueueUserWorkItem(_ => DiagnosticStepWorker(owner, accountId, account, config, pid, step, generation));
             RaiseUpdated();
         }
 
-        private void DiagnosticStepWorker(string accountId, VanillaReconnectAccount account, VanillaReconnectSettings config, int? pid, VanillaReconnectTestStep step, int generation)
+        private void DiagnosticStepWorker(Runtime owner, string accountId, VanillaReconnectAccount account, VanillaReconnectSettings config, int? pid, VanillaReconnectTestStep step, int generation)
         {
             string error = null;
             string stopped = null;
             int? discoveredPid = pid;
+            Func<bool> cancelled = () => DiagnosticWorkerCancelled(owner, account, pid, generation);
             try
             {
+                if (cancelled()) throw new OperationCanceledException("Diagnostic ownership changed or farming emergency hold is active.");
                 Log("TEST " + account.Label + ": starting step " + step + ".");
                 if (step == VanillaReconnectTestStep.LauncherGameStart)
                 {
                     discoveredPid = VanillaPatcherLauncher.Launch(config.LaunchExecutable, config.LaunchArguments,
-                        message => Log("TEST " + account.Label + ": " + message), () => DiagnosticCancelled(generation),
-                        debugDirectory: Path.Combine(baseDirectory, "Logs"));
+                        message => Log("TEST " + account.Label + ": " + message), cancelled,
+                        debugDirectory: Path.Combine(baseDirectory, "Logs"),
+                        startOwned: start => RunOwnedDiagnosticStart(owner, account, generation, start));
                     if (!discoveredPid.HasValue) throw new InvalidOperationException("Launcher test did not produce a Vanilla process ID.");
                 }
                 else
                 {
                     using (var input = new VanillaForegroundInput(discoveredPid.Value))
                     {
-                        input.CancellationRequested = () => DiagnosticCancelled(generation);
+                        input.CancellationRequested = cancelled;
                         switch (step)
                         {
                             case VanillaReconnectTestStep.ProxySelection:
@@ -160,7 +189,7 @@ namespace _4RTools.Model.Vanilla
                                 SelectDetectedGameServer(input, discoveredPid.Value, config.StageDelayMs, "TEST " + account.Label + ": ");
                                 break;
                             case VanillaReconnectTestStep.SelectCharacter:
-                                Func<bool> characterCancelled = () => DiagnosticCancelled(generation);
+                                Func<bool> characterCancelled = cancelled;
                                 WaitForCharacterSurfaceCancellable(input, discoveredPid.Value, characterCancelled, 30000, "TEST " + account.Label);
                                 SelectConfiguredCharacterWithoutCoordinates(input, discoveredPid.Value, account,
                                     characterCancelled, "TEST " + account.Label + ": ");
@@ -173,7 +202,7 @@ namespace _4RTools.Model.Vanilla
                                     lock (gate)
                                     {
                                         Runtime current;
-                                        return DiagnosticCancelled(generation) || resumeGeneration != Volatile.Read(ref resumeVerificationGeneration)
+                                        return cancelled() || resumeGeneration != Volatile.Read(ref resumeVerificationGeneration)
                                             || !runtimes.TryGetValue(accountId, out current) || current.ProcessId != discoveredPid.Value
                                             || !current.Account.Enabled || !current.ScriptRunning;
                                     }
@@ -184,7 +213,7 @@ namespace _4RTools.Model.Vanilla
                                         lock (gate)
                                         {
                                             Runtime current;
-                                            if (DiagnosticCancelled(generation) || !runtimes.TryGetValue(accountId, out current)
+                                            if (cancelled() || !runtimes.TryGetValue(accountId, out current)
                                                 || current.ProcessId != discoveredPid.Value) return;
                                             SetStage(current, VanillaReconnectStage.VerifyingAutobattle, "Diagnostic: " + detail);
                                         }
@@ -215,16 +244,27 @@ namespace _4RTools.Model.Vanilla
                     lock (gate)
                     {
                         Runtime runtime;
-                        if (!DiagnosticCancelled(generation) && runtimes.TryGetValue(accountId, out runtime)
+                        if (!DiagnosticCancelled(generation) && runtimes.TryGetValue(accountId, out runtime) && ReferenceEquals(runtime, owner)
                             && (step == VanillaReconnectTestStep.LauncherGameStart || runtime.ProcessId == discoveredPid))
                         {
-                            if (discoveredPid.HasValue) runtime.ProcessId = discoveredPid;
-                            if (step == VanillaReconnectTestStep.ResumeHotkey)
-                                RecordDiagnosticResumeResult(runtime, error == null && stopped == null, error ?? stopped);
-                            runtime.ScriptRunning = false;
-                            if (stopped != null) SetStage(runtime, VanillaReconnectStage.Stopped, "Diagnostic test stopped: " + stopped);
-                            else SetStage(runtime, error == null ? VanillaReconnectStage.WaitingForGameplay : VanillaReconnectStage.Error,
-                                error == null ? "Diagnostic step completed: " + step : "Diagnostic step failed: " + error);
+                            if (FarmingEmergencyHeld(runtime))
+                            {
+                                // Input has been disposed. Release only this diagnostic's
+                                // lease, retaining the persistent hold and its PID evidence.
+                                runtime.ScriptRunning = false;
+                                stopped = FarmingEmergencyDetail(runtime);
+                                SetStage(runtime, VanillaReconnectStage.Error, stopped);
+                            }
+                            else
+                            {
+                                if (discoveredPid.HasValue) runtime.ProcessId = discoveredPid;
+                                if (step == VanillaReconnectTestStep.ResumeHotkey)
+                                    RecordDiagnosticResumeResult(runtime, error == null && stopped == null, error ?? stopped);
+                                runtime.ScriptRunning = false;
+                                if (stopped != null) SetStage(runtime, VanillaReconnectStage.Stopped, "Diagnostic test stopped: " + stopped);
+                                else SetStage(runtime, error == null ? VanillaReconnectStage.WaitingForGameplay : VanillaReconnectStage.Error,
+                                    error == null ? "Diagnostic step completed: " + step : "Diagnostic step failed: " + error);
+                            }
                         }
                     }
                     if (stopped != null) Log("TEST " + account.Label + ": STOPPED: " + stopped);
@@ -305,6 +345,8 @@ namespace _4RTools.Model.Vanilla
             if (selected == null) { MessageBox.Show(this, "Select one account row first.", "Step test"); return; }
             try
             {
+                if (supervisor.FarmingEmergencyHeld(selected))
+                    throw new InvalidOperationException("This character is on a farming emergency hold; diagnostic input is blocked.");
                 if (testRunning)
                 {
                     supervisor.CancelDiagnosticTest();

@@ -13,7 +13,8 @@ namespace _4RTools.Model.Vanilla
         TimeSpan MonotonicNow { get; }
         DateTime GetStartTimeUtc(int pid);
         void Queue(System.Action work);
-        void CloseClient(int pid, DateTime expectedStartTimeUtc, Func<bool> cancelled, System.Action<System.Action> ownedStep);
+        void CloseClient(int pid, DateTime expectedStartTimeUtc, Func<bool> cancelled, System.Action<System.Action> ownedStep,
+            bool immediate = false);
     }
 
     internal sealed class VanillaRecoveryRestartEnvironment : IVanillaRecoveryRestartEnvironment
@@ -28,15 +29,16 @@ namespace _4RTools.Model.Vanilla
             Task.Run(work).ContinueWith(task => VanillaDebugLog.Write("RECOVERY", "Close worker failed: " + task.Exception),
                 TaskContinuationOptions.OnlyOnFaulted);
         }
-        public void CloseClient(int pid, DateTime expectedStartTimeUtc, Func<bool> cancelled, System.Action<System.Action> ownedStep)
+        public void CloseClient(int pid, DateTime expectedStartTimeUtc, Func<bool> cancelled, System.Action<System.Action> ownedStep,
+            bool immediate = false)
         {
             if (cancelled()) throw new OperationCanceledException();
-            using (var target = new VanillaClientCloseHandle(pid, expectedStartTimeUtc))
+            using (var target = new VanillaClientCloseHandle(pid, expectedStartTimeUtc, resolveWindow: !immediate))
             {
                 var elapsed = Stopwatch.StartNew();
                 VanillaClientCloseProtocol.Run(target.HasExited,
                     () => ownedStep(target.CloseWindow), () => ownedStep(target.Terminate),
-                    cancelled, () => elapsed.Elapsed, Thread.Sleep);
+                    cancelled, () => elapsed.Elapsed, Thread.Sleep, immediate);
             }
         }
     }
@@ -45,7 +47,7 @@ namespace _4RTools.Model.Vanilla
     {
         internal const int GracefulWaitMs = 3000, TerminationWaitMs = 3000;
         internal static void Run(Func<bool> exited, System.Action close, System.Action terminate,
-            Func<bool> cancelled, Func<TimeSpan> clock, System.Action<int> wait)
+            Func<bool> cancelled, Func<TimeSpan> clock, System.Action<int> wait, bool immediate = false)
         {
             System.Action check = () => { if (cancelled()) throw new OperationCanceledException("Client close cancelled."); };
             Func<int, bool> waitForExit = milliseconds =>
@@ -65,12 +67,17 @@ namespace _4RTools.Model.Vanilla
             check();
             if (exited()) return;
             check();
-            close();
-            if (waitForExit(GracefulWaitMs)) return;
-            check();
-            // Recheck after the graceful deadline before the only permitted fallback.
-            if (exited()) return;
-            check();
+            if (!immediate)
+            {
+                close();
+                if (waitForExit(GracefulWaitMs)) return;
+                check();
+                // Recheck after the graceful deadline before the only permitted fallback.
+                if (exited()) return;
+                check();
+            }
+            // Emergency closure uses the same identity-pinned handle and ownership
+            // check as ordinary termination, without spending time on WM_CLOSE.
             terminate();
             if (!waitForExit(TerminationWaitMs))
                 throw new TimeoutException("Client exit was not confirmed after close/termination; no replacement will be launched.");
@@ -189,7 +196,7 @@ namespace _4RTools.Model.Vanilla
 
         private void QueueClientRestart(Runtime runtime, DateTimeOffset now, string reason, bool failedAttempt, Func<DateTime> startTimeUtc)
         {
-            if (!running || disposed || !settings.AutoRecover || !runtime.Account.Enabled
+            if (!running || disposed || FarmingEmergencyHeld(runtime) || !settings.AutoRecover || !runtime.Account.Enabled
                 || !runtime.ProcessId.HasValue || runtime.ScriptRunning) return;
             if (serverOutage.Active)
             {
@@ -245,10 +252,24 @@ namespace _4RTools.Model.Vanilla
                         restartEnvironment.CloseClient(pid, identity, cancelled, action =>
                             RunOwnedClientStep(runtime, pid, cancelled, () => { action(); return true; }));
                     }
-                    catch (OperationCanceledException) { return; }
+                    catch (OperationCanceledException)
+                    {
+                        lock (gate)
+                        {
+                            Runtime current;
+                            if (runtimes.TryGetValue(runtime.Account.Id, out current) && ReferenceEquals(current, runtime)
+                                && runtime.ProcessId == pid && runtime.ResumeOperationGeneration == generation && FarmingEmergencyHeld(runtime))
+                            { runtime.ScriptRunning = runtime.RecoveryOwned = runtime.ClosingForRecovery = false; }
+                        }
+                        return;
+                    }
                     catch (Exception ex) { error = ex.Message; }
                     lock (gate)
                     {
+                        Runtime current;
+                        if (runtimes.TryGetValue(runtime.Account.Id, out current) && ReferenceEquals(current, runtime)
+                            && runtime.ProcessId == pid && runtime.ResumeOperationGeneration == generation && FarmingEmergencyHeld(runtime))
+                        { runtime.ScriptRunning = runtime.RecoveryOwned = runtime.ClosingForRecovery = false; }
                         if (cancelled()) return;
                         CompleteClientRestartClose(runtime, restartEnvironment.UtcNow, reason, failedAttempt, error);
                     }

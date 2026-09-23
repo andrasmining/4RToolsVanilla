@@ -22,7 +22,7 @@ namespace _4RTools.Model.Vanilla
         {
             lock (gate)
             {
-                if (disposed || hardenedStartupRunning || OtherRecoveryOwner(null) != null || temporaryOwners.ContainsKey(pid))
+                if (disposed || FarmingEmergencyHeld(pid) || hardenedStartupRunning || OtherRecoveryOwner(null) != null || temporaryOwners.ContainsKey(pid))
                     throw new InvalidOperationException("Another startup/recovery/input operation is active; temporary action was not started.");
                 var owner = new VanillaTemporaryOwner { ProcessId = pid, Generation = diagnosticGeneration };
                 temporaryOwners.Add(pid, owner);
@@ -35,7 +35,7 @@ namespace _4RTools.Model.Vanilla
             lock (gate)
             {
                 VanillaTemporaryOwner current;
-                return owner == null || disposed || hardenedStartupRunning || owner.Generation != diagnosticGeneration
+                return owner == null || disposed || FarmingEmergencyHeld(owner.ProcessId) || hardenedStartupRunning || owner.Generation != diagnosticGeneration
                     || !temporaryOwners.TryGetValue(owner.ProcessId, out current) || !ReferenceEquals(owner, current);
             }
         }

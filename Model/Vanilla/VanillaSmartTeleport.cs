@@ -32,6 +32,8 @@ namespace _4RTools.Model.Vanilla
                 if (disposed || !running) { reason = "reconnect supervision is not running"; return false; }
                 Runtime runtime = runtimes.Values.FirstOrDefault(item => item.ProcessId == pid && item.Account.Enabled);
                 if (runtime == null) { reason = "the running process is not bound to an enabled character row"; return false; }
+                if (FarmingEmergencyHeld(runtime))
+                { reason = "the character is on a farming emergency hold"; return false; }
                 if (!runtime.Account.SmartTeleportEnabled)
                 { reason = "Smart Teleport is disabled for this character"; return false; }
                 if (runtime.Account.SmartTeleportKey < 8 || runtime.Account.SmartTeleportKey > 254)
@@ -68,7 +70,7 @@ namespace _4RTools.Model.Vanilla
                 return disposed || !running || token.Generation != smartTeleportGeneration
                     || !runtimes.TryGetValue(token.AccountId, out runtime)
                     || runtime.ProcessId != token.ProcessId || !runtime.Account.Enabled
-                    || !runtime.Account.SmartTeleportEnabled || runtime.Stage != VanillaReconnectStage.Online
+                    || !runtime.Account.SmartTeleportEnabled || runtime.Stage != VanillaReconnectStage.Online || FarmingEmergencyHeld(runtime)
                     || CharacterOwnershipChanged(runtime, token.ProcessId);
             }
         }
@@ -296,6 +298,8 @@ namespace _4RTools.Model.Vanilla
             string reason;
             if (!supervisor.TryResolveOnlineManagedCharacter(accountId, out pid, out account, out reason))
                 throw new InvalidOperationException(reason);
+            if (supervisor.FarmingEmergencyHeld(account))
+                throw new InvalidOperationException("This character is on a farming emergency hold; Smart Teleport is blocked.");
             if (account.SmartTeleportKey < 8 || account.SmartTeleportKey > 254)
                 throw new InvalidOperationException("Configure this character's Smart Teleport hotkey first.");
 
@@ -336,6 +340,8 @@ namespace _4RTools.Model.Vanilla
 
                 foreach (VanillaReconnectAccount account in enabled)
                 {
+                    if (supervisor.FarmingEmergencyHeld(account))
+                    { State(account.Id).Tracker.Reset(clock.Elapsed); continue; }
                     VanillaReconnectStatus status = statuses.FirstOrDefault(s => string.Equals(s.AccountId, account.Id, StringComparison.OrdinalIgnoreCase));
                     if (status == null || !status.ProcessId.HasValue || status.Stage != VanillaReconnectStage.Online) continue;
                     VanillaFleetClientInfo client = clients.FirstOrDefault(item => item.ProcessId == status.ProcessId.Value);
@@ -375,6 +381,7 @@ namespace _4RTools.Model.Vanilla
             VanillaSmartTeleportToken token = null;
             string reason;
             string mode = manual ? "manual-test" : "automatic-idle";
+            string completionDetail = "Smart Teleport cancelled";
             try
             {
                 if (!supervisor.TryBeginSmartTeleport(pid, out token, out reason))
@@ -390,7 +397,7 @@ namespace _4RTools.Model.Vanilla
                 Func<bool> cancelled = () => supervisor.SmartTeleportCancelled(token);
                 string detail;
                 VanillaVerifiedTeleportAction.TryExecute(pid, token.Account, cancelled, mode, out detail);
-                supervisor.CompleteSmartTeleport(token, detail);
+                completionDetail = detail;
             }
             catch (OperationCanceledException)
             {
@@ -403,13 +410,18 @@ namespace _4RTools.Model.Vanilla
                 VanillaDebugLog.Write("TELEPORT", "event=teleport-failed mode=" + mode + " account='"
                     + (token?.Account?.Label ?? accountId) + "' pid=" + pid + " stage=exception reason='" + ex.Message
                     + "'; no blind Enter was sent.");
-                if (token != null) supervisor.CompleteSmartTeleport(token, "Smart Teleport failed safely: " + ex.Message);
+                completionDetail = "Smart Teleport failed safely: " + ex.Message;
             }
             finally
             {
                 // A real owned attempt starts a new idle baseline. A deferred attempt did
                 // not send input, so keep the existing due state and retry after contention.
-                if (token != null) state.Tracker.Reset(clock.Elapsed);
+                if (token != null)
+                {
+                    try { supervisor.CompleteSmartTeleport(token, completionDetail); }
+                    catch (Exception ex) { VanillaDebugLog.Write("TELEPORT", "Teleport completion notification failed: " + ex.Message); }
+                    state.Tracker.Reset(clock.Elapsed);
+                }
                 lock (gate) state.Running = false;
             }
         }

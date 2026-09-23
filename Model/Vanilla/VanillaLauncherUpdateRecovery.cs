@@ -193,7 +193,7 @@ namespace _4RTools.Model.Vanilla
       Runtime current;
       if (disposed || cancelled() || generation != Volatile.Read(ref resumeVerificationGeneration)
           || !runtimes.TryGetValue(owner.Account.Id, out current) || !ReferenceEquals(current, owner)
-          || !current.Account.Enabled || !current.ScriptRunning || !current.RecoveryOwned
+          || !current.Account.Enabled || !current.ScriptRunning || !current.RecoveryOwned || FarmingEmergencyHeld(current)
           || current.ResumeOperationGeneration != generation || current.ProcessId.HasValue
           || OtherRecoveryOwner(owner) != null)
           throw new OperationCanceledException("Launcher start ownership changed.");
@@ -217,7 +217,7 @@ namespace _4RTools.Model.Vanilla
                         || !ReferenceEquals(current, pair.Key) || current.ProcessId != pair.Value.Item1 || current.CharacterSession != pair.Value.Item2);
                     return changed || disposed || callerCancelled() || generation != Volatile.Read(ref resumeVerificationGeneration)
                         || !runtimes.TryGetValue(owner.Account.Id, out current) || !ReferenceEquals(current, owner)
-                        || !current.Account.Enabled || !current.ScriptRunning || !current.RecoveryOwned
+                        || !current.Account.Enabled || !current.ScriptRunning || !current.RecoveryOwned || FarmingEmergencyHeld(current)
                         || current.ResumeOperationGeneration != generation || current.ProcessId.HasValue;
                 }
             };
@@ -250,9 +250,11 @@ namespace _4RTools.Model.Vanilla
                                 row.ResumeSent = row.HasBeenOnline = row.ResumeVerificationFailed = false;
                                 row.ResumeFailureDetail = null; row.Visual = VanillaVisualState.Unknown;
                                 row.GameplaySince = row.LoginLikeSince = row.LastLaunch = null;
-                                row.NextRecoveryAt = restartEnvironment.UtcNow; row.MovementRecoveryPending = false;
+                                row.NextRecoveryAt = FarmingEmergencyHeld(row) ? (DateTimeOffset?)null : restartEnvironment.UtcNow;
+                                row.MovementRecoveryPending = false;
                                 row.MovementWatchdog.Reset(); ResetTerminalEvidence(row);
-                                SetStage(row, VanillaReconnectStage.WaitingForClient, "Launcher update: queued for sequential relaunch");
+                                SetStage(row, FarmingEmergencyHeld(row) ? VanillaReconnectStage.Error : VanillaReconnectStage.WaitingForClient,
+                                    FarmingEmergencyHeld(row) ? FarmingEmergencyDetail(row) : "Launcher update: queued for sequential relaunch");
                             }
                             try { positionClientExited?.Invoke(target.Pid); }
                             catch (Exception ex) { Log("Launcher update: exited-reader cleanup failed: " + ex.Message); }

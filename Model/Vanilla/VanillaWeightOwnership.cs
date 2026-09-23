@@ -88,6 +88,7 @@ namespace _4RTools.Model.Vanilla
                 if (disposed || !running) { reason = "reconnect supervision is not running"; return false; }
                 Runtime runtime = runtimes.Values.FirstOrDefault(item => item.ProcessId == pid && item.Account.Enabled);
                 if (runtime == null) { reason = "the client is not assigned to an enabled character row"; return false; }
+                if (FarmingEmergencyHeld(runtime)) { reason = FarmingEmergencyDetail(runtime); return false; }
                 if (!runtime.Account.EffectiveCartMaintenanceEnabled) { reason = "Cart maintenance is disabled for this character"; return false; }
                 if (weightManualHolds.Contains(runtime.Account.Id)) { reason = "the character is waiting for manual cart emptying"; return false; }
                 if (weightCompletedHolds.Contains(runtime.Account.Id)) { reason = "farming is complete for this character; clear the Weight hold before resuming"; return false; }
@@ -115,7 +116,7 @@ namespace _4RTools.Model.Vanilla
                 Runtime runtime;
                 return disposed || !running || token.Generation != weightMaintenanceGeneration
                     || !runtimes.TryGetValue(token.AccountId, out runtime) || runtime.ProcessId != token.ProcessId
-                    || !runtime.Account.Enabled || !runtime.Account.EffectiveCartMaintenanceEnabled || CharacterOwnershipChanged(runtime, token.ProcessId);
+                    || FarmingEmergencyHeld(runtime) || !runtime.Account.Enabled || !runtime.Account.EffectiveCartMaintenanceEnabled || CharacterOwnershipChanged(runtime, token.ProcessId);
             }
         }
 
@@ -147,8 +148,15 @@ namespace _4RTools.Model.Vanilla
         }
 
         internal bool IsWeightManualHold(string accountId)
-        { lock (gate) return !string.IsNullOrWhiteSpace(accountId)
-            && (weightManualHolds.Contains(accountId) || weightCompletedHolds.Contains(accountId)); }
+        {
+            lock (gate)
+            {
+                Runtime runtime;
+                return !string.IsNullOrWhiteSpace(accountId)
+                    && (weightManualHolds.Contains(accountId) || weightCompletedHolds.Contains(accountId)
+                        || (runtimes.TryGetValue(accountId, out runtime) && FarmingEmergencyHeld(runtime)));
+            }
+        }
 
         internal void CompleteWeightFarmingDone(VanillaWeightMaintenanceToken token, string detail)
         {

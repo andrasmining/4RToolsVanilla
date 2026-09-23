@@ -36,7 +36,7 @@ namespace Vanilla.Diagnostics.Tests
             Test("Close denial never authorizes restart", () => { var h = new H(); h.BeforeClose = () => { throw new InvalidOperationException("denied"); }; Throws<InvalidOperationException>(() => h.Run()); Assert(h.Closed.Count == 0); });
             Test("New process during reset prevents restart", NewProcess);
             Test("Direct-game fallback is refused", RequireLauncher);
-            foreach (string mode in new[] { "success", "stop", "generation", "session", "busy", "cooldown", "start-stop" })
+            foreach (string mode in new[] { "success", "stop", "generation", "session", "busy", "cooldown", "start-stop", "held-sibling" })
             { string m = mode; Test("Supervisor update lease: " + m, () => SupervisorCase(m)); }
             Console.WriteLine("Launcher update: {0} passed; {1} failed. Synthetic images and fake process lifecycle only.", passed, failed);
             return failed;
@@ -149,7 +149,7 @@ namespace Vanilla.Diagnostics.Tests
             public TimeSpan MonotonicNow { get { return TimeSpan.FromSeconds(1); } }
             public DateTime GetStartTimeUtc(int pid) { return Epoch; }
             public void Queue(Action work) { throw new Exception("Unexpected queue"); }
-            public void CloseClient(int pid, DateTime birth, Func<bool> cancelled, Action<Action> owned)
+            public void CloseClient(int pid, DateTime birth, Func<bool> cancelled, Action<Action> owned, bool immediate = false)
             {
                 Before?.Invoke(); if (cancelled()) throw new OperationCanceledException();
                 owned(() => { Assert(H.Alive.Any(p => p.Pid == pid && p.StartedUtc == birth)); H.Closed.Add(pid); H.Alive.RemoveAll(p => p.Pid == pid); });
@@ -168,6 +168,21 @@ namespace Vanilla.Diagnostics.Tests
                     Set(owner, "ScriptRunning", true); Set(owner, "RecoveryOwned", true); Set(owner, "ResumeOperationGeneration", 7);
                     Set(sibling, "ProcessId", (int?)1); Set(sibling, "CharacterSession", (Guid?)Guid.NewGuid());
                     Set(sibling, "HasBeenOnline", true); Set(sibling, "Stage", VanillaReconnectStage.Online);
+                    if (mode == "held-sibling")
+                    {
+                        var heldAccount = (VanillaReconnectAccount)Get(sibling, "Account");
+                        heldAccount.UserName = "synthetic-update"; heldAccount.CharacterName = "HeldSibling";
+                        string path = (string)Get(supervisor, "farmingEmergencyPath");
+                        Directory.CreateDirectory(Path.GetDirectoryName(path));
+                        File.WriteAllText(path, Newtonsoft.Json.JsonConvert.SerializeObject(new
+                        {
+                            Version = 1,
+                            Holds = new[] { new { UserName = heldAccount.UserName, CharacterName = heldAccount.CharacterName,
+                                ObservedAt = Epoch, Ratios = "synthetic critical ratios", Detail = "Synthetic emergency hold during launcher reset" } }
+                        }));
+                        Call(supervisor, "InitializeFarmingEmergency");
+                        Assert(supervisor.FarmingEmergencyHeld(heldAccount));
+                    }
                     if (mode == "busy") Set(sibling, "ScriptRunning", true);
                     if (mode == "cooldown") Set(supervisor, "nextLauncherUpdateReset", (TimeSpan?)TimeSpan.FromMinutes(10));
                     env.Before = () =>
@@ -189,6 +204,10 @@ namespace Vanilla.Diagnostics.Tests
                         Assert(Get(sibling, "ProcessId") == null && !(bool)Get(sibling, "RecoveryOwned"));
                         Assert((bool)Get(owner, "ScriptRunning") && (bool)Get(owner, "RecoveryOwned"));
                         Assert((int)Get(supervisor, "launcherUpdateResetSerial") == 1);
+                        if (mode == "held-sibling")
+                            Assert(supervisor.FarmingEmergencyHeld((VanillaReconnectAccount)Get(sibling, "Account"))
+                                && Get(sibling, "NextRecoveryAt") == null
+                                && (VanillaReconnectStage)Get(sibling, "Stage") == VanillaReconnectStage.Error);
                         env.H.Alive.Add(P(10)); env.H.Alive.Add(P(1, true)); Assert(!run() && env.H.Closed.Count == 2);
                     }
                     if (mode == "start-stop")

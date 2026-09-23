@@ -125,6 +125,7 @@ namespace _4RTools.Model.Vanilla
                 if (!stoppedHpBaselinePercent.HasValue) return false;
 
                 VanillaFleetClientInfo hpClient = CurrentClient(token.ProcessId);
+                if (supervisorCancelled()) return true;
                 if (hpClient == null || !hpClient.HpVerified || !hpClient.HpPercent.HasValue
                     || hpClient.Snapshot == null || hpClient.Snapshot.SampledAtUtc > DateTimeOffset.UtcNow
                     || DateTimeOffset.UtcNow - hpClient.Snapshot.SampledAtUtc > TimeSpan.FromSeconds(3))
@@ -573,6 +574,8 @@ namespace _4RTools.Model.Vanilla
         {
             try
             {
+                // Refresh the emergency evidence before the ordinary resume/retry path.
+                CurrentClient(token.ProcessId);
                 input.CancellationRequested = cancelled;
                 ThrowIfCancelled(cancelled);
                 // Never send resume into a surviving modal edit field. Escape is only

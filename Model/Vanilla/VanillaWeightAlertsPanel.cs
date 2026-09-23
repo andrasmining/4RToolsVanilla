@@ -40,6 +40,8 @@ namespace _4RTools.Model.Vanilla
         private readonly Button save = new Button { Text = "SAVE WEIGHT SETTINGS", AutoSize = true };
         private readonly Button test = new Button { Text = "SEND TEST E-MAIL", AutoSize = true };
         private readonly Button clearHold = new Button { Text = "CLEAR WEIGHT/CART HOLD", AutoSize = true };
+        private readonly Button clearEmergency = new Button { Text = "CLEAR EMERGENCY HOLD", AutoSize = true };
+        private readonly Label emergencyStatus = new Label { AutoSize = true, MaximumSize = new Size(1100, 0), ForeColor = Color.Firebrick };
         private readonly Label status = new Label { AutoSize = true, MaximumSize = new Size(1150, 0), ForeColor = Color.DimGray };
         private readonly DataGridView live = new DataGridView
         {
@@ -59,6 +61,7 @@ namespace _4RTools.Model.Vanilla
             save.Click += (s, e) => Guard(SaveSettings);
             test.Click += async (s, e) => await SendTestAsync();
             clearHold.Click += (s, e) => service.ClearManualHolds();
+            clearEmergency.Click += (s, e) => Guard(service.ClearEmergencyHolds);
             autobattleStopHotkey.KeyDown += (s, e) => CaptureHotkey(e, HotkeyTarget.AutobattleStop);
             inventoryHotkey.KeyDown += (s, e) => CaptureHotkey(e, HotkeyTarget.Inventory);
             cartHotkey.KeyDown += (s, e) => CaptureHotkey(e, HotkeyTarget.Cart);
@@ -84,20 +87,23 @@ namespace _4RTools.Model.Vanilla
                 + "STOP must be verified stationary, HP is guarded while stopped, precision filling starts at 75%, "
                 + "Mastela=3, Peco Feather=1, and transient transfer failures retry later.");
             title.Controls.Add(info);
+            help.SetToolTip(clearEmergency, "Explicitly clear emergency holds after inspecting the affected characters. Recovery may then restart them. Weight/Cart hold-clear does not clear emergency holds.");
             root.Controls.Add(title, 0, 0);
 
             root.Controls.Add(BuildCartGroup(), 0, 1);
             root.Controls.Add(BuildMailGroup(), 0, 2);
 
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Margin = new Padding(0, 8, 0, 0) };
-            buttons.Controls.Add(save); buttons.Controls.Add(test); buttons.Controls.Add(clearHold); buttons.Controls.Add(status);
+            buttons.Controls.Add(save); buttons.Controls.Add(test); buttons.Controls.Add(clearHold); buttons.Controls.Add(clearEmergency); buttons.Controls.Add(status);
             root.Controls.Add(buttons, 0, 3);
 
             live.Columns.Add("Client", "Client"); live.Columns.Add("Weight", "Weight"); live.Columns.Add("Percent", "%");
             live.Columns.Add("Cart", "Cart"); live.Columns.Add("CartPercent", "Cart %"); live.Columns.Add("Verification", "State");
             var liveHost = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
             liveHost.RowStyles.Add(new RowStyle(SizeType.AutoSize)); liveHost.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-            liveHost.Controls.Add(new Label { AutoSize = true, Font = new Font("Segoe UI", 9F, FontStyle.Bold), Margin = new Padding(0, 10, 0, 4), Text = "Live verified weight" }, 0, 0);
+            emergencyStatus.Margin = new Padding(0, 10, 0, 4);
+            help.SetToolTip(emergencyStatus, "Always active for enabled character rows while 4RTools runs, including with Recovery and Cart OFF. Fresh verified weight >50%, SP <25%, and HP <50% together immediately close only the affected client. No automatic restart until explicitly cleared.");
+            liveHost.Controls.Add(emergencyStatus, 0, 0);
             liveHost.Controls.Add(live, 0, 1); root.Controls.Add(liveHost, 0, 4);
             Controls.Add(root);
 
@@ -269,6 +275,9 @@ namespace _4RTools.Model.Vanilla
 
         private void RefreshStatus()
         {
+            emergencyStatus.Text = service.EmergencyStatus;
+            emergencyStatus.ForeColor = service.HasEmergencyHolds ? Color.Firebrick : Color.DimGray;
+            clearEmergency.Enabled = service.HasEmergencyHolds;
             status.Text = service.Status; var observations = service.Latest; live.Rows.Clear();
             foreach (VanillaWeightObservation item in observations.Take(2))
             {

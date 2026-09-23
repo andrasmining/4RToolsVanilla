@@ -1,36 +1,36 @@
-﻿# 4RTools Vanilla 0.6.75
+﻿# 4RTools Vanilla 0.6.76
 
-## Temporary skill clicks and SP recovery
+## Critical farming emergency stop
 
-- Fix temporary actions stopping before F1 with "captured target is not
-  confidently visible" when the selected character's sprite or aura animates.
-  The user-captured stationary point is now aligned using surrounding scene
-  evidence, rather than requiring an identical 48-pixel character screenshot.
-- Preserve saved F1/click/SP settings. Small camera translations after the
-  linker's rest movement are followed using multiple surrounding anchors.
-  Ambiguous scenery, changed window size or a point leaving the view stop input.
-  This is a stationary captured point: capture again if the target moves or the
-  camera rotates/zooms.
-- Start the configured target delay after the skill hotkey finishes. Capture,
-  focus and input delivery no longer consume that delay or the post-cast settle.
-- Finish the pending skill click, settle, then click the configured nearby rest
-  ground. Each SP-rest cycle requires at least one tile of fresh verified X/Y
-  movement and fresh observations of settled movement before sending sit.
-  Repeated cached coordinates cannot authorize sitting.
-- Preserve SP hysteresis, bounded movement attempts, cancellation and serialized
-  client ownership. Log rest/movement/sit/stand progress in the debug session.
+- Close only the affected client as soon as a fresh verified snapshot shows all
+  three conditions: carried weight **over 50%**, SP **under 25%**, and HP
+  **under 50%**. The guard checks every 500 ms independently of the configurable
+  Cart/mail interval and remains active for enabled character rows even when
+  reconnect supervision or Cart maintenance is OFF.
+- Emergency closure takes priority over Cart damage-abort resume/retry, farming
+  completion, teleport and recovery. It uses the existing Windows process handle
+  pinned to that client's creation time, skips the ordinary graceful-close delay,
+  and confirms exit. Healthy siblings remain untouched.
+- Save an emergency hold before closing. STOP/START, settings edits, updates and
+  application restart do not automatically relaunch or resume the held character.
+  Inspect the character, then use **CLEAR EMERGENCY HOLD** on the Weight tab when
+  ready. Ordinary Weight/Cart hold-clear does not clear emergency holds.
+- Show the emergency status in the Weight and Recovery views. Record exact
+  HP/SP/weight values, character/session identity and the close result in logs.
+  Stale, missing, unverified or incoherent state cannot authorize a close.
 
-## Validation and updates
+## Investigation and validation
 
-Regression coverage includes animated targets, translated scenes, ambiguous and
-changed views, target-click timing, repeated rest cycles, stale coordinates,
-movement settling, timeouts and cancellation. Windows validation builds Debug
-and Release, runs the full isolated suite, native test-owned recovery checks,
-mock UI checks and portable-package smoke tests. Publication verifies the clean
-main SHA, downloadable ZIP/checksum, public Latest release and real anonymous
-updater discovery/download/staging.
+Recent logs showed Cart deferrals while reconnect supervision was OFF, and an
+earlier damage-aborted Cart attempt that resumed Autobattle for a later retry.
+Another attempt reached its transfer retry limit near Cart capacity. The existing
+logs did not include enough HP/SP history to prove the exact death sequence.
 
-Diagnosis uses the supplied screenshots, saved temporary settings and runtime
-stop messages. Synthetic/offline checks are not live Vanilla/Gepard gameplay
-validation. Existing configuration remains in the stable per-user data folder.
-v0.6.74 can discover this release through CHECK FOR UPDATES.
+Regression checks cover strict thresholds, freshness, ownership, immediate close,
+cancellation, persistent holds and affected-client isolation. Windows validation
+builds Debug/Release, runs the isolated suite and native test-owned process checks,
+and validates mock UI, the portable package, checksums and public updater staging.
+These are offline/native test-process checks, not live Vanilla/Gepard validation.
+
+Includes the v0.6.75 temporary skill-click and verified move-before-sit fixes.
+Existing user configuration stays in the stable per-user data directory.

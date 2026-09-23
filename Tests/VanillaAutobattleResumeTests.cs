@@ -22,6 +22,11 @@ namespace Vanilla.Diagnostics.Tests
             Test("Settings changes cancel diagnostic completions", DiagnosticSettingsChange);
             Test("Rejected diagnostic requests keep the current generation", DiagnosticRejectedRequest);
             Test("Resume completion rejects a replaced PID", OwnedCompletion);
+            Test("Emergency hold cancels only the affected startup and resume owner", EmergencyStartupAndResumeGates);
+            Test("Emergency hold blocks manual resume before opening a process", EmergencyManualResumeGate);
+            Test("Emergency hold blocks owned launcher and normal close steps", EmergencyOwnedInputGates);
+            Test("Emergency hold cancels teleport and releases its lease without holding a sibling", EmergencyTeleportGate);
+            Test("Emergency hold blocks every diagnostic and releases its cancelled owner", EmergencyDiagnosticGates);
             Test("Failed or interrupted startup cannot be adopted as healthy", SafeAdoption);
             Test("Successful explicit resume clears the failed latch", DiagnosticResult);
             Test("X movement verifies the first attempt", () => Success(1, false));
@@ -163,6 +168,153 @@ namespace Vanilla.Diagnostics.Tests
                     foreach (bool busy in new[] { false, true })
                         Assert((bool)method.Invoke(null, new object[] { sent, failed, busy }) == (sent && !failed && !busy),
                             "Unverified or failed client was treated as healthy.");
+        }
+
+        private static VanillaReconnectAccount RuntimeAccount(object runtime)
+        { return (VanillaReconnectAccount)runtime.GetType().GetField("Account").GetValue(runtime); }
+
+        private static object EmergencySibling(VanillaReconnectSupervisor supervisor, object runtime)
+        {
+            var table = (IDictionary)Field(supervisor, "runtimes").GetValue(supervisor);
+            object sibling = table.Values.Cast<object>().First(item => !ReferenceEquals(item, runtime));
+            var account = RuntimeAccount(sibling);
+            account.Enabled = true; account.UserName = "synthetic-farm"; account.CharacterName = "HealthySibling";
+            RuntimeField(sibling, "ProcessId", (int?)43);
+            RuntimeField(sibling, "Stage", VanillaReconnectStage.Online);
+            return sibling;
+        }
+
+        private static void InstallEmergencyHold(VanillaReconnectSupervisor supervisor, object runtime)
+        {
+            var account = RuntimeAccount(runtime);
+            account.Enabled = true; account.UserName = "synthetic-farm"; account.CharacterName = "HeldCharacter";
+            string path = (string)Field(supervisor, "farmingEmergencyPath").GetValue(supervisor);
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            File.WriteAllText(path, Newtonsoft.Json.JsonConvert.SerializeObject(new
+            {
+                Version = 1,
+                Holds = new[] { new { UserName = account.UserName, CharacterName = account.CharacterName,
+                    ObservedAt = Epoch, Ratios = "synthetic critical farming ratios", Detail = "Synthetic persistent farming emergency hold" } }
+            }));
+            Method("InitializeFarmingEmergency").Invoke(supervisor, null);
+            Assert(supervisor.FarmingEmergencyHeld(account), "Persisted synthetic hold was not loaded.");
+        }
+
+        private static void EmergencyStartupAndResumeGates()
+        {
+            RuntimeCase((supervisor, runtime) =>
+            {
+                object sibling = EmergencySibling(supervisor, runtime);
+                InstallEmergencyHold(supervisor, runtime);
+                Assert(IsCancelled(supervisor, runtime), "Held client retained its resume worker authorization.");
+                Assert((bool)Method("StartupAccountCancelled").Invoke(supervisor, new object[] { 0, RuntimeAccount(runtime) }),
+                    "Held character remained eligible for sequential startup.");
+                Assert(!(bool)Method("StartupAccountCancelled").Invoke(supervisor, new object[] { 0, RuntimeAccount(sibling) }),
+                    "One character's hold cancelled its same-username healthy sibling.");
+                Assert((int)Field(supervisor, "resumeVerificationGeneration").GetValue(supervisor) == 7
+                    && RuntimeFlag(runtime, "ScriptRunning") && RuntimeFlag(runtime, "RecoveryOwned"),
+                    "Checking a hold changed the global generation or released input before its worker unwound.");
+                int requested = 0;
+                supervisor.SetAutobattleResumeTestHook((id, trigger, recovery) => requested++);
+                Method("RequestVerifiedResume").Invoke(supervisor, new object[] { runtime, "synthetic", true });
+                Assert(requested == 0, "Held character queued an automatic resume.");
+                Method("RequestVerifiedResume").Invoke(supervisor, new object[] { sibling, "synthetic", true });
+                Assert(requested == 1, "Healthy sibling's resume authorization was cancelled.");
+            });
+        }
+
+        private static void EmergencyManualResumeGate()
+        {
+            RuntimeCase((supervisor, runtime) =>
+            {
+                InstallEmergencyHold(supervisor, runtime);
+                var task = (Task)Method("VerifyAutobattleResumeAsync").Invoke(supervisor, new object[]
+                {
+                    RuntimeAccount(runtime), int.MaxValue, (Func<bool>)(() => false), (Action<string>)(_ => { })
+                });
+                try { task.GetAwaiter().GetResult(); }
+                catch (OperationCanceledException) { return; }
+                throw new Exception("Manual resume did not reject an emergency hold before process access.");
+            });
+        }
+
+        private static void EmergencyOwnedInputGates()
+        {
+            RuntimeCase((supervisor, runtime) =>
+            {
+                InstallEmergencyHold(supervisor, runtime);
+                bool called = false;
+                try { Method("RunOwnedClientStep").Invoke(supervisor, new object[]
+                    { runtime, 42, (Func<bool>)(() => false), (Func<bool>)(() => { called = true; return true; }) }); }
+                catch (TargetInvocationException ex) { Assert(ex.InnerException is OperationCanceledException, "Wrong held-client cancellation."); }
+                Assert(!called, "Normal close/input step ran while the emergency worker owned protection.");
+                RuntimeField(runtime, "ProcessId", (int?)null);
+                try { Method("RunOwnedLauncherStart").Invoke(supervisor, new object[]
+                    { runtime, 7, (Func<bool>)(() => false), (Func<System.Diagnostics.Process>)(() => { called = true; return null; }) }); }
+                catch (TargetInvocationException ex) { Assert(ex.InnerException is OperationCanceledException, "Wrong held-launcher cancellation."); }
+                Assert(!called, "A held character launched a replacement process.");
+            });
+        }
+
+        private static void EmergencyTeleportGate()
+        {
+            RuntimeCase((supervisor, runtime) =>
+            {
+                object sibling = EmergencySibling(supervisor, runtime);
+                var account = RuntimeAccount(runtime);
+                account.UserName = "synthetic-farm"; account.CharacterName = "HeldCharacter"; account.Enabled = true;
+                account.SmartTeleportEnabled = true; account.SmartTeleportKey = (int)Keys.F5;
+                RuntimeAccount(sibling).SmartTeleportEnabled = true; RuntimeAccount(sibling).SmartTeleportKey = (int)Keys.F6;
+                RuntimeField(runtime, "ScriptRunning", false); RuntimeField(runtime, "RecoveryOwned", false);
+                RuntimeField(runtime, "Stage", VanillaReconnectStage.Online);
+                Field(supervisor, "running").SetValue(supervisor, true);
+                VanillaSmartTeleportToken token; string reason;
+                Assert(supervisor.TryBeginSmartTeleport(42, out token, out reason), "Synthetic teleport lease failed: " + reason);
+                InstallEmergencyHold(supervisor, runtime);
+                Assert(supervisor.SmartTeleportCancelled(token), "A newly latched hold did not cancel the in-flight teleport.");
+                Assert(RuntimeFlag(runtime, "ScriptRunning"), "Hold released teleport input before operation unwind.");
+                supervisor.CompleteSmartTeleport(token, "Synthetic cancellation unwind");
+                Assert(!RuntimeFlag(runtime, "ScriptRunning"), "Cancelled teleport retained its input lease.");
+                Assert((VanillaReconnectStage)runtime.GetType().GetField("Stage").GetValue(runtime) == VanillaReconnectStage.Error,
+                    "Teleport completion overwrote the emergency hold status.");
+                Assert(!supervisor.TryBeginSmartTeleport(42, out token, out reason), "Held client acquired a new teleport lease.");
+                Assert(supervisor.TryBeginSmartTeleport(43, out token, out reason), "Healthy sibling could not acquire released teleport input: " + reason);
+                Assert(!supervisor.SmartTeleportCancelled(token), "Healthy sibling inherited the other character's hold.");
+                supervisor.CompleteSmartTeleport(token, "Synthetic sibling complete");
+            });
+        }
+
+        private static void EmergencyDiagnosticGates()
+        {
+            RuntimeCase((supervisor, runtime) =>
+            {
+                object sibling = EmergencySibling(supervisor, runtime);
+                InstallEmergencyHold(supervisor, runtime);
+                Field(supervisor, "diagnosticGeneration").SetValue(supervisor, 7);
+                foreach (VanillaReconnectTestStep step in Enum.GetValues(typeof(VanillaReconnectTestStep)))
+                {
+                    bool rejected = false;
+                    try { supervisor.RunDiagnosticStep(RuntimeAccount(runtime).Id, step); }
+                    catch (InvalidOperationException ex) { rejected = ex.Message.Contains("emergency hold"); }
+                    Assert(rejected, "Emergency hold did not reject diagnostic input: " + step);
+                }
+                Assert((int)Field(supervisor, "diagnosticGeneration").GetValue(supervisor) == 7,
+                    "Rejecting held diagnostics invalidated another diagnostic generation.");
+                bool started = false;
+                try { Method("RunOwnedDiagnosticStart").Invoke(supervisor, new object[]
+                    { runtime, RuntimeAccount(runtime), 7, (Func<System.Diagnostics.Process>)(() => { started = true; return null; }) }); }
+                catch (TargetInvocationException ex) { Assert(ex.InnerException is OperationCanceledException, "Wrong diagnostic launcher cancellation."); }
+                Assert(!started, "Held diagnostic started a launcher process.");
+                RuntimeField(runtime, "RecoveryOwned", false);
+                Method("DiagnosticStepWorker").Invoke(supervisor, new object[]
+                    { runtime, RuntimeAccount(runtime).Id, RuntimeAccount(runtime).Clone(), supervisor.Settings,
+                        (int?)42, VanillaReconnectTestStep.FillCredentials, 7 });
+                Assert(!RuntimeFlag(runtime, "ScriptRunning") && supervisor.FarmingEmergencyHeld(RuntimeAccount(runtime)),
+                    "Cancelled diagnostic retained its input lease or removed the emergency hold.");
+                Assert(!supervisor.FarmingEmergencyHeld(RuntimeAccount(sibling))
+                    && (int)Field(supervisor, "diagnosticGeneration").GetValue(supervisor) == 7,
+                    "Diagnostic unwind cancelled its healthy sibling or changed the shared generation.");
+            });
         }
         private static void DiagnosticResult()
         {
