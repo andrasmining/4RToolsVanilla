@@ -8,10 +8,9 @@ using System.Runtime.InteropServices;
 
 namespace _4RTools.Model.Vanilla
 {
-    /// <summary>Matches a user-captured target patch after camera/DPI changes; never guesses a new target.</summary>
     internal static class VanillaCapturedTarget
     {
-        private const int Samples = 12;
+        // Retain saved captures. Animated sprite pixels are not an input gate.
         internal static string Capture(Bitmap image, Point point)
         {
             const int half = 24;
@@ -21,116 +20,215 @@ namespace _4RTools.Model.Vanilla
             using (Bitmap patch = image.Clone(area, PixelFormat.Format24bppRgb))
             using (var stream = new MemoryStream())
             {
-                if (Template(patch).Item3 < 8) throw new InvalidOperationException("Target capture is too featureless; aim at the character or its name.");
                 patch.Save(stream, ImageFormat.Png);
                 return Convert.ToBase64String(stream.ToArray());
             }
         }
+    }
 
-        internal static bool TryLocate(Bitmap image, string encoded, Point expected, out Point found, out string evidence)
+    // User-authorized stationary point, translated by terrain; no character recognition.
+    // Register against the initial scene, never cumulatively against later frames.
+    internal sealed class VanillaCapturedPointTracker
+    {
+        private const int Samples = 12, Radius = 12, MaximumShift = 80;
+        private const double MinimumScore = .84, MinimumMargin = .045;
+        private readonly Size size;
+        private readonly Point point;
+        private readonly List<Anchor> anchors = new List<Anchor>();
+        private Point previousShift;
+
+        internal VanillaCapturedPointTracker(Bitmap reference, Point capturedPoint)
         {
-            found = Point.Empty;
-            evidence = "captured target patch unavailable";
-            if (image == null || (long)image.Width * image.Height > 16000000 || string.IsNullOrEmpty(encoded) || encoded.Length > 65536) return false;
-            try
+            ValidateImage(reference);
+            size = reference.Size; point = capturedPoint;
+            if (!new Rectangle(2, 2, size.Width - 4, size.Height - 4).Contains(point))
+                throw new InvalidOperationException("Captured point is outside the game.");
+            var gray = new Gray(reference);
+            // Observation areas, never input destinations. Exclude HUD, chat,
+            // player, target and central spell effects.
+            foreach (double y in new[] { .29, .44, .60, .77 })
+            foreach (double x in new[] { .20, .38, .62, .80 })
             {
-                using (var stream = new MemoryStream(Convert.FromBase64String(encoded)))
-                using (var patch = new Bitmap(stream))
+                var center = new Point((int)(gray.Width * x), (int)(gray.Height * y));
+                var original = new Point(center.X * 2, center.Y * 2);
+                if (Math.Abs(original.X - point.X) < 100 && Math.Abs(original.Y - point.Y) < 110) continue;
+                if (Math.Abs(original.X - size.Width / 2) < size.Width * .17
+                    && Math.Abs(original.Y - size.Height / 2) < size.Height * .20) continue;
+                Anchor anchor = Anchor.Create(gray, center);
+                // Establish uniqueness once before the fast unchanged-frame path
+                // can be used. A periodic texture cannot identify camera position.
+                if (anchor != null && Find(gray, anchor, true) != null) anchors.Add(anchor);
+            }
+            if (anchors.Count < 4)
+                throw new InvalidOperationException("Not enough distinct terrain is visible around the captured point; capture with the game area unobstructed.");
+        }
+
+        internal Point Locate(Bitmap current)
+        {
+            ValidateImage(current);
+            if (current.Size != size)
+                throw new InvalidOperationException("Game size changed; stop and capture the stationary target again.");
+            var gray = new Gray(current);
+            var matches = new List<Match>();
+            foreach (Anchor anchor in anchors)
+            {
+                Match match = Find(gray, anchor);
+                if (match != null) matches.Add(match);
+            }
+            int required = Math.Max(3, anchors.Count / 2 + 1);
+            List<Match> best = null;
+            foreach (Match candidate in matches)
+            {
+                var agreeing = matches.Where(m => Math.Abs(m.Shift.X - candidate.Shift.X) <= 2
+                    && Math.Abs(m.Shift.Y - candidate.Shift.Y) <= 2).ToList();
+                if (best == null || agreeing.Count > best.Count) best = agreeing;
+            }
+            if (best == null || best.Count < required
+                || best.Max(m => m.Anchor.Center.X) - best.Min(m => m.Anchor.Center.X) < gray.Width / 4
+                || best.Max(m => m.Anchor.Center.Y) - best.Min(m => m.Anchor.Center.Y) < gray.Height / 5)
+                throw new InvalidOperationException("Surrounding terrain does not establish the captured point's location; target click withheld.");
+            int dx = best.Select(m => m.Shift.X).OrderBy(v => v).ElementAt(best.Count / 2);
+            int dy = best.Select(m => m.Shift.Y).OrderBy(v => v).ElementAt(best.Count / 2);
+            if (best.Count(m => m.Anchor.Score(gray, m.Anchor.Center.X + dx, m.Anchor.Center.Y + dy) >= MinimumScore) < required)
+                throw new InvalidOperationException("Terrain matches disagree on camera movement; target click withheld.");
+            var located = new Point(point.X + dx * 2, point.Y + dy * 2);
+            if (!new Rectangle(2, 2, size.Width - 4, size.Height - 4).Contains(located))
+                throw new InvalidOperationException("Captured point moved outside the game area; target click withheld.");
+            previousShift = new Point(dx, dy);
+            return located;
+        }
+
+        private Match Find(Gray image, Anchor anchor, bool requireDistinct = false)
+        {
+            if (!requireDistinct && anchor.Score(image, anchor.Center.X + previousShift.X, anchor.Center.Y + previousShift.Y) >= .9995)
+                return new Match { Anchor = anchor, Shift = previousShift, Score = 1 };
+            var candidates = new List<Match>();
+            // Visit every half-resolution offset. Skipping odd offsets can miss
+            // detailed grass completely after a two-pixel camera displacement.
+            // A sparse prefilter keeps the bounded search inexpensive.
+            for (int dy = -MaximumShift; dy <= MaximumShift; dy++)
+            for (int dx = -MaximumShift; dx <= MaximumShift; dx++)
+            {
+                double score = anchor.CoarseScore(image, anchor.Center.X + dx, anchor.Center.Y + dy);
+                if (score < .55) continue;
+                candidates.Add(new Match { Anchor = anchor, Shift = new Point(dx, dy), Score = score });
+                if (candidates.Count > 128) candidates = candidates.OrderByDescending(m => m.Score).Take(64).ToList();
+            }
+            var refined = new List<Match>();
+            foreach (Match candidate in candidates.OrderByDescending(m => m.Score))
+            {
+                if (refined.Any(m => Math.Abs(m.Shift.X - candidate.Shift.X) <= 3 && Math.Abs(m.Shift.Y - candidate.Shift.Y) <= 3)) continue;
+                Match winner = new Match { Anchor = anchor, Shift = candidate.Shift,
+                    Score = anchor.Score(image, anchor.Center.X + candidate.Shift.X, anchor.Center.Y + candidate.Shift.Y) };
+                for (int dy = Math.Max(-MaximumShift, candidate.Shift.Y - 2); dy <= Math.Min(MaximumShift, candidate.Shift.Y + 2); dy++)
+                for (int dx = Math.Max(-MaximumShift, candidate.Shift.X - 2); dx <= Math.Min(MaximumShift, candidate.Shift.X + 2); dx++)
                 {
-                    if (patch.Width < 16 || patch.Height < 16 || patch.Width > 128 || patch.Height > 128) return false;
-                    var template = Template(patch);
-                    if (template.Item3 < 8) return false;
-                    var pixels = new Gray(image);
-                    int half = patch.Width / 2;
-                    double direct = Score(pixels, expected.X, expected.Y, half, template);
-                    if (direct >= .88)
-                    { found = expected; evidence = "captured target confirmed at its configured position"; return true; }
-                    int step = Math.Max(4, (int)Math.Ceiling(Math.Sqrt(image.Width * (double)image.Height / 24000)));
-                    var candidates = new List<Candidate>();
-                    foreach (double factor in new[] { .8, 1.0, 1.25, 1.5 })
-                    {
-                        int radius = Math.Max(10, (int)Math.Round(half * factor));
-                        for (int y = radius; y < image.Height - radius; y += step)
-                        for (int x = radius; x < image.Width - radius; x += step)
-                        {
-                            double score = Score(pixels, x, y, radius, template);
-                            if (score < .65) continue;
-                            candidates.Add(new Candidate { Point = new Point(x, y), Radius = radius, Score = score });
-                            if (candidates.Count > 32) candidates = candidates.OrderByDescending(c => c.Score).Take(16).ToList();
-                        }
-                    }
-                    var refined = new List<Candidate>();
-                    foreach (Candidate candidate in candidates.OrderByDescending(c => c.Score).Take(12))
-                    {
-                        Candidate best = candidate;
-                        for (int y = candidate.Point.Y - step; y <= candidate.Point.Y + step; y++)
-                        for (int x = candidate.Point.X - step; x <= candidate.Point.X + step; x++)
-                        {
-                            double score = Score(pixels, x, y, candidate.Radius, template);
-                            if (score > best.Score) best = new Candidate { Point = new Point(x, y), Radius = candidate.Radius, Score = score };
-                        }
-                        refined.Add(best);
-                    }
-                    Candidate winner = refined.OrderByDescending(c => c.Score).FirstOrDefault();
-                    if (winner == null || winner.Score < .83) { evidence = "captured target is not confidently visible"; return false; }
-                    double rival = refined.Where(c => Math.Abs(c.Point.X - winner.Point.X) > winner.Radius
-                        || Math.Abs(c.Point.Y - winner.Point.Y) > winner.Radius).Select(c => c.Score).DefaultIfEmpty(0).Max();
-                    if (winner.Score - rival < .06) { evidence = "captured target has multiple plausible matches"; return false; }
-                    found = winner.Point;
-                    evidence = "captured target reacquired from its image patch";
-                    return true;
+                    double score = anchor.Score(image, anchor.Center.X + dx, anchor.Center.Y + dy);
+                    if (score > winner.Score) winner = new Match { Anchor = anchor, Shift = new Point(dx, dy), Score = score };
                 }
+                refined.Add(winner);
+                if (refined.Count == 12) break;
             }
-            catch (ArgumentException) { evidence = "target capture is invalid; capture again"; return false; }
-            catch (FormatException) { evidence = "target capture is invalid; capture again"; return false; }
+            Match best = refined.OrderByDescending(m => m.Score).FirstOrDefault();
+            if (best == null || best.Score < MinimumScore) return null;
+            double rival = refined.Where(m => Math.Abs(m.Shift.X - best.Shift.X) > 5 || Math.Abs(m.Shift.Y - best.Shift.Y) > 5)
+                .Select(m => m.Score).DefaultIfEmpty(-1).Max();
+            return best.Score - rival >= MinimumMargin ? best : null;
         }
 
-        private sealed class Candidate { internal Point Point; internal int Radius; internal double Score; }
-        private static Tuple<double[], double, double> Template(Bitmap image)
+        private static void ValidateImage(Bitmap image)
         {
-            var pixels = new Gray(image);
-            var values = new double[Samples * Samples];
-            for (int y = 0; y < Samples; y++) for (int x = 0; x < Samples; x++)
-                values[y * Samples + x] = pixels.At((2 * x + 1) * image.Width / (2 * Samples), (2 * y + 1) * image.Height / (2 * Samples));
-            double mean = values.Average(), norm = Math.Sqrt(values.Sum(v => (v - mean) * (v - mean)));
-            return Tuple.Create(values.Select(v => v - mean).ToArray(), norm, norm / Samples);
+            if (image == null || image.Width < 320 || image.Height < 240 || (long)image.Width * image.Height > 16000000)
+                throw new InvalidOperationException("A usable current game image is required for the captured point.");
         }
-        private static double Score(Gray image, int centerX, int centerY, int radius, Tuple<double[], double, double> template)
+        private sealed class Match { internal Anchor Anchor; internal Point Shift; internal double Score; }
+        private sealed class Anchor
         {
-            if (centerX < radius || centerY < radius || centerX + radius >= image.Width || centerY + radius >= image.Height) return -1;
-            double sum = 0, square = 0, dot = 0;
-            for (int y = 0; y < Samples; y++) for (int x = 0; x < Samples; x++)
+            internal Point Center;
+            private double[] values;
+            private double norm;
+            private double[] coarseValues;
+            private double coarseNorm;
+            internal static Anchor Create(Gray image, Point center)
             {
-                double value = image.At(centerX - radius + (2 * x + 1) * radius / Samples,
-                    centerY - radius + (2 * y + 1) * radius / Samples);
-                sum += value; square += value * value; dot += value * template.Item1[y * Samples + x];
+                if (!image.Contains(center.X, center.Y)) return null;
+                var values = new double[Samples * Samples];
+                for (int y = 0; y < Samples; y++) for (int x = 0; x < Samples; x++)
+                    values[y * Samples + x] = image.At(center.X - Radius + 1 + x * 2, center.Y - Radius + 1 + y * 2);
+                double mean = values.Average();
+                for (int i = 0; i < values.Length; i++) values[i] -= mean;
+                double norm = Math.Sqrt(values.Sum(v => v * v));
+                if (norm < 7 * Samples) return null;
+                var coarse = new double[Samples * Samples / 4];
+                for (int y = 0; y < Samples / 2; y++) for (int x = 0; x < Samples / 2; x++)
+                    coarse[y * (Samples / 2) + x] = values[y * 2 * Samples + x * 2];
+                double coarseMean = coarse.Average();
+                for (int i = 0; i < coarse.Length; i++) coarse[i] -= coarseMean;
+                double coarseNorm = Math.Sqrt(coarse.Sum(v => v * v));
+                if (coarseNorm < 7 * Samples / 2) return null;
+                return new Anchor { Center = center, values = values, norm = norm,
+                    coarseValues = coarse, coarseNorm = coarseNorm };
             }
-            double norm = Math.Sqrt(Math.Max(0, square - sum * sum / (Samples * Samples)));
-            return norm < 8 * Samples ? -1 : dot / (norm * template.Item2);
+            internal double CoarseScore(Gray image, int cx, int cy)
+            {
+                if (!image.Contains(cx, cy)) return -1;
+                double sum = 0, square = 0, dot = 0;
+                for (int y = 0; y < Samples / 2; y++) for (int x = 0; x < Samples / 2; x++)
+                {
+                    double value = image.At(cx - Radius + 1 + x * 4, cy - Radius + 1 + y * 4);
+                    sum += value; square += value * value; dot += value * coarseValues[y * (Samples / 2) + x];
+                }
+                double actualNorm = Math.Sqrt(Math.Max(0, square - sum * sum / (Samples * Samples / 4)));
+                return actualNorm < 7 * Samples / 2 ? -1 : dot / (actualNorm * coarseNorm);
+            }
+            internal double Score(Gray image, int cx, int cy)
+            {
+                if (!image.Contains(cx, cy)) return -1;
+                double sum = 0, square = 0, dot = 0;
+                for (int y = 0; y < Samples; y++) for (int x = 0; x < Samples; x++)
+                {
+                    double value = image.At(cx - Radius + 1 + x * 2, cy - Radius + 1 + y * 2);
+                    sum += value; square += value * value; dot += value * values[y * Samples + x];
+                }
+                double actualNorm = Math.Sqrt(Math.Max(0, square - sum * sum / (Samples * Samples)));
+                return actualNorm < 7 * Samples ? -1 : dot / (actualNorm * norm);
+            }
         }
         private sealed class Gray
         {
-            internal int Width, Height;
+            internal readonly int Width, Height;
             private readonly byte[] values;
             internal Gray(Bitmap source)
             {
-                Width = source.Width; Height = source.Height; values = new byte[Width * Height];
-                using (var image = new Bitmap(Width, Height, PixelFormat.Format24bppRgb))
+                int sourceWidth = source.Width, sourceHeight = source.Height;
+                Width = sourceWidth / 2; Height = sourceHeight / 2; values = new byte[Width * Height];
+                var full = new byte[sourceWidth * sourceHeight];
+                using (var image = new Bitmap(sourceWidth, sourceHeight, PixelFormat.Format24bppRgb))
                 {
                     using (Graphics g = Graphics.FromImage(image)) g.DrawImageUnscaled(source, 0, 0);
-                    BitmapData data = image.LockBits(new Rectangle(0, 0, Width, Height), ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
-                    var row = new byte[Width * 3];
+                    BitmapData data = image.LockBits(new Rectangle(Point.Empty, image.Size), ImageLockMode.ReadOnly, PixelFormat.Format24bppRgb);
+                    var row = new byte[sourceWidth * 3];
                     try
                     {
-                        for (int y = 0; y < Height; y++)
+                        for (int y = 0; y < sourceHeight; y++)
                         {
                             Marshal.Copy(IntPtr.Add(data.Scan0, y * data.Stride), row, 0, row.Length);
-                            for (int x = 0; x < Width; x++) values[y * Width + x] = (byte)((row[x * 3] * 11 + row[x * 3 + 1] * 59 + row[x * 3 + 2] * 30) / 100);
+                            for (int x = 0; x < sourceWidth; x++)
+                                full[y * sourceWidth + x] = (byte)((row[x * 3] * 11 + row[x * 3 + 1] * 59 + row[x * 3 + 2] * 30) / 100);
                         }
                     }
                     finally { image.UnlockBits(data); }
                 }
+                // Smooth before reducing for antialiasing/subpixel camera motion.
+                for (int y = 0; y < Height; y++) for (int x = 0; x < Width; x++)
+                {
+                    int sum = 0;
+                    for (int yy = 0; yy < 4; yy++) for (int xx = 0; xx < 4; xx++)
+                        sum += full[Math.Min(sourceHeight - 1, y * 2 + yy) * sourceWidth + Math.Min(sourceWidth - 1, x * 2 + xx)];
+                    values[y * Width + x] = (byte)(sum / 16);
+                }
             }
+            internal bool Contains(int x, int y) { return x >= Radius && y >= Radius && x + Radius < Width && y + Radius < Height; }
             internal byte At(int x, int y) { return values[y * Width + x]; }
         }
     }

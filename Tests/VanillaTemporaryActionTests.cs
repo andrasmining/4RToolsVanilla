@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Drawing;
 using System.Windows.Forms;
 using _4RTools.Model.Vanilla;
 
@@ -15,7 +16,8 @@ namespace Vanilla.Diagnostics.Tests
                 { "Temporary actions use safe SP hysteresis defaults", Defaults },
                 { "Temporary action settings reject unsafe thresholds", ThresholdValidation },
                 { "Temporary target positions remain client-relative percentages", RelativeTarget },
-                { "Temporary settings clone isolates mutable state", Clone }
+                { "Temporary settings clone isolates mutable state", Clone },
+                { "Temporary scene permits a small spell glow but blocks a central modal", InputScene }
             };
             foreach (var test in tests)
             {
@@ -60,6 +62,21 @@ namespace Vanilla.Diagnostics.Tests
             var clone = original.Clone();
             clone.ActionKey = (int)Keys.F6;
             Assert(original.ActionKey == (int)Keys.F5 && clone.ActionKey == (int)Keys.F6, "Clone should be independent.");
+        }
+
+        private static void InputScene()
+        {
+            using (var scene = new Bitmap(1024, 768))
+            using (Graphics graphics = Graphics.FromImage(scene))
+            {
+                graphics.Clear(Color.DarkOliveGreen);
+                graphics.FillEllipse(Brushes.White, 520, 325, 80, 100);
+                VanillaTemporaryActionRunner.RequireInputScene(scene);
+                graphics.FillRectangle(Brushes.White, 310, 300, 400, 210);
+                try { VanillaTemporaryActionRunner.RequireInputScene(scene); }
+                catch (InvalidOperationException) { return; }
+                throw new Exception("Central modal allowed temporary input over unchanged surrounding terrain.");
+            }
         }
 
         private static void Throws(System.Action action)

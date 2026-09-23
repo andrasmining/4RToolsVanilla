@@ -39,7 +39,7 @@ namespace _4RTools.Model.Vanilla
                 throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows rejected the captured drag button; no alternate input path used.");
         }
 
-        internal static void CompatibilityClickFromProof(this VanillaForegroundInput input, Rectangle control, VanillaVisualInputProof proof)
+        internal static void CompatibilityClickFromProof(this VanillaForegroundInput input, Rectangle control, VanillaVisualInputProof proof, System.Action beforePress = null)
         {
             lock (Gate)
             {
@@ -51,6 +51,8 @@ namespace _4RTools.Model.Vanilla
                 {
                     Move(target); Pause(120, () => Verify(input, proof));
                     RequireCursor(proof, target);
+                    beforePress?.Invoke();
+                    Verify(input, proof); RequireCursor(proof, target);
                     Post(proof.Window, 0x0200, false, center);
                     Post(proof.Window, 0x0201, true, center); held = true;
                     Pause(110, () => { Verify(input, proof); RequireCursor(proof, target); });

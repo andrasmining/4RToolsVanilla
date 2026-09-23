@@ -33,6 +33,13 @@ namespace Vanilla.Diagnostics.Tests
             Test("Temporary pending cast finishes before move and sit", TemporaryRestSequence);
             Test("Temporary sit requires movement and fails on the bounded deadline", TemporaryMoveTimeout);
             Test("Temporary pending input rejects death, session change and cancellation", TemporaryIdentity);
+            Test("Temporary rest requires new movement on every SP cycle", TemporaryRepeatedRest);
+            Test("Temporary walking settles only over fresh observation time", TemporaryFreshMovementSettle);
+            Test("Temporary continuous movement resets the sit settle window", TemporaryContinuousMovement);
+            Test("Temporary movement baseline follows foreground preparation", TemporaryMoveBaseline);
+            Test("Temporary STOP during SP rest suppresses standing and casting", TemporaryRestCancellation);
+            Test("Temporary delays begin after synchronous input completes", TemporaryInputCompletionTiming);
+            Test("Temporary target geometry supports legacy settings and rejects invalid captures", TemporaryCaptureGeometry);
             Test("Observed Vanilla cards need unique selection and distinguish an empty slot", ObservedCards);
             Console.WriteLine("Stability integration: {0} passed; {1} failed. Isolated synthetic state/files/HTTP; no live game input.", passed, failed);
             return failed;
@@ -233,42 +240,56 @@ namespace Vanilla.Diagnostics.Tests
         }
         private sealed class FakeTemporary : IVanillaTemporaryIo
         {
-            internal int Actions, Clicks, Moves, Sits, Releases, X = 100;
+            private static readonly DateTimeOffset Epoch = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+            internal int Actions, Clicks, Moves, Sits, Releases, X = 100, Y = 100;
+            internal int PrepareDelay, HotkeyDelay, TargetDelay, MoveDelay, SitDelay, BeforeMoveXDelta;
+            internal TimeSpan Now, SampleTime;
             internal decimal Sp = 70;
             internal Guid Session = Guid.NewGuid();
             internal bool Alive = true, Cancelled;
-            private long frame;
+            public TimeSpan Time { get { return Now; } }
             public VanillaTemporarySample Read() { return new VanillaTemporarySample { Identity = "test", Map = "test-map", Session = Session,
-                At = DateTimeOffset.UtcNow.AddTicks(++frame), X = X, Y = 100, Sp = Sp, Alive = Alive }; }
+                At = Epoch + SampleTime, X = X, Y = Y, Sp = Sp, Alive = Alive }; }
             public bool Acquire() { return true; }
             public void Release() { Releases++; }
             public void CheckCancelled() { if (Cancelled) throw new OperationCanceledException(); }
-            public void PrepareTarget() { }
-            public void ActionHotkey() { Actions++; }
-            public void TargetClick() { Clicks++; }
-            public void MoveBeforeSit() { Moves++; }
-            public void SitStand() { Sits++; }
+            public void PrepareTarget() { Now += TimeSpan.FromMilliseconds(PrepareDelay); }
+            public void ActionHotkey() { Actions++; Now += TimeSpan.FromMilliseconds(HotkeyDelay); }
+            public void TargetClick() { Clicks++; Now += TimeSpan.FromMilliseconds(TargetDelay); }
+            public VanillaTemporarySample MoveBeforeSit()
+            {
+                Moves++; X += BeforeMoveXDelta; BeforeMoveXDelta = 0;
+                var baseline = Read(); Now += TimeSpan.FromMilliseconds(MoveDelay); return baseline;
+            }
+            public void SitStand() { Sits++; Now += TimeSpan.FromMilliseconds(SitDelay); }
+        }
+        private static void TemporaryTick(FakeTemporary io, VanillaTemporaryCycle cycle, int milliseconds, int? sampleMilliseconds = null)
+        {
+            var next = TimeSpan.FromMilliseconds(milliseconds);
+            Assert(next >= io.Now, "Synthetic monotonic input clock moved backwards.");
+            io.Now = next; io.SampleTime = TimeSpan.FromMilliseconds(sampleMilliseconds ?? milliseconds);
+            cycle.Tick(io.Now);
         }
         private static VanillaTemporaryActionSettings TemporarySettings()
         { return new VanillaTemporaryActionSettings { ActionKey = (int)Keys.F1, ClickTargetAfterKey = true, TargetClickDelayMs = 180, RestMoveCaptured = true }; }
         private static void TemporaryRestSequence()
         {
             var io = new FakeTemporary(); var cycle = new VanillaTemporaryCycle(io, TemporarySettings(), TimeSpan.Zero);
-            cycle.Tick(TimeSpan.Zero); io.Sp = 5;
-            cycle.Tick(TimeSpan.FromMilliseconds(200));
+            TemporaryTick(io, cycle, 0); io.Sp = 5;
+            TemporaryTick(io, cycle, 200);
             Assert(io.Actions == 1 && io.Clicks == 1 && io.Moves == 0 && io.Sits == 0, "Low SP interrupted a pending cast into Sit.");
-            cycle.Tick(TimeSpan.FromMilliseconds(850)); Assert(io.Moves == 1 && io.Sits == 0, "No verified movement required.");
-            io.X++; cycle.Tick(TimeSpan.FromMilliseconds(1000));
-            cycle.Tick(TimeSpan.FromMilliseconds(1500)); Assert(io.Sits == 1 && cycle.Phase == VanillaTemporaryPhase.Resting, "Verified walk did not precede sit.");
-            io.Sp = 85; cycle.Tick(TimeSpan.FromMilliseconds(2000)); Assert(io.Sits == 2, "Standing not requested after SP recovery.");
-            cycle.Tick(TimeSpan.FromMilliseconds(2300)); Assert(io.Actions == 1, "Cast sent before standing settled.");
-            cycle.Tick(TimeSpan.FromMilliseconds(2700)); Assert(io.Actions == 2, "Action did not resume.");
+            TemporaryTick(io, cycle, 850); Assert(io.Moves == 1 && io.Sits == 0, "No verified movement required.");
+            io.X++; TemporaryTick(io, cycle, 1000);
+            TemporaryTick(io, cycle, 1500); Assert(io.Sits == 1 && cycle.Phase == VanillaTemporaryPhase.Resting, "Verified walk did not precede sit.");
+            io.Sp = 85; TemporaryTick(io, cycle, 2000); Assert(io.Sits == 2, "Standing not requested after SP recovery.");
+            TemporaryTick(io, cycle, 2300); Assert(io.Actions == 1, "Cast sent before standing settled.");
+            TemporaryTick(io, cycle, 2700); Assert(io.Actions == 2, "Action did not resume.");
         }
         private static void TemporaryMoveTimeout()
         {
             var io = new FakeTemporary { Sp = 5 }; var cycle = new VanillaTemporaryCycle(io, TemporarySettings(), TimeSpan.Zero);
-            cycle.Tick(TimeSpan.Zero); cycle.Tick(TimeSpan.FromSeconds(4));
-            Reject(() => cycle.Tick(TimeSpan.FromSeconds(8)));
+            TemporaryTick(io, cycle, 0); TemporaryTick(io, cycle, 4000);
+            Reject(() => TemporaryTick(io, cycle, 8000));
             Assert(io.Sits == 0 && io.Moves == 2 && io.Actions == 0, "Unverified movement led to sitting/casting or unbounded retries.");
         }
         private static void TemporaryIdentity()
@@ -276,10 +297,117 @@ namespace Vanilla.Diagnostics.Tests
             for (int mode = 0; mode < 3; mode++)
             {
                 var io = new FakeTemporary(); var cycle = new VanillaTemporaryCycle(io, TemporarySettings(), TimeSpan.Zero);
-                cycle.Tick(TimeSpan.Zero);
+                TemporaryTick(io, cycle, 0);
                 if (mode == 0) io.Alive = false; else if (mode == 1) io.Session = Guid.NewGuid(); else io.Cancelled = true;
-                Reject(() => cycle.Tick(TimeSpan.FromSeconds(1)));
+                Reject(() => TemporaryTick(io, cycle, 1000));
                 Assert(io.Clicks == 0 && io.Sits == 0, "Invalid identity/death/STOP allowed a pending click.");
+            }
+        }
+        private static void TemporaryRepeatedRest()
+        {
+            var io = new FakeTemporary(); var cycle = new VanillaTemporaryCycle(io, TemporarySettings(), TimeSpan.Zero);
+            TemporaryTick(io, cycle, 0); io.Sp = 5; TemporaryTick(io, cycle, 200);
+            TemporaryTick(io, cycle, 850); io.X++; TemporaryTick(io, cycle, 1000); TemporaryTick(io, cycle, 1500);
+            io.Sp = 85; TemporaryTick(io, cycle, 2000); TemporaryTick(io, cycle, 2700); TemporaryTick(io, cycle, 3000);
+            io.Sp = 5; TemporaryTick(io, cycle, 3500);
+            Assert(io.Moves == 1, "Second rest ignored the completed-cast settle interval.");
+            TemporaryTick(io, cycle, 3650); TemporaryTick(io, cycle, 4150);
+            Assert(io.Moves == 2 && io.Sits == 2, "First rest's movement authorized a second sit.");
+            io.Y++; TemporaryTick(io, cycle, 4300); TemporaryTick(io, cycle, 4790);
+            Assert(io.Sits == 3 && io.Clicks == 2 && cycle.Phase == VanillaTemporaryPhase.Resting,
+                "Second SP cycle did not require and accept a new one-tile Y movement.");
+        }
+        private static void TemporaryFreshMovementSettle()
+        {
+            var io = new FakeTemporary { Sp = 5 }; var cycle = new VanillaTemporaryCycle(io, TemporarySettings(), TimeSpan.Zero);
+            TemporaryTick(io, cycle, 0); io.X++; TemporaryTick(io, cycle, 100);
+            TemporaryTick(io, cycle, 300); TemporaryTick(io, cycle, 800, 300); TemporaryTick(io, cycle, 1000, 500);
+            Assert(io.Sits == 0, "Repeated or early coordinate observations authorized sitting through wall-clock time alone.");
+            TemporaryTick(io, cycle, 1100, 550);
+            Assert(io.Sits == 1, "A fresh 450 ms stillness observation did not authorize sit after movement.");
+
+            io = new FakeTemporary { Sp = 5 }; cycle = new VanillaTemporaryCycle(io, TemporarySettings(), TimeSpan.Zero);
+            TemporaryTick(io, cycle, 0); io.X++; TemporaryTick(io, cycle, 100);
+            TemporaryTick(io, cycle, 200, 1200);
+            Assert(io.Sits == 0, "A forward observation-clock adjustment bypassed the monotonic walking settle interval.");
+            TemporaryTick(io, cycle, 550, 1550);
+            Assert(io.Sits == 1, "Movement did not settle after both monotonic and observation intervals elapsed.");
+        }
+        private static void TemporaryContinuousMovement()
+        {
+            var io = new FakeTemporary { Sp = 5 }; var cycle = new VanillaTemporaryCycle(io, TemporarySettings(), TimeSpan.Zero);
+            TemporaryTick(io, cycle, 0); io.X++; TemporaryTick(io, cycle, 100);
+            io.X++; TemporaryTick(io, cycle, 400); TemporaryTick(io, cycle, 800);
+            Assert(io.Sits == 0, "Sit was sent while the latest tile movement had not settled.");
+            TemporaryTick(io, cycle, 850); Assert(io.Sits == 1, "Walking did not settle from the final tile change.");
+
+            io = new FakeTemporary { Sp = 5 }; cycle = new VanillaTemporaryCycle(io, TemporarySettings(), TimeSpan.Zero);
+            TemporaryTick(io, cycle, 0);
+            for (int at = 100; at < 10000; at += 300) { io.X++; TemporaryTick(io, cycle, at); }
+            Reject(() => TemporaryTick(io, cycle, 10000));
+            Assert(io.Sits == 0, "Continuous walking exceeded the hard move deadline or led to sitting.");
+        }
+        private static void TemporaryMoveBaseline()
+        {
+            var io = new FakeTemporary { Sp = 5, BeforeMoveXDelta = 1 };
+            var cycle = new VanillaTemporaryCycle(io, TemporarySettings(), TimeSpan.Zero);
+            TemporaryTick(io, cycle, 0); TemporaryTick(io, cycle, 100); TemporaryTick(io, cycle, 1000);
+            Assert(io.Sits == 0, "Movement during foreground preparation was mistaken for movement after the ground click.");
+            io.X++; TemporaryTick(io, cycle, 1200); TemporaryTick(io, cycle, 1700);
+            Assert(io.Sits == 1, "Post-click movement was not accepted against the actual click baseline.");
+        }
+        private static void TemporaryRestCancellation()
+        {
+            var io = new FakeTemporary { Sp = 5 }; var cycle = new VanillaTemporaryCycle(io, TemporarySettings(), TimeSpan.Zero);
+            TemporaryTick(io, cycle, 0); io.X++; TemporaryTick(io, cycle, 100); TemporaryTick(io, cycle, 600);
+            io.Cancelled = true; io.Sp = 85; Reject(() => TemporaryTick(io, cycle, 1000));
+            Assert(io.Sits == 1 && io.Actions == 0 && io.Clicks == 0, "STOP during SP rest sent an automatic stand or cast.");
+        }
+        private static void TemporaryInputCompletionTiming()
+        {
+            var io = new FakeTemporary { PrepareDelay = 600, HotkeyDelay = 120, TargetDelay = 310, MoveDelay = 310, SitDelay = 100 };
+            var cycle = new VanillaTemporaryCycle(io, TemporarySettings(), TimeSpan.Zero);
+            TemporaryTick(io, cycle, 0); TemporaryTick(io, cycle, 899);
+            Assert(io.Clicks == 0, "Target click delay began before foreground preparation/hotkey delivery completed.");
+            TemporaryTick(io, cycle, 900); io.Sp = 5; TemporaryTick(io, cycle, 1809);
+            Assert(io.Moves == 0, "Move-before-sit settle began before the target click completed.");
+            TemporaryTick(io, cycle, 1810); io.X++; TemporaryTick(io, cycle, 2200); TemporaryTick(io, cycle, 2650);
+            io.Sp = 85; TemporaryTick(io, cycle, 2800); TemporaryTick(io, cycle, 3499);
+            Assert(io.Actions == 1, "Casting resumed before stand input and its full settle delay completed.");
+            TemporaryTick(io, cycle, 3500); Assert(io.Actions == 2, "Casting did not resume after completed standing settled.");
+
+            io = new FakeTemporary { PrepareDelay = 600, HotkeyDelay = 120, TargetDelay = 310 };
+            cycle = new VanillaTemporaryCycle(io, TemporarySettings(), TimeSpan.Zero);
+            TemporaryTick(io, cycle, 0); TemporaryTick(io, cycle, 900); TemporaryTick(io, cycle, 2709);
+            Assert(io.Actions == 1, "Repeat interval began before the targeted input cycle completed.");
+            TemporaryTick(io, cycle, 2710); Assert(io.Actions == 2, "Targeted repeat did not resume after its full interval.");
+
+            var untargeted = TemporarySettings(); untargeted.ClickTargetAfterKey = false;
+            io = new FakeTemporary { HotkeyDelay = 400 }; cycle = new VanillaTemporaryCycle(io, untargeted, TimeSpan.Zero);
+            TemporaryTick(io, cycle, 0); TemporaryTick(io, cycle, 1899);
+            Assert(io.Actions == 1, "Untargeted repeat interval began before hotkey delivery completed.");
+            TemporaryTick(io, cycle, 1900); Assert(io.Actions == 2, "Untargeted repeat did not resume after its full interval.");
+
+            io = new FakeTemporary { Sp = 5, MoveDelay = 500 }; cycle = new VanillaTemporaryCycle(io, TemporarySettings(), TimeSpan.Zero);
+            TemporaryTick(io, cycle, 0); TemporaryTick(io, cycle, 4499);
+            Assert(io.Moves == 1, "Ground click retried before the completed click's full movement window.");
+            TemporaryTick(io, cycle, 4500); TemporaryTick(io, cycle, 8999);
+            Assert(io.Moves == 2 && io.Sits == 0, "Movement retry timing changed or unverified movement allowed sit.");
+            Reject(() => TemporaryTick(io, cycle, 9000));
+        }
+        private static void TemporaryCaptureGeometry()
+        {
+            var legacy = TemporarySettings(); legacy.Validate();
+            Assert(legacy.TargetClientWidth == 0 && legacy.TargetClientHeight == 0, "Legacy captured-point geometry was invented.");
+            var captured = TemporarySettings(); captured.TargetClientWidth = 1024; captured.TargetClientHeight = 768;
+            var clone = captured.Clone();
+            Assert(clone.TargetClientWidth == 1024 && clone.TargetClientHeight == 768, "Captured geometry did not survive serialization.");
+            foreach (var size in new[] { new Size(1024, 0), new Size(0, 768), new Size(319, 240), new Size(320, 239), new Size(16001, 1000), new Size(-1, -1) })
+            {
+                captured.TargetClientWidth = size.Width; captured.TargetClientHeight = size.Height;
+                try { captured.Validate(); }
+                catch (ArgumentException) { continue; }
+                throw new Exception("Invalid captured target client geometry was accepted: " + size);
             }
         }
         private static void ObservedCards()

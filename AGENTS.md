@@ -298,6 +298,26 @@ status and evidence in the normal recovery log. Do not probe the game protocol o
 bypass the launcher; generic failures outside confirmed downtime retain their
 existing exponential backoff.
 
+## Temporary targeted actions and SP rest
+
+Temporary skill targeting is an explicitly captured point on a stationary target,
+not proof of a target's identity from a single animated sprite. Sprite, aura and
+cast animation must not veto the configured hotkey/click. Keep input bound to the
+selected fresh verified character/session/map, owned foreground window, capture
+geometry and serialized input lease. Align small camera translations using
+independent surrounding scene evidence; changed/ambiguous scenes, resized clients
+or an out-of-view target stop safely. A moved target or rotated/zoomed camera needs
+a new user capture; never claim automatic character tracking.
+
+Finish a pending skill click and its post-cast settle before starting SP recovery.
+Click the captured nearby rest ground, require fresh read-only X/Y to prove at
+least one tile of movement for that rest cycle, and require fresh observations
+showing the walk settled before the sit hotkey. Never sit directly after casting
+or from stale/repeated movement samples. Use bounded movement attempts and SP
+hysteresis; each later rest cycle needs its own movement proof. Measure configured
+input delays from actual input completion, not from an earlier focus/capture.
+STOP/settings/ownership changes cancel pending input, including delayed stand.
+
 ## Required validation
 
 Test every meaningful change as far as available tooling permits. Appropriate

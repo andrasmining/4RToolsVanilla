@@ -80,6 +80,7 @@ namespace Vanilla.Diagnostics.Tests
             failed += VanillaServerOutageTests.Run();
             failed += VanillaCharacterRosterTests.Run();
             failed += VanillaTemporaryActionTests.Run();
+            failed += VanillaCapturedPointTests.Run();
             failed += VanillaMemoryScannerTests.Run();
             failed += ProcessObservationContextTests.Run();
             failed += VanillaFleetMonitorTests.Run();

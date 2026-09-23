@@ -24,6 +24,8 @@ namespace _4RTools.Model.Vanilla
         public string TargetPatch { get; set; }
         public string TargetCharacterKey { get; set; }
         public string TargetMap { get; set; }
+        public int TargetClientWidth { get; set; }
+        public int TargetClientHeight { get; set; }
         public int TargetClickDelayMs { get; set; } = 180;
         public bool SpRestEnabled { get; set; } = true;
         public decimal RestBelowPercent { get; set; } = 10m;
@@ -48,6 +50,9 @@ namespace _4RTools.Model.Vanilla
             foreach (decimal coordinate in new[] { TargetXPercent, TargetYPercent, RestMoveXPercent, RestMoveYPercent })
                 if (coordinate < 0 || coordinate > 100) throw new ArgumentException("Captured points must be inside the selected game client.");
             if (TargetPatch != null && TargetPatch.Length > 65536) throw new ArgumentException("Captured target patch is oversized.");
+            if ((TargetClientWidth != 0 || TargetClientHeight != 0)
+                && (TargetClientWidth < 320 || TargetClientHeight < 240 || (long)TargetClientWidth * TargetClientHeight > 16000000))
+                throw new ArgumentException("Captured target client dimensions are invalid.");
             if (RestBelowPercent <= 0 || RestBelowPercent >= 100 || ResumeAbovePercent <= 0 || ResumeAbovePercent > 100
                 || ResumeAbovePercent <= RestBelowPercent) throw new ArgumentException("SP thresholds need 0 < rest < resume <= 100.");
         }
@@ -72,6 +77,7 @@ namespace _4RTools.Model.Vanilla
 
     internal interface IVanillaTemporaryIo
     {
+        TimeSpan Time { get; }
         VanillaTemporarySample Read();
         bool Acquire();
         void Release();
@@ -79,7 +85,7 @@ namespace _4RTools.Model.Vanilla
         void PrepareTarget();
         void ActionHotkey();
         void TargetClick();
-        void MoveBeforeSit();
+        VanillaTemporarySample MoveBeforeSit();
         void SitStand();
     }
 
@@ -116,8 +122,8 @@ namespace _4RTools.Model.Vanilla
             if (Phase == VanillaTemporaryPhase.TargetPending)
             {
                 if (now < due) return;
-                io.CheckCancelled(); io.TargetClick(); io.Release(); SentCycles++; lastCast = now;
-                Phase = VanillaTemporaryPhase.Ready; due = now + TimeSpan.FromMilliseconds(settings.IntervalMs);
+                io.CheckCancelled(); io.TargetClick(); io.Release(); SentCycles++; lastCast = io.Time;
+                Phase = VanillaTemporaryPhase.Ready; due = lastCast + TimeSpan.FromMilliseconds(settings.IntervalMs);
                 Status = "Targeted input cycle " + SentCycles + " sent";
                 return;
             }
@@ -131,17 +137,18 @@ namespace _4RTools.Model.Vanilla
                     Status = "Movement observed; waiting for the walk to settle";
                     return;
                 }
-                if (moveObserved && sample.At > moveAt && now - moveSettledSince >= TimeSpan.FromMilliseconds(450))
+                if (moveObserved && now - moveSettledSince >= TimeSpan.FromMilliseconds(450)
+                    && sample.At - moveAt >= TimeSpan.FromMilliseconds(450))
                 {
                     io.CheckCancelled(); io.SitStand(); io.Release(); Phase = VanillaTemporaryPhase.Resting;
-                    restProgress = now; restSp = sample.Sp;
+                    restProgress = io.Time; restSp = sample.Sp;
                     Status = "Movement verified; sit requested; waiting for SP";
                     return;
                 }
                 if (moveObserved) return;
                 if (now < due) return;
                 if (++moveAttempts >= 2) throw new InvalidOperationException("Move-before-sit was not verified; no sit hotkey sent. Capture a reachable nearby ground point.");
-                io.MoveBeforeSit(); due = now + TimeSpan.FromSeconds(4);
+                SetMoveBaseline(io.MoveBeforeSit()); due = io.Time + TimeSpan.FromSeconds(4);
                 Status = "Waiting for verified movement before sitting";
                 return;
             }
@@ -152,7 +159,7 @@ namespace _4RTools.Model.Vanilla
                     throw new InvalidOperationException("No SP recovery observed for two minutes; temporary action stopped. Sitting was requested, not independently observed.");
                 if (sample.Sp < settings.ResumeAbovePercent) { Status = "Waiting for SP " + sample.Sp.ToString("0.0") + "%"; return; }
                 if (!io.Acquire()) { Status = "SP recovered; waiting for input lease"; return; }
-                io.SitStand(); io.Release(); Phase = VanillaTemporaryPhase.StandSettle; due = now + TimeSpan.FromMilliseconds(600);
+                io.SitStand(); io.Release(); Phase = VanillaTemporaryPhase.StandSettle; due = io.Time + TimeSpan.FromMilliseconds(600);
                 Status = "SP recovered; stand requested"; return;
             }
             if (Phase == VanillaTemporaryPhase.StandSettle)
@@ -162,8 +169,9 @@ namespace _4RTools.Model.Vanilla
                 if (now - lastCast < TimeSpan.FromMilliseconds(600)) return;
                 if (!settings.RestMoveCaptured) throw new InvalidOperationException("Capture a nearby ground point for move-before-sit first.");
                 if (!io.Acquire()) { Status = "Waiting for input lease before SP rest"; return; }
-                moveX = sample.X; moveY = sample.Y; moveAt = sample.At; moveAttempts = 0; moveObserved = false; moveDeadline = now + TimeSpan.FromSeconds(10);
-                io.MoveBeforeSit(); Phase = VanillaTemporaryPhase.MovingBeforeSit; due = now + TimeSpan.FromSeconds(4);
+                moveAttempts = 0; moveObserved = false;
+                SetMoveBaseline(io.MoveBeforeSit()); Phase = VanillaTemporaryPhase.MovingBeforeSit;
+                due = io.Time + TimeSpan.FromSeconds(4); moveDeadline = io.Time + TimeSpan.FromSeconds(10);
                 Status = "Moving before sit; awaiting fresh X/Y change"; return;
             }
             if (now < due) return;
@@ -171,9 +179,18 @@ namespace _4RTools.Model.Vanilla
             if (settings.ClickTargetAfterKey) io.PrepareTarget();
             io.ActionHotkey();
             if (settings.ClickTargetAfterKey)
-            { Phase = VanillaTemporaryPhase.TargetPending; due = now + TimeSpan.FromMilliseconds(settings.TargetClickDelayMs); Status = "Skill hotkey sent; target click pending"; }
+            { Phase = VanillaTemporaryPhase.TargetPending; due = io.Time + TimeSpan.FromMilliseconds(settings.TargetClickDelayMs); Status = "Skill hotkey sent; target click pending"; }
             else
-            { io.Release(); SentCycles++; lastCast = now; due = now + TimeSpan.FromMilliseconds(settings.IntervalMs); Status = "Input cycle " + SentCycles + " sent"; }
+            { io.Release(); SentCycles++; lastCast = io.Time; due = lastCast + TimeSpan.FromMilliseconds(settings.IntervalMs); Status = "Input cycle " + SentCycles + " sent"; }
+        }
+        private void SetMoveBaseline(VanillaTemporarySample sample)
+        {
+            RequireSample(sample);
+            if (sample.Identity != identity.Identity || sample.Session != identity.Session || sample.Map != identity.Map
+                || sample.At < lastAt) throw new InvalidOperationException("Character/session/map changed before movement; no sit hotkey sent.");
+            // Capture the baseline immediately before the actual ground click, after
+            // foreground acquisition. Earlier movement cannot satisfy this rest cycle.
+            lastAt = moveAt = sample.At; moveX = sample.X; moveY = sample.Y;
         }
         private static void RequireSample(VanillaTemporarySample value)
         {
@@ -193,6 +210,8 @@ namespace _4RTools.Model.Vanilla
         private VanillaForegroundInput input;
         private VanillaTemporaryOwner owner;
         private VanillaTemporaryCycle cycle;
+        private VanillaCapturedPointTracker targetTracker;
+        private string loggedCycleStatus;
         private VanillaTemporaryActionSettings settings;
         private VanillaTemporarySample last;
         private bool disposed;
@@ -241,7 +260,15 @@ namespace _4RTools.Model.Vanilla
         public void Tick()
         {
             if (!Active || disposed) return;
-            try { cycle.Tick(clock.Elapsed); Status = cycle.Status + " | SP " + cycle.Sp.ToString("0.0") + "%"; }
+            try
+            {
+                cycle.Tick(clock.Elapsed); Status = cycle.Status + " | SP " + cycle.Sp.ToString("0.0") + "%";
+                if (loggedCycleStatus != cycle.Status)
+                {
+                    loggedCycleStatus = cycle.Status;
+                    VanillaDebugLog.Write("TEMPORARY", "event=phase pid=" + ProcessId + " phase=" + cycle.Phase + " status='" + Status + "'.");
+                }
+            }
             catch (Exception ex) { Stop("Stopped: " + ex.Message); }
         }
         public void Stop(string reason = "Stopped")
@@ -249,6 +276,7 @@ namespace _4RTools.Model.Vanilla
             bool wasActive = Active; Active = false;
             supervisor.UnregisterTemporaryAction(owner); owner = null;
             input?.Dispose(); input = null;
+            targetTracker = null; loggedCycleStatus = null;
             Status = reason;
             if (wasActive) VanillaDebugLog.Write("TEMPORARY", "event=stop pid=" + ProcessId + " reason='" + reason + "'.");
         }
@@ -274,6 +302,7 @@ namespace _4RTools.Model.Vanilla
                 At = info.Position.At, X = info.Position.X.Value, Y = info.Position.Y.Value, Sp = info.SpPercent.Value, Alive = true };
         }
         VanillaTemporarySample IVanillaTemporaryIo.Read() { return ReadSample(); }
+        TimeSpan IVanillaTemporaryIo.Time { get { return clock.Elapsed; } }
         bool IVanillaTemporaryIo.Acquire() { return supervisor.TryAcquireTemporaryInput(owner); }
         void IVanillaTemporaryIo.Release() { supervisor.ReleaseTemporaryInput(owner); }
         void IVanillaTemporaryIo.CheckCancelled()
@@ -281,32 +310,83 @@ namespace _4RTools.Model.Vanilla
         void IVanillaTemporaryIo.PrepareTarget() { LocateTarget(false); }
         void IVanillaTemporaryIo.TargetClick() { LocateTarget(true); }
         void IVanillaTemporaryIo.ActionHotkey()
-        { input.Chord(settings.ActionCtrl, settings.ActionAlt, settings.ActionShift, (Keys)settings.ActionKey); }
-        void IVanillaTemporaryIo.SitStand()
-        { input.Chord(settings.SitCtrl, settings.SitAlt, settings.SitShift, (Keys)settings.SitStandKey); }
-        void IVanillaTemporaryIo.MoveBeforeSit()
         {
-            using (Bitmap image = input.CaptureClientBitmap())
+            if (settings.ClickTargetAfterKey) input.Activate();
+            else using (Bitmap image = CaptureTemporaryScene()) { }
+            RefreshInputSample();
+            input.ChordInVerifiedForeground(settings.ActionCtrl, settings.ActionAlt, settings.ActionShift, (Keys)settings.ActionKey);
+        }
+        void IVanillaTemporaryIo.SitStand()
+        {
+            VanillaTemporarySample settled = last;
+            using (Bitmap image = CaptureTemporaryScene()) { }
+            VanillaTemporarySample current = RefreshInputSample();
+            if (cycle.Phase == VanillaTemporaryPhase.MovingBeforeSit && (current.X != settled.X || current.Y != settled.Y))
+                throw new InvalidOperationException("Character moved while preparing Sit; no sit hotkey sent.");
+            input.ChordInVerifiedForeground(settings.SitCtrl, settings.SitAlt, settings.SitShift, (Keys)settings.SitStandKey);
+        }
+        VanillaTemporarySample IVanillaTemporaryIo.MoveBeforeSit()
+        {
+            VanillaTemporarySample baseline = null;
+            using (Bitmap image = CaptureTemporaryScene())
             {
+                EnsureTargetTracker(image);
+                if (targetTracker != null) targetTracker.Locate(image);
                 Point point = PointFor(image.Size, settings.RestMoveXPercent, settings.RestMoveYPercent);
-                input.CompatibilityClickFromProof(new Rectangle(point.X - 1, point.Y - 1, 3, 3), input.LastCaptureProof);
+                input.CompatibilityClickFromProof(new Rectangle(point.X - 1, point.Y - 1, 3, 3), input.LastCaptureProof,
+                    () => baseline = RefreshInputSample());
             }
-            VanillaDebugLog.Write("TEMPORARY", "event=move-before-sit-sent pid=" + ProcessId + "; awaiting verified X/Y.");
+            VanillaDebugLog.Write("TEMPORARY", "event=move-before-sit-sent pid=" + ProcessId + " from=" + baseline.X + "," + baseline.Y + "; awaiting verified X/Y.");
+            return baseline;
         }
         private void LocateTarget(bool click)
         {
-            using (Bitmap image = input.CaptureClientBitmap())
+            using (Bitmap image = CaptureTemporaryScene())
             {
-                Point expected = PointFor(image.Size, settings.TargetXPercent, settings.TargetYPercent), found;
-                string evidence;
-                if (!VanillaCapturedTarget.TryLocate(image, settings.TargetPatch, expected, out found, out evidence))
-                    throw new InvalidOperationException(evidence + "; no target click sent.");
+                VanillaTemporarySample captured = RefreshInputSample();
+                EnsureTargetTracker(image);
+                Point found = targetTracker.Locate(image);
                 if (click)
                 {
-                    input.CompatibilityClickFromProof(new Rectangle(found.X - 1, found.Y - 1, 3, 3), input.LastCaptureProof);
-                    VanillaDebugLog.Write("TEMPORARY", "event=target-click-sent pid=" + ProcessId + " evidence='" + evidence + "'. Windows delivery is not a claim of skill success.");
+                    input.CompatibilityClickFromProof(new Rectangle(found.X - 1, found.Y - 1, 3, 3), input.LastCaptureProof, () =>
+                    {
+                        VanillaTemporarySample current = RefreshInputSample();
+                        if (current.X != captured.X || current.Y != captured.Y)
+                            throw new InvalidOperationException("Character moved during target preparation; no target click sent.");
+                    });
+                    VanillaDebugLog.Write("TEMPORARY", "event=target-click-sent pid=" + ProcessId + " point=" + found.X + "," + found.Y
+                        + "; captured stationary point aligned with the current scene. Windows delivery is not a claim of skill success.");
                 }
             }
+        }
+        private void EnsureTargetTracker(Bitmap image)
+        {
+            if (!settings.ClickTargetAfterKey || targetTracker != null) return;
+            if (settings.TargetClientWidth != 0 && image.Size != new Size(settings.TargetClientWidth, settings.TargetClientHeight))
+                throw new InvalidOperationException("Game size changed since target capture; capture the target again.");
+            targetTracker = new VanillaCapturedPointTracker(image, PointFor(image.Size, settings.TargetXPercent, settings.TargetYPercent));
+        }
+        private Bitmap CaptureTemporaryScene()
+        {
+            Bitmap image = input.CaptureClientBitmap();
+            try { RequireInputScene(image); return image; }
+            catch { image.Dispose(); throw; }
+        }
+        internal static void RequireInputScene(Bitmap image)
+        {
+            // Terrain deliberately excludes animated characters. A recognized UI
+            // overlay must still block input even when its surrounding terrain matches.
+            VanillaVisualState visual = VanillaVisualProbe.Classify(image);
+            if (visual == VanillaVisualState.ModalDialog || visual == VanillaVisualState.LoginShell
+                || visual == VanillaVisualState.ServerClosed || VanillaReconnectSupervisor.IsTerminalDisconnect(visual))
+                throw new InvalidOperationException("A dialog or login screen is visible; temporary input withheld.");
+        }
+        private VanillaTemporarySample RefreshInputSample()
+        {
+            VanillaTemporarySample previous = last, current = ReadSample();
+            if (previous == null || current.Identity != previous.Identity || current.Session != previous.Session || current.Map != previous.Map)
+                throw new InvalidOperationException("Character/session/map changed during input preparation; input cancelled.");
+            return current;
         }
         internal static Point PointFor(Size size, decimal x, decimal y)
         { return new Point(Math.Max(1, Math.Min(size.Width - 2, (int)Math.Round((size.Width - 1) * x / 100m))),
@@ -387,7 +467,7 @@ namespace _4RTools.Model.Vanilla
             Add(root, "Client", clients, "Every operation is bound to this client's verified character/session. Changing the client cancels pending input.");
             Add(root, "Action hotkey", actionKey, "Click the field and press the desired key, with Ctrl/Alt/Shift as needed. Right-click to clear. OS-reserved secure shortcuts cannot be intercepted.");
             Add(root, "Repeat interval (s)", interval, "Time between completed input cycles. A sent cycle is not independent proof that the game cast the skill.");
-            Add(root, "Targeting", click, "Target is captured inside the foreground game. Its image patch can reacquire the target after camera/scale changes; ambiguous matches stop safely.");
+            Add(root, "Targeting", click, "Click the point you captured on a stationary character. Sprite/spell animation does not block F1. Terrain alignment follows small camera shifts after SP-rest movement; changed or ambiguous scenery stops safely. Recapture if the target moves or the camera rotates/zooms.");
             var targetRow = Row(Button("CAPTURE TARGET (3s)", () => ArmCapture(false)), target);
             Add(root, "Skill target", targetRow, "After pressing Capture, move the mouse over the stationary target character/name in the game before the three-second countdown ends.");
             Add(root, "Target click delay (s)", delay, "The pending target click finishes before the SP-rest sequence begins.");
@@ -458,6 +538,7 @@ namespace _4RTools.Model.Vanilla
                     {
                         saved.TargetPatch = VanillaCapturedTarget.Capture(image, point);
                         saved.TargetXPercent = x; saved.TargetYPercent = y;
+                        saved.TargetClientWidth = size.Width; saved.TargetClientHeight = size.Height;
                         saved.TargetCharacterKey = sample.Identity; saved.TargetMap = sample.Map;
                         loading = true; click.Checked = true; loading = false;
                     }
