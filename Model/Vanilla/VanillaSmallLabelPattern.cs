@@ -95,6 +95,41 @@ namespace _4RTools.Model.Vanilla
                     result.Add(signature);
                 }
             }
+            // Native controls captured through a high-DPI/RDP path can be rendered
+            // large first and then bicubic-resampled by the desktop compositor. Direct
+            // small-font references do not reproduce that raster shape closely enough,
+            // so retain a bounded second bank built through the same scale-down process.
+            foreach (string label in new[] { "Vanilla MMO", "Vanila MMO", "Vania MMO", "Vandy MMO", "Vara MMO", "Other MMO", "Vannila MMO", "Vanilla MMD" })
+            foreach (string family in new[] { "Tahoma", "Arial" })
+            foreach (float size in new[] { 32f, 40f, 48f })
+            foreach (TextRenderingHint hint in new[] { TextRenderingHint.SystemDefault, TextRenderingHint.AntiAliasGridFit })
+            using (var original = new Bitmap(360, 100, PixelFormat.Format24bppRgb))
+            {
+                using (Graphics graphics = Graphics.FromImage(original))
+                using (var font = new Font(family, size, FontStyle.Regular, GraphicsUnit.Pixel))
+                using (var ink = new SolidBrush(Color.FromArgb(70, 70, 70)))
+                {
+                    graphics.Clear(Color.FromArgb(247, 247, 247));
+                    graphics.TextRenderingHint = hint;
+                    graphics.DrawString(label, font, ink, new PointF(12, 12));
+                }
+                foreach (float scale in new[] { .5f, .625f, .75f })
+                foreach (float x in new[] { 0f, .5f })
+                foreach (float y in new[] { 0f, .5f })
+                using (var resized = new Bitmap(364, 104, PixelFormat.Format24bppRgb))
+                {
+                    using (Graphics graphics = Graphics.FromImage(resized))
+                    {
+                        graphics.Clear(Color.FromArgb(247, 247, 247));
+                        graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                        graphics.DrawImage(original, new RectangleF(x, y, original.Width * scale, original.Height * scale));
+                    }
+                    Signature signature = ReadSignature(resized, new Rectangle(Point.Empty, resized.Size));
+                    if (signature == null || signature.Height > 36) continue;
+                    signature.Target = label == "Vanilla MMO";
+                    result.Add(signature);
+                }
+            }
             return result.ToArray();
         }
 
