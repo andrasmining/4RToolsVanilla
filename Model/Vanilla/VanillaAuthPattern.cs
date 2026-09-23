@@ -140,7 +140,7 @@ namespace _4RTools.Model.Vanilla
                     recognized = VanillaTextRecognition.TryRead(bitmap, service, true, out serviceText, out textEvidence)
                         && serviceText.Any(line => line.Confidence >= 70
                             && string.Equals(line.Text.Trim(), "Vanilla MMO", StringComparison.OrdinalIgnoreCase));
-                    if (!recognized && service.Height <= 18)
+                    if (!recognized)
                     {
                         recognized = VanillaSmallLabelPattern.IsVanillaMmo(bitmap, service, out textEvidence);
                         labelEvidence.Add(service + ": " + textEvidence);

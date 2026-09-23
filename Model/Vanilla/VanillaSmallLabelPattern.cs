@@ -28,15 +28,25 @@ namespace _4RTools.Model.Vanilla
         internal static bool IsVanillaMmo(Bitmap image, Rectangle area, out string evidence)
         {
             evidence = "fixed-label pixels unavailable";
-            if (image == null || area.Width > 200 || area.Height > 20 || area.Width < 25 || area.Height < 5
+            // The login combobox can be much wider/taller under Windows DPI scaling and
+            // RDP resampling. Bounds are still supplied by the independently detected
+            // control stack; trim the observed glyphs below rather than rejecting the
+            // entire control because its chrome is large.
+            if (image == null || area.Width > 600 || area.Height > 70 || area.Width < 25 || area.Height < 5
                 || !new Rectangle(Point.Empty, image.Size).Contains(area)) return false;
             Signature candidate = ReadSignature(image, area);
             if (candidate == null) return false;
             double target = 0, opponent = 0, targetBlock = 0;
             foreach (Signature reference in References.Value)
             {
-                // Do not stretch a shorter name into the expected label's width.
-                if (Math.Abs(reference.Width - candidate.Width) > 1 || Math.Abs(reference.Height - candidate.Height) > 1) continue;
+                // Compare only proportionally scaled renderings. The normalized raster
+                // comparison is intentionally DPI-independent, but a materially different
+                // aspect ratio still rejects shorter/lookalike labels.
+                double scaleX = candidate.Width / (double)reference.Width;
+                double scaleY = candidate.Height / (double)reference.Height;
+                if (scaleX < .45 || scaleX > 3.0 || scaleY < .45 || scaleY > 3.0) continue;
+                double anisotropy = Math.Max(scaleX / scaleY, scaleY / scaleX);
+                if (anisotropy > 1.30) continue;
                 double block;
                 double score = Similarity(reference, candidate, out block);
                 if (reference.Target)
@@ -48,7 +58,7 @@ namespace _4RTools.Model.Vanilla
             evidence = "fixed-label full-shape=" + target.ToString("0.000") + "; weakest-block=" + targetBlock.ToString("0.000")
                 + "; separation=" + (target - opponent).ToString("0.000")
                 + "; glyph-size=" + candidate.Width + "x" + candidate.Height;
-            return target >= .975 && targetBlock >= .91 && target - opponent >= .018;
+            return target >= .955 && targetBlock >= .84 && target - opponent >= .018;
         }
 
         private static Signature[] BuildReferences()
@@ -81,6 +91,41 @@ namespace _4RTools.Model.Vanilla
                     }
                     Signature signature = ReadSignature(resized, new Rectangle(Point.Empty, resized.Size));
                     if (signature == null || signature.Height > 14) continue;
+                    signature.Target = label == "Vanilla MMO";
+                    result.Add(signature);
+                }
+            }
+            // Native controls captured through a high-DPI/RDP path can be rendered
+            // large first and then bicubic-resampled by the desktop compositor. Direct
+            // small-font references do not reproduce that raster shape closely enough,
+            // so retain a bounded second bank built through the same scale-down process.
+            foreach (string label in new[] { "Vanilla MMO", "Vanila MMO", "Vania MMO", "Vandy MMO", "Vara MMO", "Other MMO", "Vannila MMO", "Vanilla MMD" })
+            foreach (string family in new[] { "Tahoma", "Arial" })
+            foreach (float size in new[] { 32f, 40f, 48f })
+            foreach (TextRenderingHint hint in new[] { TextRenderingHint.SystemDefault, TextRenderingHint.AntiAliasGridFit })
+            using (var original = new Bitmap(360, 100, PixelFormat.Format24bppRgb))
+            {
+                using (Graphics graphics = Graphics.FromImage(original))
+                using (var font = new Font(family, size, FontStyle.Regular, GraphicsUnit.Pixel))
+                using (var ink = new SolidBrush(Color.FromArgb(70, 70, 70)))
+                {
+                    graphics.Clear(Color.FromArgb(247, 247, 247));
+                    graphics.TextRenderingHint = hint;
+                    graphics.DrawString(label, font, ink, new PointF(12, 12));
+                }
+                foreach (float scale in new[] { .5f, .625f, .75f })
+                foreach (float x in new[] { 0f, .5f })
+                foreach (float y in new[] { 0f, .5f })
+                using (var resized = new Bitmap(364, 104, PixelFormat.Format24bppRgb))
+                {
+                    using (Graphics graphics = Graphics.FromImage(resized))
+                    {
+                        graphics.Clear(Color.FromArgb(247, 247, 247));
+                        graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                        graphics.DrawImage(original, new RectangleF(x, y, original.Width * scale, original.Height * scale));
+                    }
+                    Signature signature = ReadSignature(resized, new Rectangle(Point.Empty, resized.Size));
+                    if (signature == null || signature.Height > 36) continue;
                     signature.Target = label == "Vanilla MMO";
                     result.Add(signature);
                 }
@@ -132,8 +177,48 @@ namespace _4RTools.Model.Vanilla
                     left = Math.Min(left, x); right = Math.Max(right, x);
                     top = Math.Min(top, y); bottom = Math.Max(bottom, y); minimum = Math.Min(minimum, value);
                 }
+                int rawWidth = right - left + 1, rawHeight = bottom - top + 1;
+                if (rawWidth < 25 || rawHeight < 4 || rawHeight > 50 || rawWidth > 560 || minimum >= background - 50) return null;
+
+                // Some native combobox themes expose no strong vertical separator. In
+                // that case the dropdown arrow becomes part of the broad service crop.
+                // Remove a trailing chrome cluster only when an observed blank run at
+                // least one glyph-height wide separates it from the left text cluster.
+                int gapStart = -1, bestGapStart = -1, bestGapLength = 0;
+                for (int x = left; x <= right + 1; x++)
+                {
+                    bool columnInk = false;
+                    if (x <= right)
+                        for (int y = top; y <= bottom; y++)
+                            if (gray[y * crop.Width + x] < background - 45) { columnInk = true; break; }
+                    if (!columnInk && x <= right)
+                    {
+                        if (gapStart < 0) gapStart = x;
+                    }
+                    else if (gapStart >= 0)
+                    {
+                        int length = x - gapStart;
+                        if (gapStart - left >= 25 && length > bestGapLength)
+                        { bestGapStart = gapStart; bestGapLength = length; }
+                        gapStart = -1;
+                    }
+                }
+                if (bestGapStart >= 0 && bestGapLength >= Math.Max(7, rawHeight)
+                    && bestGapStart + bestGapLength <= right)
+                {
+                    right = bestGapStart - 1;
+                    top = crop.Height; bottom = -1; minimum = background;
+                    for (int y = 0; y < crop.Height; y++)
+                    for (int x = left; x <= right; x++)
+                    {
+                        int value = gray[y * crop.Width + x];
+                        if (value >= background - 45) continue;
+                        top = Math.Min(top, y); bottom = Math.Max(bottom, y); minimum = Math.Min(minimum, value);
+                    }
+                }
+
                 int width = right - left + 1, height = bottom - top + 1;
-                if (width < 25 || height < 4 || height > 18 || width > 150 || minimum >= background - 50) return null;
+                if (width < 25 || height < 4 || height > 45 || width > 320 || minimum >= background - 50) return null;
                 var ink = new float[Columns * Rows];
                 for (int y = 0; y < Rows; y++)
                 for (int x = 0; x < Columns; x++)

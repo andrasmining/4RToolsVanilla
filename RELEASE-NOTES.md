@@ -1,36 +1,39 @@
-# 4RTools Vanilla 0.6.73
+# 4RTools Vanilla 0.6.74
 
-## Public one-click self-update
+## Sequential login recognition
 
-- The current application updater is public-only. It resolves the stable release
-  through the canonical `github.com/andrasmining/4RToolsVanilla/releases/latest`
-  path and canonical public release assets. Its metadata fallback is anonymous and
-  the current client no longer consults saved GitHub credentials.
-- Remove the obsolete **UPDATE ACCESS** control from the application. Legacy
-  private-era clients can still use their historical authenticated path for a
-  one-time migration, but v0.6.73 itself requires no token.
-- Accepting an offered update is now a single action: 4RTools downloads and fully
-  verifies the public release immediately. If recovery or Cart currently owns the
-  serialized input path, the verified update stays pending and waits for a safe
-  quiescent point instead of asking the user to retry. It then applies and restarts
-  automatically.
-- Existing safety remains intact: portable ZIP checksum, complete payload manifest,
-  executable version and source identity are verified before replacement. Managed
-  files are backed up and copy/verification/early-start failures roll back without
-  replacing persistent profiles/settings.
+- Fix the cold-start/recovery failure that could occur immediately after a proxy
+  such as **Tokyo** had been correctly selected: the login form recognizer could
+  reject the native `Vanilla MMO` service combobox before username/password
+  entry, so the safety guard deliberately typed nothing.
+- Keep the same fail-closed credential policy, but make the fixed service-label
+  fallback tolerant of DPI scaling, wide native comboboxes and softened/RDP
+  rendering. Trailing dropdown chrome is separated from the observed label and
+  proportionally scaled glyphs are compared without using configured credentials
+  as recognition hints.
+- Allow a bounded ~15-second login-form appearance window after proxy selection
+  instead of the previous ~6-second window. No credential input is sent until the
+  named login form, separate username/password controls and intended field focus
+  are positively verified.
+- Add non-secret credential-stage diagnostics when login-form recognition is
+  blocked or later recovers. Login captures and credential contents are still not
+  written to disk or logs.
+- Add regression coverage for a wide, high-DPI, bicubic-softened/RDP-style
+  `Vanilla MMO` combobox and similarly spelled negative identities.
 
-## Validation policy
+## Validation and update path
 
-Windows GitHub Actions is the release-completion environment for this project.
-The pipeline builds Debug and Release, runs the complete isolated regression suite,
-validates shipped build profiles, package/smoke checks, native test-owned recovery
-processes, mock UI rendering, release asset hashes, source provenance and the real
-published updater discovery/download/staging path. Live Vanilla/Gepard/RDP testing
-is not required unless explicitly requested and is not claimed by this release.
+Windows GitHub Actions builds Debug and Release, runs the complete isolated
+regression suite, validates shipped build profiles, packages/smoke-tests the exact
+Release build, runs native test-owned recovery checks and isolated mock UI checks.
+The release publisher then verifies the exact main SHA, release ZIP/checksum,
+public `releases/latest`, anonymous updater discovery/download/staging and the
+legacy migration path before leaving the release stable.
+
+Live Vanilla/Gepard/RDP gameplay is not claimed by this release; the reported
+failure was diagnosed from the supplied runtime log and guarded with Windows
+synthetic recognition regressions.
 
 ## Migration
 
-v0.6.72 can discover v0.6.73 anonymously and self-update directly. Older
-v0.6.68/v0.6.69 clients can still migrate through their historical credential if
-available; otherwise use the complete portable package once. v0.6.67 points at the
-retired repository and requires the portable migration.
+v0.6.73 can discover and install v0.6.74 through the public one-click updater.

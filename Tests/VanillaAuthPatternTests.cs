@@ -17,6 +17,7 @@ namespace Vanilla.Diagnostics.Tests
         {
             Test("Login pattern distinguishes username and password across resolutions", LoginAcrossResolutions);
             Test("Login pattern tolerates softened rendering", LoginSoftened);
+            Test("Fixed login identity survives wide RDP-scaled combobox chrome", WideRdpLoginIdentity);
             Test("Softened login rejects similarly spelled service identities", RejectSimilarLowResolutionServices);
             Test("Login form may move independently from the client dimensions", LoginMoved);
             Test("Three anonymous rectangles do not authorize credential entry", RejectAnonymousFields);
@@ -90,6 +91,56 @@ namespace Vanilla.Diagnostics.Tests
                     && watch.ElapsedMilliseconds < VanillaVisualInputProof.MaximumAgeMs - 500,
                     "Cached login recognition did not leave enough of the captured-input lifetime for safe dispatch.");
             }
+        }
+
+        private static void WideRdpLoginIdentity()
+        {
+            PrepareFixedLabelReferences();
+            foreach (string label in new[] { "Vanilla MMO", "Vanila MMO", "Vania MMO", "Vandy MMO", "Other MMO" })
+            using (Bitmap large = WideComboLabel(label, 840, 104, 48))
+            using (var reduced = new Bitmap(420, 52))
+            {
+                using (Graphics graphics = Graphics.FromImage(reduced))
+                {
+                    graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    graphics.DrawImage(large, new Rectangle(Point.Empty, reduced.Size));
+                }
+                SaveLoginFixture(reduced, "login-wide-rdp");
+                string evidence;
+                bool recognized = VanillaSmallLabelPattern.IsVanillaMmo(reduced,
+                    new Rectangle(4, 4, reduced.Width - 8, reduced.Height - 8), out evidence);
+                Assert(recognized == string.Equals(label, "Vanilla MMO", StringComparison.Ordinal),
+                    "Wide/RDP fixed service identity mismatch for '" + label + "': " + evidence);
+            }
+        }
+
+        private static Bitmap WideComboLabel(string label, int width, int height, int fontSize)
+        {
+            var image = new Bitmap(width, height);
+            using (Graphics graphics = Graphics.FromImage(image))
+            using (var fill = new SolidBrush(Color.FromArgb(247, 247, 247)))
+            using (var frame = new Pen(Color.FromArgb(115, 115, 115), 2f))
+            using (var ink = new SolidBrush(Color.FromArgb(70, 70, 70)))
+            using (var font = new Font("Tahoma", fontSize, FontStyle.Regular, GraphicsUnit.Pixel))
+            using (var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+            {
+                graphics.Clear(Color.FromArgb(248, 251, 252));
+                graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAliasGridFit;
+                var box = new Rectangle(4, 4, width - 8, height - 8);
+                graphics.FillRectangle(fill, box);
+                graphics.DrawRectangle(frame, box);
+                int buttonWidth = Math.Max(44, height - 16);
+                int divider = box.Right - buttonWidth;
+                graphics.DrawString(label, font, ink,
+                    new Rectangle(box.Left + 8, box.Top, divider - box.Left - 16, box.Height), format);
+                graphics.DrawLine(frame, divider, box.Top + 2, divider, box.Bottom - 2);
+                graphics.FillPolygon(ink, new[] {
+                    new Point(divider + buttonWidth / 4, box.Top + box.Height / 3),
+                    new Point(box.Right - buttonWidth / 4, box.Top + box.Height / 3),
+                    new Point(divider + buttonWidth / 2, box.Bottom - box.Height / 3)
+                });
+            }
+            return image;
         }
 
         private static void RejectSimilarLowResolutionServices()
