@@ -17,9 +17,11 @@ namespace _4RTools.Model.Vanilla
         VanillaFieldFocus Focus(VanillaLoginLayout layout, VanillaCredentialField field);
         bool VerifyUserName(Bitmap image, VanillaLoginLayout layout, string expected);
         bool VerifyPasswordMask(Bitmap image, VanillaLoginLayout layout, int expectedLength);
+        bool IsEmpty(Bitmap image, VanillaLoginLayout layout, VanillaCredentialField field);
         void Click(Rectangle field, Size imageSize);
         void RevealCaret(VanillaLoginLayout layout, VanillaCredentialField field);
-        void Replace(string value);
+        void Clear();
+        void Type(string value);
         void Submit();
         void Pause(int milliseconds);
         void CheckCancelled();
@@ -33,6 +35,13 @@ namespace _4RTools.Model.Vanilla
     {
         private readonly IVanillaCredentialInput input;
 
+        private sealed class FieldObservation
+        {
+            internal VanillaLoginLayout Layout;
+            internal Size Size;
+            internal long Surface;
+        }
+
         internal VanillaCredentialVerifier(IVanillaCredentialInput input)
         {
             this.input = input ?? throw new ArgumentNullException(nameof(input));
@@ -43,18 +52,14 @@ namespace _4RTools.Model.Vanilla
             if (string.IsNullOrWhiteSpace(userName) || string.IsNullOrEmpty(password))
                 throw new InvalidOperationException("Username/password is missing.");
 
-            ClickFreshField(VanillaCredentialField.UserName);
-            ConfirmFieldFocus(VanillaCredentialField.UserName);
-            input.CheckCancelled();
-            input.Replace(userName);
+            FieldObservation userField = ClickFreshField(VanillaCredentialField.UserName);
+            ClearAndType(VanillaCredentialField.UserName, userName, userField);
 
             // Re-detect after entry; never reuse a password point from the first screenshot.
-            ClickFreshField(VanillaCredentialField.Password);
-            ConfirmFieldFocus(VanillaCredentialField.Password);
+            FieldObservation passwordField = ClickFreshField(VanillaCredentialField.Password);
             // Defocus the username before OCR so its insertion caret cannot become text.
             VerifyContents(userName, null);
-            input.CheckCancelled();
-            input.Replace(password);
+            ClearAndType(VanillaCredentialField.Password, password, passwordField);
             VerifyContents(userName, password.Length);
             if (submit) Submit(userName, password.Length);
         }
@@ -69,7 +74,7 @@ namespace _4RTools.Model.Vanilla
             input.Submit();
         }
 
-        private void ClickFreshField(VanillaCredentialField field)
+        private FieldObservation ClickFreshField(VanillaCredentialField field)
         {
             // Proxy submission can leave the native login controls repainting for
             // several seconds on RDP. Wait up to about 15 seconds, but never type
@@ -85,8 +90,7 @@ namespace _4RTools.Model.Vanilla
                         long clickedSurface = input.SurfaceId;
                         input.Click(field == VanillaCredentialField.UserName ? layout.UserName : layout.Password, image.Size);
                         input.Pause(120);
-                        RevealClickedFieldCaret(field, layout, image.Size, clickedSurface);
-                        return;
+                        return RevealClickedFieldCaret(field, layout, image.Size, clickedSurface);
                     }
                 }
                 input.Pause(200);
@@ -95,7 +99,7 @@ namespace _4RTools.Model.Vanilla
             throw new InvalidOperationException("The login form and " + field + " control were not recognized; no credentials typed.");
         }
 
-        private void RevealClickedFieldCaret(VanillaCredentialField field, VanillaLoginLayout clickedLayout,
+        private FieldObservation RevealClickedFieldCaret(VanillaCredentialField field, VanillaLoginLayout clickedLayout,
             Size clickedSize, long clickedSurface)
         {
             input.CheckCancelled();
@@ -103,22 +107,27 @@ namespace _4RTools.Model.Vanilla
             {
                 VanillaLoginLayout layout;
                 if (!input.Detect(image, out layout) || image.Size != clickedSize || input.SurfaceId != clickedSurface
-                    || layout.UserNameControl != clickedLayout.UserNameControl || layout.PasswordControl != clickedLayout.PasswordControl)
+                    || !SameControl(layout.UserNameControl, clickedLayout.UserNameControl)
+                    || !SameControl(layout.PasswordControl, clickedLayout.PasswordControl))
                 {
-                    Trace(field, "reveal-caret", "captured controls changed; End withheld");
+                    Trace(field, "reveal-caret", "captured controls changed; Home withheld; before="
+                        + clickedLayout.UserNameControl + "/" + clickedLayout.PasswordControl + "; after="
+                        + (layout == null ? "unrecognized" : layout.UserNameControl + "/" + layout.PasswordControl));
                     throw new InvalidOperationException("Login controls changed after clicking " + field + "; caret preparation stopped.");
                 }
                 if (input.Focus(layout, field) == VanillaFieldFocus.Contradicted)
                 {
-                    Trace(field, "reveal-caret", "native focus contradicted; End withheld");
+                    Trace(field, "reveal-caret", "native focus contradicted; Home withheld");
                     throw new InvalidOperationException("A different control owns keyboard focus after clicking " + field + "; credential input blocked.");
                 }
                 input.CheckCancelled();
                 // Vanilla selects a remembered username on click and suppresses its
-                // custom caret while selected. End collapses that selection without
-                // changing text. It is preparation, never sufficient proof for typing.
+                // custom caret while selected. Home collapses that selection at the
+                // visible left edge even when remembered text fills the control.
+                // It is preparation, never sufficient proof for typing.
                 input.RevealCaret(layout, field);
-                Trace(field, "reveal-caret", "End completed; awaiting independent focus proof");
+                Trace(field, "reveal-caret", "Home completed; awaiting independent focus proof");
+                return new FieldObservation { Layout = layout, Size = image.Size, Surface = input.SurfaceId };
             }
         }
 
@@ -127,7 +136,17 @@ namespace _4RTools.Model.Vanilla
             VanillaDebugLog.Write("CREDENTIAL", "field=" + field + "; stage=" + stage + "; " + result);
         }
 
-        private void ConfirmFieldFocus(VanillaCredentialField field)
+        private static bool SameControl(Rectangle first, Rectangle second)
+        {
+            // The live skin repaints its bottom border by one pixel when focus
+            // changes. Keep every position/width exact; a translated control is
+            // still a new target and cannot inherit an earlier input proof.
+            return first.Width > 0 && first.Height > 0 && second.Height > 0
+                && first.Left == second.Left && first.Top == second.Top && first.Width == second.Width
+                && Math.Abs(first.Height - second.Height) <= 1;
+        }
+
+        private FieldObservation ConfirmFieldFocus(VanillaCredentialField field)
         {
             Bitmap previous = null;
             Rectangle previousBounds = Rectangle.Empty;
@@ -147,7 +166,7 @@ namespace _4RTools.Model.Vanilla
                             throw new InvalidOperationException("Login controls changed while checking " + field + " focus; no further credentials typed.");
                         Rectangle bounds = field == VanillaCredentialField.UserName ? layout.UserNameControl : layout.PasswordControl;
                         bool sameSurface = previous != null && previousSurface == input.SurfaceId
-                            && previousBounds == bounds && previous.Size == current.Size;
+                            && SameControl(previousBounds, bounds) && previous.Size == current.Size;
                         if (previous != null && !sameSurface)
                         {
                             nativeConfirmations = transitions = 0;
@@ -164,7 +183,7 @@ namespace _4RTools.Model.Vanilla
                             if (++nativeConfirmations >= 2)
                             {
                                 Trace(field, "focus", "confirmed by repeated native caret observations");
-                                return;
+                                return new FieldObservation { Layout = layout, Size = current.Size, Surface = input.SurfaceId };
                             }
                         }
                         else
@@ -172,7 +191,8 @@ namespace _4RTools.Model.Vanilla
                             nativeConfirmations = 0;
                             Rectangle caret;
                             if (sameSurface
-                                && VanillaCredentialPattern.TryDetectCaretBlink(previous, current, bounds, out caret))
+                                && VanillaCredentialPattern.TryDetectCaretBlink(previous, current,
+                                    Rectangle.Union(previousBounds, bounds), out caret))
                             {
                                 if (transitions == 0 || firstCaret == caret)
                                 {
@@ -180,7 +200,7 @@ namespace _4RTools.Model.Vanilla
                                     if (++transitions >= 2)
                                     {
                                         Trace(field, "focus", "confirmed by repeated custom caret blinks; bounds=" + caret);
-                                        return;
+                                        return new FieldObservation { Layout = layout, Size = current.Size, Surface = input.SurfaceId };
                                     }
                                 }
                                 else { transitions = 1; firstCaret = caret; }
@@ -199,6 +219,65 @@ namespace _4RTools.Model.Vanilla
             finally { if (previous != null) previous.Dispose(); }
             Trace(field, "focus", "unverified; nativeConfirmations=" + nativeConfirmations + "; caretTransitions=" + transitions);
             throw new InvalidOperationException("Text focus was not positively verified inside the " + field + " credential field; input blocked.");
+        }
+
+        private void ClearAndType(VanillaCredentialField field, string value, FieldObservation clicked)
+        {
+            input.CheckCancelled();
+            using (Bitmap image = input.Capture()) RequirePinnedField(image, field, clicked);
+            input.CheckCancelled();
+            // The custom edit can suppress its caret while remembered text is
+            // selected. A fresh named click permits clearing only; new credential
+            // text still needs both independent focus and positive empty evidence.
+            input.Clear();
+            Trace(field, "clear", "key sequence completed; awaiting observed empty field");
+            WaitForEmpty(field, clicked);
+            ConfirmFieldFocus(field);
+            // Focus verification itself captures blinking caret frames. Refresh the
+            // same field's empty proof immediately before typing any new content.
+            WaitForEmpty(field, clicked);
+            input.CheckCancelled();
+            input.Type(value);
+            Trace(field, "type", "completed; contents omitted");
+        }
+
+        private void WaitForEmpty(VanillaCredentialField field, FieldObservation clicked)
+        {
+            // A successful key dispatch does not establish that this custom edit
+            // control cleared. Wait for its actual pale empty interior, including
+            // an off frame of the blinking caret; never remove a guessed caret.
+            for (int attempt = 0; attempt < 20; attempt++)
+            {
+                input.CheckCancelled();
+                using (Bitmap image = input.Capture())
+                {
+                    VanillaLoginLayout layout = RequirePinnedField(image, field, clicked);
+                    if (input.IsEmpty(image, layout, field))
+                    {
+                        Trace(field, "empty", "confirmed on fresh frame");
+                        return;
+                    }
+                }
+                input.Pause(100);
+            }
+            Trace(field, "empty", "not verified; new text withheld");
+            throw new InvalidOperationException("The " + field + " credential field did not visibly clear; new text was not typed.");
+        }
+
+        private VanillaLoginLayout RequirePinnedField(Bitmap image, VanillaCredentialField field, FieldObservation clicked)
+        {
+            input.CheckCancelled();
+            VanillaLoginLayout layout;
+            if (!input.Detect(image, out layout) || input.SurfaceId != clicked.Surface || image.Size != clicked.Size
+                || !SameControl(layout.UserNameControl, clicked.Layout.UserNameControl)
+                || !SameControl(layout.PasswordControl, clicked.Layout.PasswordControl))
+            {
+                Trace(field, "clear/type", "named controls or input surface changed; input withheld");
+                throw new InvalidOperationException("Login controls changed after clicking " + field + "; credential replacement blocked.");
+            }
+            if (input.Focus(layout, field) == VanillaFieldFocus.Contradicted)
+                throw new InvalidOperationException("Credential keyboard focus changed while clearing " + field + "; typing stopped.");
+            return layout;
         }
 
         private void VerifyContents(string userName, int? passwordLength)
@@ -221,7 +300,7 @@ namespace _4RTools.Model.Vanilla
                         && (!passwordLength.HasValue || input.VerifyPasswordMask(image, layout, passwordLength.Value));
                     if (valid)
                     {
-                        if (layout.UserNameControl != previousUser || layout.PasswordControl != previousPassword
+                        if (!SameControl(layout.UserNameControl, previousUser) || !SameControl(layout.PasswordControl, previousPassword)
                             || image.Size != previousSize || previousSurface != input.SurfaceId)
                             confirmations = 0;
                         previousUser = layout.UserNameControl;
@@ -298,10 +377,12 @@ namespace _4RTools.Model.Vanilla
             if (VanillaTextRecognition.TryRead(image, text, true, out lines, out evidence)
                 && lines.Length == 1 && lines[0].Confidence >= 80)
                 return string.Equals(lines[0].Text.Trim(), expected, StringComparison.Ordinal);
-            // The accurate model may resolve uncertain pixels, but must never override a
-            // confident contradictory username or receive the configured name as an OCR hint.
+            // Scores are model-specific. The accurate model reads the live small
+            // username correctly below 80; misread native/softened fixture results
+            // remained below 65. Keep exact comparison and repeated fresh reads,
+            // never override a confident fast contradiction or hint the expected name.
             return VanillaTextRecognition.TryReadAccurate(image, text, true, out lines, out evidence)
-                && lines.Length == 1 && lines[0].Confidence >= 80
+                && lines.Length == 1 && lines[0].Confidence >= 65
                 && string.Equals(lines[0].Text.Trim(), expected, StringComparison.Ordinal);
         }
         public bool VerifyPasswordMask(Bitmap image, VanillaLoginLayout layout, int expectedLength)
@@ -314,26 +395,40 @@ namespace _4RTools.Model.Vanilla
                 throw new InvalidOperationException("Credential control capture no longer matches the input surface.");
             input.ClickFromProof(field, proof);
         }
+        public bool IsEmpty(Bitmap image, VanillaLoginLayout layout, VanillaCredentialField field)
+        {
+            return VanillaCredentialPattern.IsEmptyField(image,
+                field == VanillaCredentialField.UserName ? layout.UserNameControl : layout.PasswordControl);
+        }
         public void RevealCaret(VanillaLoginLayout layout, VanillaCredentialField field)
         {
             CheckCancelled();
             if (proof == null || Focus(layout, field) == VanillaFieldFocus.Contradicted)
-                throw new InvalidOperationException("Credential focus changed before revealing the " + field + " caret; End withheld.");
-            input.PressFromProof(Keys.End, proof);
+                throw new InvalidOperationException("Credential focus changed before revealing the " + field + " caret; Home withheld.");
+            input.PressFromProof(Keys.Home, proof);
         }
-        public void Replace(string value)
+        public void Clear()
         {
-            Rectangle intended = focusField;
-            // The callback is scoped to this call, so cancellation/failure cannot leave a
-            // credential guard attached to an unrelated later action. A custom-drawn caret
-            // retains its just-established blink proof; any native contradiction stops typing.
             VanillaVisualInputProof currentProof = proof;
-            input.ReplaceFocusedTextFromProof(value, currentProof, () =>
+            input.ClearFocusedTextFromProof(currentProof, CredentialGuard(currentProof, focusField));
+        }
+        public void Type(string value)
+        {
+            VanillaVisualInputProof currentProof = proof;
+            input.TypeTextFromProof(value, currentProof, CredentialGuard(currentProof, focusField));
+        }
+        private System.Action CredentialGuard(VanillaVisualInputProof currentProof, Rectangle intended)
+        {
+            // The callback is scoped to this call, so cancellation/failure cannot leave a
+            // credential guard attached to an unrelated later action. Clearing is tied
+            // to the named click; typing additionally follows independent focus and empty
+            // evidence. Any native contradiction stops either operation.
+            return () =>
             {
                 CheckCancelled();
                 if (currentProof == null || VanillaCredentialFocus.Observe(currentProof.Window, intended) == VanillaFieldFocus.Contradicted)
                     throw new InvalidOperationException("Credential keyboard focus changed during entry; typing stopped.");
-            });
+            };
         }
         public void Submit() { input.PressFromProof(Keys.Enter, proof); }
         public void Pause(int milliseconds)

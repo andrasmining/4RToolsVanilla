@@ -14,6 +14,37 @@ namespace _4RTools.Model.Vanilla
         private sealed class MaskGlyph { internal string Family; internal double[] Shape; }
         private static readonly Lazy<List<MaskGlyph>> MaskGlyphs = new Lazy<List<MaskGlyph>>(BuildMaskGlyphs);
 
+        internal static bool IsEmptyField(Bitmap image, Rectangle field)
+        {
+            if (image == null || field.Width < 4 || field.Height < 5 || field.X < 0 || field.Y < 0
+                || (long)field.X + field.Width > image.Width || (long)field.Y + field.Height > image.Height)
+                return false;
+
+            // The detected control includes its one-pixel bevel. Do not discard
+            // any further interior: a single remaining glyph or caret is not empty.
+            field.Inflate(-1, -1);
+            int[] light = new int[field.Width * field.Height];
+            int index = 0, darkest = 255;
+            for (int y = field.Top; y < field.Bottom; y++)
+            for (int x = field.Left; x < field.Right; x++)
+            {
+                Color pixel = image.GetPixel(x, y);
+                int brightness = Light(pixel);
+                int chroma = Math.Max(pixel.R, Math.Max(pixel.G, pixel.B))
+                    - Math.Min(pixel.R, Math.Min(pixel.G, pixel.B));
+                // Empty must be positively pale and neutral. ReadInk deliberately
+                // returns no ink for an unknown dark background, which is not proof.
+                if (pixel.A != 255 || brightness < 205 || chroma > 18) return false;
+                light[index++] = brightness;
+                darkest = Math.Min(darkest, brightness);
+            }
+            Array.Sort(light);
+            int background = light[(light.Length * 3) / 4];
+            // Allow small rendering variations, but reject even faint residual text.
+            // A visible caret is never removed here; callers wait for its off frame.
+            return darkest >= background - 12;
+        }
+
         internal static bool TryDetectCaretBlink(Bitmap first, Bitmap second, Rectangle field, out Rectangle caret)
         {
             caret = Rectangle.Empty;

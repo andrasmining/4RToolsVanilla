@@ -647,6 +647,48 @@ namespace _4RTools.Model.Vanilla
                 U = new INPUTUNION { mi = new MOUSEINPUT { dwFlags = up ? MOUSEEVENTF_LEFTUP : MOUSEEVENTF_LEFTDOWN } } } });
         }
 
+        internal void ClearFocusedTextFromProof(VanillaVisualInputProof proof, System.Action verifyFieldFocus)
+        {
+            lock (ForegroundGate)
+            {
+                System.Action verify = FocusedProofGuard(proof, verifyFieldFocus);
+                verify();
+                VanillaDebugLog.Write("INPUT", "PID=" + process.Id + " verified-capture credential clear: Home, Shift+End, Backspace.");
+                DispatchGuardedKey(Keys.Home, verify, SendKey, Thread.Sleep);
+                DispatchGuardedChord(false, false, true, Keys.End, verify, SendKey, Thread.Sleep);
+                DispatchGuardedKey(Keys.Back, verify, SendKey, Thread.Sleep);
+                DelayWithCancellation(80);
+            }
+        }
+
+        internal void TypeTextFromProof(string text, VanillaVisualInputProof proof, System.Action verifyFieldFocus)
+        {
+            lock (ForegroundGate)
+            {
+                System.Action verify = FocusedProofGuard(proof, verifyFieldFocus);
+                verify();
+                VanillaDebugLog.Write("INPUT", "PID=" + process.Id + " verified-capture text entry; contents omitted.");
+                foreach (char value in text ?? string.Empty)
+                {
+                    verify();
+                    SendUnicode(value, false);
+                    try { Thread.Sleep(22); }
+                    finally { SendUnicode(value, true); }
+                }
+                DelayWithCancellation(80);
+            }
+        }
+
+        private System.Action FocusedProofGuard(VanillaVisualInputProof proof, System.Action verifyFieldFocus)
+        {
+            return () =>
+            {
+                VerifyCaptureProof(proof);
+                if (verifyFieldFocus != null) verifyFieldFocus();
+                VerifyCaptureProof(proof);
+            };
+        }
+
         internal void ReplaceFocusedTextFromProof(string text, VanillaVisualInputProof proof, System.Action verifyFieldFocus)
         {
             lock (ForegroundGate)

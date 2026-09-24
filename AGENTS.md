@@ -554,6 +554,14 @@ Keep saved proxy enum identities/preferences for compatibility, but do not claim
 they change the client's current selection or require them to permit login.
 Login credentials still require identified fields and their existing focus/content
 checks; character and gameplay identity checks remain in effect.
+For custom login fields, a fresh named-field click and owned-window proof permit
+clearing only with Home, Shift+End and Backspace. Ctrl+A must not be assumed to
+select the text. Full remembered text can hide the caret: clear first, observe an
+empty field, independently prove focus, then refresh the empty proof before typing
+the real username/password. Native focus contradiction, changed controls and STOP
+still block input. A one-pixel bottom-border repaint with unchanged position and
+width is the same control. Keep exact defocused username/mask checks before submit;
+never pass saved names to OCR as recognition hints or export credential images.
 Character navigation requires positive screen and selected-slot evidence before
 input and feedback after each key; an assumed keyboard clamp is not evidence.
 
