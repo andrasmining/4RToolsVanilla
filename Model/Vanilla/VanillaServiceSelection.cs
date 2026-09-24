@@ -12,7 +12,7 @@ namespace _4RTools.Model.Vanilla
     internal static class VanillaServiceSelection
     {
         internal static void ConfirmDefault(System.Action activate, System.Action pressEnter,
-            Action<int> pause, Func<bool> cancelled, int settleMs = 1000)
+            Action<int> pause, Func<bool> cancelled, int settleMs = 1000, System.Action checkKnownOutage = null)
         {
             if (activate == null || pressEnter == null || pause == null) throw new ArgumentNullException();
             if (settleMs < 0 || settleMs > 120000) throw new ArgumentOutOfRangeException(nameof(settleMs));
@@ -23,6 +23,8 @@ namespace _4RTools.Model.Vanilla
                 CheckCancelled(cancelled);
                 pause(Math.Min(50, remaining));
             }
+            CheckCancelled(cancelled);
+            checkKnownOutage?.Invoke();
             CheckCancelled(cancelled);
             // Production Press atomically reactivates/verifies this same window
             // immediately before sending the key. Never retry Enter across stages.
@@ -45,7 +47,12 @@ namespace _4RTools.Model.Vanilla
             {
                 input.Activate();
                 input.MoveCursorAwayFrom(Rectangle.Empty);
-            }, () => input.Press(Keys.Enter), Thread.Sleep, input.CancellationRequested, settleMs);
+            }, () => input.Press(Keys.Enter), Thread.Sleep, input.CancellationRequested, settleMs, () =>
+            {
+                // Preserve the exact Server Closed.(1) exception and shared 15-minute
+                // outage handling. No proxy/server name or highlight is required.
+                using (Bitmap frame = input.CaptureClientBitmap()) { }
+            });
             string detail = logPrefix + (step == VanillaServiceStep.Proxy ? "Proxy" : "Game server")
                 + ": sent one Enter for the client's current selection in the active Vanilla window.";
             Log(detail);

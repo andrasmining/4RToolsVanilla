@@ -30,6 +30,9 @@ namespace Vanilla.Diagnostics.Tests
             test("Custom settling uses bounded slices and preserves its full duration", CustomSettle);
             test("Zero and maximum supported settling each send one Enter", SettleBounds);
             test("Invalid settling is rejected before any window action", InvalidSettle);
+            test("Known outage is checked after settling and before Enter", CheckOutageBeforeEnter);
+            test("Confirmed server outage prevents Enter and is not retried", ConfirmedOutage);
+            test("Cancellation during outage observation prevents Enter", CancelDuringOutageObservation);
             Console.WriteLine("Service confirmation: {0} passed; {1} failed. Fake window/input callbacks only.", passed, failed);
             return failed;
         }
@@ -170,6 +173,31 @@ namespace Vanilla.Diagnostics.Tests
                     () => actions++, () => actions++, ms => actions++, () => false, duration));
                 Assert(actions == 0, "Invalid settling must fail before activation.");
             }
+        }
+
+        private static void CheckOutageBeforeEnter()
+        {
+            var order = new List<string>();
+            VanillaServiceSelection.ConfirmDefault(() => order.Add("activate"), () => order.Add("Enter"),
+                ms => order.Add("settle"), () => false, 50, () => order.Add("outage check"));
+            Assert(string.Join(",", order) == "activate,settle,outage check,Enter");
+        }
+
+        private static void ConfirmedOutage()
+        {
+            int keys = 0, observations = 0;
+            Throws<VanillaServerClosedException>(() => VanillaServiceSelection.ConfirmDefault(() => { }, () => keys++,
+                ms => { }, () => false, 50, () => { observations++; throw new VanillaServerClosedException(); }));
+            Assert(keys == 0 && observations == 1, "Confirmed downtime must propagate without Enter or retry.");
+        }
+
+        private static void CancelDuringOutageObservation()
+        {
+            bool cancelled = false;
+            int keys = 0;
+            Throws<OperationCanceledException>(() => VanillaServiceSelection.ConfirmDefault(() => { }, () => keys++,
+                ms => { }, () => cancelled, 50, () => cancelled = true));
+            Assert(keys == 0, "STOP during the outage check must suppress Enter.");
         }
 
         private static Exception Throws<T>(Action action) where T : Exception

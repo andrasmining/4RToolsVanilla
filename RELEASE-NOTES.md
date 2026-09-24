@@ -4,7 +4,8 @@
 
 - Accept the client's current proxy and game-server selections with one Enter
   in the intended active window. Remove the repeated Tokyo name/highlight checks
-  that were blocking recovery. Retain configured loading delays and cancellation.
+  that were blocking recovery. Retain configured loading delays, cancellation,
+  and the exact server-outage check before Enter.
   Saved proxy preferences remain visible for compatibility; login uses the
   selection already present in the client.
 - Move the pointer away after clicks and drags, before checking the result.
