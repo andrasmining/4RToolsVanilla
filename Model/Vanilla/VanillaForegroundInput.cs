@@ -94,9 +94,11 @@ namespace _4RTools.Model.Vanilla
         private const uint INPUT_KEYBOARD = 1;
         private const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
         private const uint MOUSEEVENTF_LEFTUP = 0x0004;
+        private const uint KEYEVENTF_EXTENDEDKEY = 0x0001;
         private const uint KEYEVENTF_KEYUP = 0x0002;
         private const uint KEYEVENTF_UNICODE = 0x0004;
         private const uint KEYEVENTF_SCANCODE = 0x0008;
+        private const uint MAPVK_VK_TO_VSC_EX = 4;
         private const int SW_RESTORE = 9;
         private const int ActivationTimeoutMs = 12000;
 
@@ -900,9 +902,49 @@ namespace _4RTools.Model.Vanilla
             return rect.Right - rect.Left >= 200 && rect.Bottom - rect.Top >= 120;
         }
 
+        internal struct ScanCodeKey
+        {
+            internal readonly ushort ScanCode;
+            internal readonly uint Flags;
+            internal ScanCodeKey(ushort scanCode, uint flags) { ScanCode = scanCode; Flags = flags; }
+        }
+
+        internal static ScanCodeKey EncodeScanCodeKey(Keys key, bool up, Func<uint, uint, uint> map = null)
+        {
+            uint virtualKey = (uint)key;
+            if (virtualKey == 0 || virtualKey > 0xff)
+                throw new ArgumentOutOfRangeException(nameof(key), "A single supported virtual key is required; no input sent.");
+            // Preserve the E0 prefix. Discarding it turns navigation keys such as
+            // Left and End into their keypad equivalents before the game sees them.
+            uint mapped = (map ?? MapVirtualKey)(virtualKey, MAPVK_VK_TO_VSC_EX);
+            uint prefix = mapped & 0xff00;
+            if ((mapped & 0xff) == 0 || (mapped & 0xffff0000) != 0 || (prefix != 0 && prefix != 0xe000))
+                throw new InvalidOperationException("The selected key has no supported scan-code sequence; no input sent.");
+            // E1 sequences (notably Pause) need a separate multi-code protocol;
+            // never silently treat them as ordinary or E0 key strokes.
+            // Some Windows keyboard layouts return the bare keypad scan even in
+            // EX mode. The navigation virtual key still identifies an E0 key.
+            bool extended = prefix == 0xe000 || IsExtendedNavigationKey(key);
+            return new ScanCodeKey((ushort)(mapped & 0xff), KEYEVENTF_SCANCODE
+                | (extended ? KEYEVENTF_EXTENDEDKEY : 0) | (up ? KEYEVENTF_KEYUP : 0));
+        }
+
+        private static bool IsExtendedNavigationKey(Keys key)
+        {
+            switch (key)
+            {
+                case Keys.Left: case Keys.Right: case Keys.Up: case Keys.Down:
+                case Keys.Home: case Keys.End: case Keys.Insert: case Keys.Delete:
+                case Keys.PageUp: case Keys.PageDown:
+                    return true;
+                default:
+                    return false;
+            }
+        }
+
         private void SendKey(Keys key, bool up)
         {
-            uint scan = MapVirtualKey((uint)key, 0);
+            ScanCodeKey encoded = EncodeScanCodeKey(key, up);
             Send(new[]
             {
                 new INPUT
@@ -910,7 +952,7 @@ namespace _4RTools.Model.Vanilla
                     type = INPUT_KEYBOARD,
                     U = new INPUTUNION
                     {
-                        ki = new KEYBDINPUT { wVk = 0, wScan = (ushort)scan, dwFlags = KEYEVENTF_SCANCODE | (up ? KEYEVENTF_KEYUP : 0) }
+                        ki = new KEYBDINPUT { wVk = 0, wScan = encoded.ScanCode, dwFlags = encoded.Flags }
                     }
                 }
             });

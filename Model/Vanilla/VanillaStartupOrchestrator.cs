@@ -614,7 +614,7 @@ namespace _4RTools.Model.Vanilla
                 }
             }, key => input.PressFromProof(key, proof), milliseconds => PauseCharacterSelection(cancelled, milliseconds), cancelled);
             string expected = string.IsNullOrWhiteSpace(account.CharacterName) ? "<learn after gameplay>" : account.CharacterName;
-            string detail = logPrefix + "character selection verified its detected grid, edge clamps, every keyboard transition and configured slot " + slot
+            string detail = logPrefix + "character selection verified its detected grid and configured occupied slot " + slot
                 + " for '" + expected + "'; awaiting independent gameplay identity.";
             Log(detail);
             VanillaDebugLog.Write("STARTUP", "PID=" + pid + "; " + detail);

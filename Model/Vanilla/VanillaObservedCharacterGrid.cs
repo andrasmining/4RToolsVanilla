@@ -9,7 +9,7 @@ namespace _4RTools.Model.Vanilla
 {
     /// <summary>
     /// The supplied Vanilla skin has no "Character Select" heading. Its actual
-    /// surface is fifteen light cards, a cyan selected outline and a separate
+    /// surface is fifteen light cards, a cyan/blue selected outline and a separate
     /// Character List control. Detect these objects, not desktop/grid coordinates.
     /// </summary>
     internal static class VanillaObservedCharacterGrid
@@ -34,16 +34,25 @@ namespace _4RTools.Model.Vanilla
             var tried = new HashSet<string>();
             foreach (Component seed in candidates)
             {
+                // The selected card's blue name strip is not part of its connected
+                // light face. It is shorter than the fourteen neutral card bodies.
                 Rectangle[] group = candidates.Where(c => Math.Abs(c.Bounds.Width - seed.Bounds.Width) <= Math.Max(4, seed.Bounds.Width * .09)
-                    && Math.Abs(c.Bounds.Height - seed.Bounds.Height) <= Math.Max(4, seed.Bounds.Height * .09))
+                    && c.Bounds.Height >= seed.Bounds.Height * .68
+                    && c.Bounds.Height <= seed.Bounds.Height + Math.Max(4, seed.Bounds.Height * .09))
                     .Select(c => c.Bounds).OrderBy(c => c.Top).ThenBy(c => c.Left).ToArray();
-                if (group.Length != 15) continue;
+                if (group.Length != 15)
+                { if (tried.Count == 0) evidence = "light card group count=" + group.Length + "; fifteen required"; continue; }
                 string key = string.Join(";", group.Select(c => c.ToString()));
                 if (!tried.Add(key)) continue;
+                int[] selected = Enumerable.Range(0, 15).Where(i => pixels.SelectedOutline(group[i])).ToArray();
+                if (selected.Length != 1) { evidence = "character grid selected outline count=" + selected.Length + "; one required"; continue; }
+                if (!NormalizeSelectedCard(group, selected[0]))
+                { evidence = "selected face does not match the independently observed card rows/columns"; continue; }
+                Rectangle selectedCard = group[selected[0]];
                 Rectangle[] cards; int columns;
-                if (!VanillaCharacterPattern.TryOrderGrid(group, out cards, out columns)) continue;
-                int[] selected = Enumerable.Range(0, 15).Where(i => pixels.SelectedOutline(cards[i])).ToArray();
-                if (selected.Length != 1) continue;
+                if (!VanillaCharacterPattern.TryOrderGrid(group, out cards, out columns))
+                { evidence = "fifteen light faces do not form a regular character grid"; continue; }
+                int selectedSlot = Array.IndexOf(cards, selectedCard);
                 Rectangle grid = cards.Aggregate(Rectangle.Union);
                 // Locate a separate light control beside the grid. Observed text must
                 // establish the role of this surface; arbitrary slot grids fail.
@@ -51,19 +60,52 @@ namespace _4RTools.Model.Vanilla
                     && c.Bounds.Width >= seed.Bounds.Width * .7 && c.Bounds.Width <= seed.Bounds.Width * 2
                     && c.Bounds.Height >= seed.Bounds.Height * .18 && c.Bounds.Height <= seed.Bounds.Height * .8
                     && c.Bounds.Bottom >= grid.Bottom - seed.Bounds.Height && c.Bounds.Top < grid.Bottom
-                    && c.Area >= c.Bounds.Width * c.Bounds.Height * .6).ToArray();
-                if (listControls.Length > 4 || !listControls.Any(c => HasCharacterListTitle(image, c.Bounds))) continue;
+                    // The page-navigation control occupies much of this panel in blue.
+                    // The connected light portion still contains the required title.
+                    && c.Area >= c.Bounds.Width * c.Bounds.Height * .45).ToArray();
+                if (listControls.Length > 4 || !listControls.Any(c => HasCharacterListTitle(image, c.Bounds)))
+                { evidence = "character grid found but separate Character List title was not verified"; continue; }
                 if (observation != null) { observation = null; evidence = "multiple character grids; input refused"; return false; }
                 observation = new VanillaCharacterSelectionObservation
-                { Cards = cards, Columns = columns, Selected = selected[0], Occupied = cards.Select(pixels.HasCharacterSprite).ToArray() };
+                { Cards = cards, Columns = columns, Selected = selectedSlot, Occupied = cards.Select(pixels.HasCharacterSprite).ToArray() };
             }
             if (observation == null) return false;
             var observed = observation;
             evidence = "observed fifteen-card " + observed.Columns + "x" + observed.Rows
-                + " grid; Character List title; cyan selection at slot " + (observed.Selected + 1)
+                + " grid; Character List title; cyan/blue selection at slot " + (observed.Selected + 1)
                 + "; occupied slots=" + string.Join(",", Enumerable.Range(0, 15).Where(i => observed.Occupied[i]).Select(i => i + 1));
             observation.Evidence = evidence;
             return true;
+        }
+        private static bool NormalizeSelectedCard(Rectangle[] cards, int selected)
+        {
+            Rectangle face = cards[selected];
+            Rectangle[] neutral = cards.Where((card, index) => index != selected).ToArray();
+            int width = Median(neutral.Select(card => card.Width)), height = Median(neutral.Select(card => card.Height));
+            if (neutral.Any(card => Math.Abs(card.Width - width) > Math.Max(4, width * .09)
+                || Math.Abs(card.Height - height) > Math.Max(4, height * .09))) return false;
+            // Anchor the selected full card to other observed cards in its own column
+            // and row, not to screen percentages. This keeps layout identity stable
+            // when the shorter selected face moves to another slot after a key.
+            int[] lefts = neutral.Where(card => Math.Abs(card.Left - face.Left) <= Math.Max(6, width * .08))
+                .Select(card => card.Left).ToArray();
+            int[] tops = neutral.Where(card => Math.Abs(card.Top - face.Top) <= Math.Max(6, height * .08))
+                .Select(card => card.Top).ToArray();
+            if (lefts.Length == 0 || tops.Length == 0)
+                return Math.Abs(face.Height - height) <= Math.Max(4, height * .09);
+            var full = new Rectangle(Median(lefts), Median(tops), width, height);
+            Rectangle overlap = Rectangle.Intersect(face, full);
+            if (overlap.Width < face.Width * .90 || overlap.Height < face.Height * .90
+                || Math.Abs(face.Left - full.Left) > Math.Max(6, width * .08)
+                || Math.Abs(face.Top - full.Top) > Math.Max(6, height * .08)
+                || face.Height < height * .68 || face.Height > height * 1.09) return false;
+            cards[selected] = full;
+            return true;
+        }
+        private static int Median(IEnumerable<int> values)
+        {
+            int[] ordered = values.OrderBy(value => value).ToArray();
+            return ordered[ordered.Length / 2];
         }
         private static bool HasCharacterListTitle(Bitmap image, Rectangle control)
         {
@@ -104,6 +146,16 @@ namespace _4RTools.Model.Vanilla
                 return rgb[i] >= 195 && rgb[i + 1] >= 195 && rgb[i + 1] - rgb[i + 2] >= 35
                     && rgb[i] - rgb[i + 2] >= 35 && Math.Abs(rgb[i] - rgb[i + 1]) < 45;
             }
+            private bool SelectionColor(int x, int y)
+            {
+                if (Cyan(x, y)) return true;
+                if (x < 0 || y < 0 || x >= width || y >= height) return false;
+                int i = (y * width + x) * 3;
+                // Selected blue/lavender footer and cyan-to-blue side gradient.
+                // Neutral card backgrounds and white borders do not satisfy this.
+                return rgb[i] >= 195 && rgb[i + 1] >= 175
+                    && rgb[i] - rgb[i + 2] >= 30 && rgb[i] - rgb[i + 1] >= 20;
+            }
             internal List<Component> Components()
             {
                 var remaining = new bool[width * height];
@@ -138,6 +190,7 @@ namespace _4RTools.Model.Vanilla
             {
                 int margin = Math.Max(2, (int)Math.Ceiling(Math.Min(card.Width, card.Height) * .04));
                 double total = 0;
+                int cyanTop = 0, topSamples = 0;
                 for (int side = 0; side < 4; side++)
                 {
                     int found = 0, samples = 0;
@@ -149,15 +202,17 @@ namespace _4RTools.Model.Vanilla
                         {
                             int x = side == 0 ? card.Left - offset : side == 1 ? card.Right - 1 + offset : card.Left + step;
                             int y = side == 2 ? card.Top - offset : side == 3 ? card.Bottom - 1 + offset : card.Top + step;
-                            if (Cyan(x, y)) { colored = true; break; }
+                            if (side == 2 && Cyan(x, y)) cyanTop++;
+                            if (SelectionColor(x, y)) { colored = true; break; }
                         }
+                        if (side == 2) topSamples++;
                         samples++; if (colored) found++;
                     }
                     double ratio = found / (double)Math.Max(1, samples);
                     if (ratio < .45) return false;
                     total += ratio;
                 }
-                return total >= 2.8;
+                return total >= 2.8 && cyanTop >= topSamples * .45;
             }
             internal bool HasCharacterSprite(Rectangle card)
             {

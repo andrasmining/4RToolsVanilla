@@ -33,8 +33,9 @@ namespace _4RTools.Model.Vanilla
     }
 
     /// <summary>
-    /// Each key is an observed transition, including the two edge clamps. A key plan alone
-    /// cannot establish a slot. The separately verified gameplay identity remains mandatory.
+    /// An already selected, occupied target needs no navigation. Otherwise each key
+    /// is an observed transition, including the two edge clamps. The separately
+    /// verified gameplay identity remains mandatory after confirmation.
     /// </summary>
     internal static class VanillaCharacterSelector
     {
@@ -48,34 +49,27 @@ namespace _4RTools.Model.Vanilla
             int target = oneBasedSlot - 1;
             RequireOccupied(current, target);
             var origin = current;
-            bool moved = false;
-            Action<Keys, int> move = (key, expected) =>
+            if (current.Selected != target)
             {
-                CheckCancelled(cancelled);
-                press(key);
-                pause(140);
-                var next = Stable(observe, pause, cancelled, ref frame, expected);
-                if (!origin.SameLayout(next) || next.Selected != expected)
-                    throw new InvalidOperationException("Character selection did not verify " + key
-                        + " at slot " + (expected + 1) + "; no confirmation was sent.");
-                moved |= next.Selected != current.Selected;
-                current = next;
-            };
-            while (current.Selected / current.Columns > 0)
-                move(Keys.Up, current.Selected - current.Columns);
-            // Prove the edge clamps: wrapping, lost focus and stalled interior transitions fail closed.
-            move(Keys.Up, current.Selected);
-            while (current.Selected % current.Columns > 0) move(Keys.Left, current.Selected - 1);
-            move(Keys.Left, current.Selected);
-            for (int column = 0; column < target % current.Columns; column++) move(Keys.Right, current.Selected + 1);
-            for (int row = 0; row < target / current.Columns; row++) move(Keys.Down, current.Selected + current.Columns);
-            // An already-selected first slot must prove that keyboard input changes this
-            // surface; unchanged edge keys alone do not establish keyboard ownership.
-            if (!moved)
-            {
-                bool horizontal = current.Columns > 1;
-                move(horizontal ? Keys.Right : Keys.Down, current.Selected + (horizontal ? 1 : current.Columns));
-                move(horizontal ? Keys.Left : Keys.Up, target);
+                Action<Keys, int> move = (key, expected) =>
+                {
+                    CheckCancelled(cancelled);
+                    press(key);
+                    pause(140);
+                    var next = Stable(observe, pause, cancelled, ref frame, expected);
+                    if (!origin.SameLayout(next) || next.Selected != expected)
+                        throw new InvalidOperationException("Character selection did not verify " + key
+                            + " at slot " + (expected + 1) + "; no confirmation was sent.");
+                    current = next;
+                };
+                while (current.Selected / current.Columns > 0)
+                    move(Keys.Up, current.Selected - current.Columns);
+                // Prove the edge clamps only when navigation is actually needed.
+                move(Keys.Up, current.Selected);
+                while (current.Selected % current.Columns > 0) move(Keys.Left, current.Selected - 1);
+                move(Keys.Left, current.Selected);
+                for (int column = 0; column < target % current.Columns; column++) move(Keys.Right, current.Selected + 1);
+                for (int row = 0; row < target / current.Columns; row++) move(Keys.Down, current.Selected + current.Columns);
             }
             var confirmed = Stable(observe, pause, cancelled, ref frame, target);
             if (!origin.SameLayout(confirmed) || confirmed.Selected != target)
@@ -129,10 +123,13 @@ namespace _4RTools.Model.Vanilla
         internal static bool TryDetect(Bitmap bitmap, out VanillaCharacterSelectionObservation observation, out string evidence)
         {
             if (VanillaObservedCharacterGrid.TryDetect(bitmap, out observation, out evidence)) return true;
+            string observedEvidence = evidence;
             VanillaTextLine[] text;
             if (bitmap == null) { evidence = "character capture missing"; return false; }
             if (!VanillaTextRecognition.TryRead(bitmap, new Rectangle(Point.Empty, bitmap.Size), false, out text, out evidence)) return false;
-            return TryDetect(bitmap, text, out observation, out evidence);
+            if (TryDetect(bitmap, text, out observation, out evidence)) return true;
+            evidence = "card skin: " + observedEvidence + "; legacy skin: " + evidence;
+            return false;
         }
 
         internal static bool TryDetect(Bitmap bitmap, VanillaTextLine[] text,

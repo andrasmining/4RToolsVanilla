@@ -18,6 +18,8 @@ namespace Vanilla.Diagnostics.Tests
         internal static int Run()
         {
             Test("Every target from every initial slot uses observed layout and selection", EverySlot);
+            Test("Already selected occupied targets confirm without any navigation", AlreadySelected);
+            Test("Already selected targets retain final observation and input guards", AlreadySelectedGuards);
             Test("Unknown and stale observations authorize no character input", UnknownAndStale);
             Test("Empty or unknown target slots never authorize input or final Enter", EmptySlots);
             Test("Wrapping at the origin never authorizes Enter", WrappedClamp);
@@ -29,6 +31,9 @@ namespace Vanilla.Diagnostics.Tests
             Test("Character structural detector follows scaled and softened synthetic cards", SyntheticCards);
             Test("Character production OCR recognizes rendered labels and requires unique selection", ProductionOcrSurface);
             Test("Character detector rejects missing identity and ambiguous frames", RejectUnknownSurface);
+            Test("Selected blue-footer cards retain one stable grid at every slot", BlueFooterCardSlots);
+            Test("Selected blue-footer cards survive scaled and softened rendering", BlueFooterCardScales);
+            Test("Observed card skin rejects missing cards, wrong footer and ambiguous selection", RejectBlueFooterCards);
             Console.WriteLine("Character selector: {0} passed; {1} failed. Synthetic fixtures; no live character layout was validated.", passed, failed);
             return failed;
         }
@@ -79,16 +84,73 @@ namespace Vanilla.Diagnostics.Tests
                 sim.Run(target);
                 Assert(sim.Position == target - 1 && sim.Enters == 1, "Wrong target/confirmation on observed " + columns + "-column layout.");
                 Assert(sim.Frame >= sim.KeysSent * 2, "Navigation was not freshly verified after every key.");
-                Assert(sim.Moves > 0, "Selection was confirmed without any observed keyboard-driven movement.");
-                if (start == 0 && target == 1) Assert(sim.Moves == 2, "Slot one must verify an outward/return probe.");
+                if (start == target - 1) Assert(sim.Moves == 0 && sim.KeysSent == 1, "Already-selected target received unnecessary navigation.");
+                else Assert(sim.Moves > 0, "A different target was confirmed without observed navigation.");
             }
+        }
+
+        private static void AlreadySelected()
+        {
+            foreach (int columns in new[] { 1, 3, 5, 15 })
+            for (int selected = 0; selected < 15; selected++)
+            {
+                // Whether this UI wraps or ignores arrows is irrelevant when the
+                // occupied configured target is already visibly selected.
+                var sim = new Simulation(columns, selected) { Wrap = true, Stalled = true };
+                sim.Run(selected + 1);
+                Assert(sim.KeysSent == 1 && sim.Enters == 1 && sim.Moves == 0 && sim.Frame == 4,
+                    "Already-selected target did not use only Enter after fresh initial/final confirmations.");
+            }
+        }
+
+        private static void AlreadySelectedGuards()
+        {
+            foreach (string failure in new[] { "stale", "selection", "occupancy", "layout", "window", "focus" })
+            {
+                var sim = new Simulation(5, 7) { Stale = failure == "stale" };
+                int observations = 0;
+                Reject(() => VanillaCharacterSelector.Select(8, () =>
+                {
+                    var current = sim.Observe();
+                    observations++;
+                    if (observations > 2)
+                    {
+                        if (failure == "selection") current.Selected = 8;
+                        if (failure == "occupancy") current.Occupied[7] = false;
+                        if (failure == "layout") current.Cards[0].Offset(25, 0);
+                    }
+                    if (failure == "window")
+                        current.InputProof = new VanillaVisualInputProof(42, new IntPtr(observations <= 2 ? 100 : 200),
+                            new Size(800, 600), Point.Empty, Stopwatch.GetTimestamp());
+                    return current;
+                }, key =>
+                {
+                    if (failure == "focus") throw new InvalidOperationException("Focus lost before confirmation.");
+                    sim.Press(key);
+                }, _ => { }, () => false));
+                Assert(sim.KeysSent == 0 && sim.Enters == 0, "Already-selected target bypassed " + failure + " guard.");
+            }
+            var cancelled = new Simulation(5, 7);
+            bool caught = false;
+            try
+            {
+                VanillaCharacterSelector.Select(8, () =>
+                {
+                    var current = cancelled.Observe();
+                    if (cancelled.Frame >= 3) cancelled.Cancelled = true;
+                    return current;
+                }, cancelled.Press, _ => { }, () => cancelled.Cancelled);
+            }
+            catch (OperationCanceledException) { caught = true; }
+            Assert(caught && cancelled.KeysSent == 0, "STOP during final already-selected observation permitted Enter.");
         }
 
         private static void EmptySlots()
         {
             foreach (bool unknown in new[] { false, true })
+            foreach (int startingSlot in new[] { 2, 14 })
             {
-                var sim = new Simulation(5, 14);
+                var sim = new Simulation(5, startingSlot);
                 Reject(() => VanillaCharacterSelector.Select(3, () =>
                 {
                     var observation = sim.Observe();
@@ -125,7 +187,7 @@ namespace Vanilla.Diagnostics.Tests
             foreach (int start in Enumerable.Range(0, 15))
             {
                 var sim = new Simulation(5, start) { Wrap = true };
-                Reject(() => sim.Run(9));
+                Reject(() => sim.Run(start == 8 ? 10 : 9));
                 Assert(sim.Enters == 0, "Wrapped origin authorized Enter.");
             }
         }
@@ -140,9 +202,6 @@ namespace Vanilla.Diagnostics.Tests
                 sim = new Simulation(columns, 0) { Stalled = true };
                 Reject(() => sim.Run(15));
                 Assert(sim.Enters == 0, "Stalled outbound navigation authorized Enter.");
-                sim = new Simulation(columns, 0) { Stalled = true };
-                Reject(() => sim.Run(1));
-                Assert(sim.Enters == 0, "A static first-card frame authorized Enter without proving selection response.");
             }
         }
 
@@ -153,10 +212,10 @@ namespace Vanilla.Diagnostics.Tests
             Assert(sim.Enters == 0, "Layout changed during navigation but Enter was sent.");
             sim = new Simulation(5, 0);
             int observations = 0;
-            Reject(() => VanillaCharacterSelector.Select(1, () =>
+            Reject(() => VanillaCharacterSelector.Select(2, () =>
             {
                 observations++;
-                if (observations >= 11) sim.Position = 1; // Target moves after the round-trip probe, before final confirmation.
+                if (observations >= 9) sim.Position = 2; // Target moves after navigation, before final confirmation.
                 return sim.Observe();
             }, sim.Press, _ => { }, () => false));
             Assert(sim.Enters == 0, "Target changed before final confirmation.");
@@ -309,6 +368,108 @@ namespace Vanilla.Diagnostics.Tests
                 graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                 graphics.DrawString(title, font, Brushes.Black, labels[0].Bounds, StringFormat.GenericTypographic);
                 graphics.DrawString(labels[1].Text, font, Brushes.Black, labels[1].Bounds, StringFormat.GenericTypographic);
+            }
+            return image;
+        }
+
+        private static void BlueFooterCardSlots()
+        {
+            foreach (int columns in new[] { 3, 5 })
+            {
+                VanillaCharacterSelectionObservation first = null;
+                for (int selected = 0; selected < 15; selected++)
+                using (Bitmap image = BlueFooterSurface(columns, selected))
+                {
+                    VanillaCharacterSelectionObservation current;
+                    string evidence;
+                    Assert(VanillaObservedCharacterGrid.TryDetect(image, out current, out evidence),
+                        "Selected blue-footer slot " + (selected + 1) + " was rejected: " + evidence);
+                    Assert(current.Columns == columns && current.Selected == selected && current.Occupied[selected],
+                        "Selected card or its sprite was lost.");
+                    if (first == null) first = current;
+                    else Assert(first.SameLayout(current), "Moving selection changed the reconstructed full-card geometry.");
+                }
+            }
+        }
+
+        private static void BlueFooterCardScales()
+        {
+            foreach (double scale in new[] { .8, 1.5, 2.0 })
+            foreach (int selected in new[] { 0, 7, 14 })
+            using (Bitmap original = BlueFooterSurface(5, selected))
+            using (var image = new Bitmap((int)(original.Width * scale), (int)(original.Height * scale)))
+            {
+                using (Graphics graphics = Graphics.FromImage(image))
+                {
+                    graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    graphics.DrawImage(original, 0, 0, image.Width, image.Height);
+                }
+                VanillaCharacterSelectionObservation current;
+                string evidence;
+                Assert(VanillaObservedCharacterGrid.TryDetect(image, out current, out evidence),
+                    "Scaled selected blue-footer card at " + scale + " was rejected: " + evidence);
+                Assert(current.Columns == 5 && current.Selected == selected && current.Occupied[selected],
+                    "Resampling changed the selected slot or occupancy.");
+            }
+        }
+
+        private static void RejectBlueFooterCards()
+        {
+            foreach (string failure in new[] { "missing-card", "wrong-footer", "missing-footer", "two-selected", "no-selected", "no-cyan" })
+            using (Bitmap image = BlueFooterSurface(5, 7, failure))
+            {
+                VanillaCharacterSelectionObservation current;
+                string evidence;
+                Assert(!VanillaObservedCharacterGrid.TryDetect(image, out current, out evidence),
+                    "Observed skin accepted " + failure + ".");
+            }
+        }
+
+        // Generated skin geometry only. No live image, account, character identity or
+        // credential is embedded. The colored name strip removes part of the selected
+        // light component; the blue pagination similarly splits the footer's light area.
+        private static Bitmap BlueFooterSurface(int columns, int selected, string failure = null)
+        {
+            int rows = 15 / columns;
+            var image = new Bitmap(25 + columns * 150 + 230, 30 + rows * 185 + 35);
+            using (Graphics graphics = Graphics.FromImage(image))
+            using (var blue = new SolidBrush(Color.FromArgb(196, 205, 255)))
+            using (var cyan = new SolidBrush(Color.FromArgb(120, 238, 248)))
+            using (var face = new SolidBrush(Color.FromArgb(239, 238, 245)))
+            using (var font = new Font("Tahoma", 15, FontStyle.Regular, GraphicsUnit.Pixel))
+            {
+                graphics.Clear(Color.FromArgb(130, 140, 145));
+                for (int index = 0; index < 15; index++)
+                {
+                    if (failure == "missing-card" && index == 14) continue;
+                    int x = 25 + index % columns * 150, y = 30 + index / columns * 185;
+                    bool highlighted = (index == selected && failure != "no-selected")
+                        || (failure == "two-selected" && index == 8);
+                    graphics.FillRectangle(Brushes.White, x, y, 140, 170);
+                    graphics.FillRectangle(face, x + 4, y + 5, 132, 140);
+                    if (highlighted)
+                    {
+                        graphics.FillRectangle(blue, x - 3, y - 3, 146, 176);
+                        if (failure != "no-cyan")
+                        {
+                            graphics.FillRectangle(cyan, x - 3, y - 3, 146, 8);
+                            graphics.FillRectangle(cyan, x - 3, y + 5, 7, 83);
+                            graphics.FillRectangle(cyan, x + 136, y + 5, 7, 83);
+                        }
+                        graphics.FillRectangle(Brushes.White, x + 4, y + 5, 132, 140);
+                    }
+                    graphics.FillEllipse(Brushes.SaddleBrown, x + 60, y + 37, 20, 20);
+                    graphics.FillRectangle(Brushes.DarkSlateGray, x + 61, y + 56, 18, 46);
+                }
+                if (failure != "missing-footer")
+                {
+                    int x = 25 + columns * 150 + 15, y = 30 + rows * 185 - 80;
+                    graphics.FillRectangle(Brushes.White, x, y, 185, 70);
+                    graphics.FillRectangle(blue, x + 8, y + 27, 169, 34);
+                    graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                    graphics.DrawString(failure == "wrong-footer" ? "Inventory" : "Character List", font, Brushes.Black,
+                        x + 16, y + 5, StringFormat.GenericTypographic);
+                }
             }
             return image;
         }

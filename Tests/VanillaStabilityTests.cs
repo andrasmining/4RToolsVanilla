@@ -45,6 +45,9 @@ namespace Vanilla.Diagnostics.Tests
             Test("Post-click cursor parking clears the central form and rejects unavailable space", CursorParkingExclusion);
             Test("Mouse release and cursor parking precede the next visual check", ClickParkingSequence);
             Test("Cancelled or rejected clicks release owned buttons without cursor parking", ClickParkingFailure);
+            Test("Native navigation scan codes retain E0 and differ from keypad keys", ExtendedNavigationKeys);
+            Test("Ordinary keys and left/right modifiers retain correct scan and release flags", OrdinaryScanCodeKeys);
+            Test("Missing and unsupported E1 scan mappings never produce key input", UnsupportedScanCodeKeys);
             Console.WriteLine("Stability integration: {0} passed; {1} failed. Isolated synthetic state/files/HTTP; no live game input.", passed, failed);
             return failed;
         }
@@ -266,6 +269,81 @@ namespace Vanilla.Diagnostics.Tests
                 var baseline = Read(); Now += TimeSpan.FromMilliseconds(MoveDelay); return baseline;
             }
             public void SitStand() { Sits++; Now += TimeSpan.FromMilliseconds(SitDelay); }
+        }
+
+        private static void ExtendedNavigationKeys()
+        {
+            Keys[] navigation = { Keys.Left, Keys.Right, Keys.Up, Keys.Down, Keys.Home, Keys.End,
+                Keys.Insert, Keys.Delete, Keys.PageUp, Keys.PageDown };
+            Keys[] keypad = { Keys.NumPad4, Keys.NumPad6, Keys.NumPad8, Keys.NumPad2, Keys.NumPad7,
+                Keys.NumPad1, Keys.NumPad0, Keys.Decimal, Keys.NumPad9, Keys.NumPad3 };
+            for (int index = 0; index < navigation.Length; index++)
+            {
+                // Calls only Windows' read-only key mapping, never SendInput.
+                var down = VanillaForegroundInput.EncodeScanCodeKey(navigation[index], false);
+                var up = VanillaForegroundInput.EncodeScanCodeKey(navigation[index], true);
+                var pad = VanillaForegroundInput.EncodeScanCodeKey(keypad[index], false);
+                Assert(down.ScanCode == pad.ScanCode && down.ScanCode > 0 && down.ScanCode <= 0xff,
+                    "Expected a shared base scan code for " + navigation[index] + " and its keypad counterpart.");
+                Assert(down.Flags == 0x0009 && pad.Flags == 0x0008,
+                    "Navigation/keypad distinction was lost for " + navigation[index] + ".");
+                Assert(up.ScanCode == down.ScanCode && up.Flags == 0x000b,
+                    "Navigation key release lost its E0/scan flags for " + navigation[index] + ".");
+                var bareDown = VanillaForegroundInput.EncodeScanCodeKey(navigation[index], false, (key, mode) => pad.ScanCode);
+                var bareUp = VanillaForegroundInput.EncodeScanCodeKey(navigation[index], true, (key, mode) => pad.ScanCode);
+                var barePad = VanillaForegroundInput.EncodeScanCodeKey(keypad[index], false, (key, mode) => pad.ScanCode);
+                Assert(bareDown.ScanCode == pad.ScanCode && bareDown.Flags == 0x0009
+                    && bareUp.Flags == 0x000b && barePad.Flags == 0x0008,
+                    "A layout that omits E0 lost navigation/keypad identity for " + navigation[index] + ".");
+            }
+        }
+
+        private static void OrdinaryScanCodeKeys()
+        {
+            var expected = new Dictionary<Keys, ushort> {
+                { Keys.Enter, 0x1c }, { Keys.F1, 0x3b }, { Keys.A, 0x1e }, { Keys.Tab, 0x0f },
+                { Keys.Back, 0x0e }, { Keys.Escape, 0x01 }, { Keys.ShiftKey, 0x2a },
+                { Keys.ControlKey, 0x1d }, { Keys.Menu, 0x38 }, { Keys.RShiftKey, 0x36 }
+            };
+            foreach (var pair in expected)
+            {
+                var down = VanillaForegroundInput.EncodeScanCodeKey(pair.Key, false);
+                var up = VanillaForegroundInput.EncodeScanCodeKey(pair.Key, true);
+                Assert(down.ScanCode == pair.Value && down.Flags == 0x0008,
+                    "Ordinary key encoding changed for " + pair.Key + ".");
+                Assert(up.ScanCode == pair.Value && up.Flags == 0x000a,
+                    "Ordinary key release changed for " + pair.Key + ".");
+            }
+            foreach (var pair in new Dictionary<Keys, ushort> { { Keys.RControlKey, 0x1d }, { Keys.RMenu, 0x38 } })
+            {
+                var down = VanillaForegroundInput.EncodeScanCodeKey(pair.Key, false);
+                var up = VanillaForegroundInput.EncodeScanCodeKey(pair.Key, true);
+                Assert(down.ScanCode == pair.Value && down.Flags == 0x0009 && up.Flags == 0x000b,
+                    "Right modifier lost its extended identity on press/release.");
+            }
+        }
+
+        private static void UnsupportedScanCodeKeys()
+        {
+            int calls = 0;
+            var expected = VanillaForegroundInput.EncodeScanCodeKey(Keys.Left, false, (key, mode) =>
+            {
+                calls++;
+                Assert(key == (uint)Keys.Left && mode == 4, "Extended key mapping mode was not requested.");
+                return 0xe04b;
+            });
+            Assert(calls == 1 && expected.ScanCode == 0x4b && expected.Flags == 0x0009,
+                "Extended scan mapping did not retain its prefix separately.");
+            foreach (uint unsupported in new uint[] { 0, 0xe000, 0xe11d, 0x10001, 0x0101 })
+            foreach (bool up in new[] { false, true })
+                Reject(() => VanillaForegroundInput.EncodeScanCodeKey(Keys.Pause, up, (key, mode) => unsupported));
+            foreach (Keys invalid in new[] { Keys.None, Keys.Control | Keys.A })
+            {
+                bool rejected = false;
+                try { VanillaForegroundInput.EncodeScanCodeKey(invalid, false, (key, mode) => { throw new Exception("Invalid key reached native mapping."); }); }
+                catch (ArgumentOutOfRangeException) { rejected = true; }
+                Assert(rejected, "Missing/combined virtual key was accepted as one physical key.");
+            }
         }
         private static void TemporaryTick(FakeTemporary io, VanillaTemporaryCycle cycle, int milliseconds, int? sampleMilliseconds = null)
         {

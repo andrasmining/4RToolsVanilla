@@ -585,6 +585,11 @@ performed or its concrete external blocker reported; offline checks alone do not
 establish the requested live result.
 
 Never select a Vanilla character or GAME START by fixed/normalized grid coordinates.
+If fresh character-grid observations already prove that the configured occupied
+slot is selected, confirm that selection with Enter after the final fresh check;
+do not move away merely to prove navigation or visit an empty origin slot.
+Require the expected gameplay identity after entry. Navigation to a different
+slot retains the verified keyboard transition and origin checks below.
 Character-select automation must use focus-verified keyboard navigation from a
 clamped known origin, driven by the configured one-based slot, and the existing
 read-only username + character-name identity must verify the resulting gameplay
