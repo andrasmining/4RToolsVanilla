@@ -1,29 +1,26 @@
-﻿# 4RTools Vanilla 0.6.77
+# 4RTools Vanilla 0.6.78
 
-## Login and mouse confirmation fixes
+## Remembered-username login fix
 
-- Accept the client's current proxy and game-server selections with one Enter
-  in the intended active window. Remove the repeated Tokyo name/highlight checks
-  that were blocking recovery. Retain configured loading delays, cancellation,
-  and the exact server-outage check before Enter.
-  Saved proxy preferences remain visible for compatibility; login uses the
-  selection already present in the client.
-- Move the pointer away after clicks and drags, before checking the result.
-  Shared login, character-selection, temporary-action and Cart input paths park
-  clear of the affected controls. Launcher actions do likewise while their window
-  remains active. Release held buttons even if an operation is cancelled.
-- Fix login detection mistaking the inner and outer borders of one form for
-  multiple forms. This reproduces the dominant overnight login error from the
-  debug log. Separate forms and incorrect service names remain rejected.
-- Keep the v0.6.76 critical farming emergency stop and v0.6.75 temporary skill
-  click / verified move-before-sit fixes. Existing user data stays in its stable
-  per-user directory.
+- Fix login stopping before credential entry when Vanilla selects a remembered
+  username and suppresses its blinking caret. After clicking a freshly recognized
+  field, press End to collapse the selection, then verify focus before typing.
+- Identify the affected field and verification stage in debug logs without
+  recording credential contents. Keep foreground ownership, cancellation, exact
+  username and password-mask checks before submission.
+- Retain one Enter for proxy/server selection, cursor parking after clicks and
+  drags, the critical farming emergency stop, and temporary skill targeting with
+  verified movement before SP-rest sitting. Existing saved settings are preserved.
 
 ## Validation
 
-Regression coverage includes scaled beveled login forms, one Enter per service
-step, cancellation/focus failures, cursor exclusion geometry and release/parking
-order. Windows validation builds Debug and Release, runs isolated regressions,
-native test-owned process checks, mock UI and portable-package checks, and public
-updater discovery/download/staging. These checks do not establish live
-Vanilla/Gepard success.
+Live diagnosis reproduced the selected-username focus failure. With this fix,
+the production credential flow verified and submitted saved credentials and
+reached the game's server-selection screen. No credential images or secret
+contents were exported.
+
+Focused offline validation passed 76 cases across credentials, login recognition,
+service selection and stability. Windows release validation also covers full
+Debug/Release regressions, native test-owned processes, isolated mock UI,
+portable packaging and public updater discovery/download/staging. Pipeline
+checks are separate from the live login evidence above.

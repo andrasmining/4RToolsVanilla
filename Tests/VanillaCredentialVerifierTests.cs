@@ -14,6 +14,13 @@ namespace Vanilla.Diagnostics.Tests
         internal static int Run()
         {
             Test("Credential entry requires field focus, exact username and masks before submission", VerifiedFlow);
+            Test("Remembered username selection is collapsed before custom caret proof", SelectedPrefilledUserName);
+            Test("Caret preparation without a visible blink never authorizes typing", RevealWithoutBlink);
+            Test("STOP after a field click withholds caret preparation", CancelAfterClick);
+            Test("STOP after caret preparation withholds all typing", CancelAfterReveal);
+            Test("Native focus contradiction after preparation withholds typing", WrongFocusAfterReveal);
+            Test("Changed credential controls withhold caret preparation", ChangedClickedControls);
+            Test("A sibling custom caret cannot authorize the clicked field", SiblingCaretAfterReveal);
             Test("Wrong field focus blocks all credential typing", WrongFieldFocus);
             Test("Unproven custom field focus blocks all credential typing", UnknownFocus);
             Test("Wrong username blocks password entry", WrongUserName);
@@ -39,12 +46,67 @@ namespace Vanilla.Diagnostics.Tests
             Assert(input.Typed.Count == 2 && input.Submits == 1, "Verified flow did not complete once.");
             Assert(input.Clicks.Count == 2 && input.NameChecks >= 4 && input.MaskChecks >= 4,
                 "Missing repeated exact-content verification.");
+            Assert(input.Revealed.Count == 2 && input.Revealed[0] == VanillaCredentialField.UserName
+                && input.Revealed[1] == VanillaCredentialField.Password, "Caret preparation did not follow both field clicks.");
+        }
+        private static void SelectedPrefilledUserName()
+        {
+            var input = new FakeInput { SelectedPrefilled = true, FocusEvidence = VanillaFieldFocus.Unknown };
+            new VanillaCredentialVerifier(input).Fill("test-account", "synthetic-secret", true);
+            Assert(input.Typed.Count == 2 && input.Submits == 1, "Selected remembered username never became a verified custom caret.");
+            Assert(input.Revealed.Count == 2 && input.CustomCaretFrames >= 6,
+                "Entry did not independently prove the revealed custom caret in both fields.");
+        }
+        private static void RevealWithoutBlink()
+        {
+            var input = new FakeInput { SelectedPrefilled = true, SuppressCaret = true, FocusEvidence = VanillaFieldFocus.Unknown };
+            Fails(() => new VanillaCredentialVerifier(input).Fill("test", "secret", true));
+            Assert(input.Revealed.Count == 1 && input.Typed.Count == 0 && input.Submits == 0,
+                "End alone authorized credential typing without focus evidence.");
+        }
+        private static void CancelAfterClick()
+        {
+            var input = new FakeInput { CancelWhenClicked = true };
+            try { new VanillaCredentialVerifier(input).Fill("test", "secret", true); }
+            catch (OperationCanceledException) { }
+            Assert(input.Clicks.Count == 1 && input.Revealed.Count == 0 && input.Typed.Count == 0,
+                "STOP after click permitted caret preparation or typing.");
+        }
+        private static void CancelAfterReveal()
+        {
+            var input = new FakeInput { CancelWhenRevealed = true };
+            try { new VanillaCredentialVerifier(input).Fill("test", "secret", true); }
+            catch (OperationCanceledException) { }
+            Assert(input.Revealed.Count == 1 && input.Typed.Count == 0 && input.Submits == 0,
+                "STOP after End permitted credential typing.");
+        }
+        private static void WrongFocusAfterReveal()
+        {
+            var input = new FakeInput { ContradictAfterReveal = true };
+            Fails(() => new VanillaCredentialVerifier(input).Fill("test", "secret", true));
+            Assert(input.Revealed.Count == 1 && input.Typed.Count == 0 && input.Submits == 0,
+                "Caret preparation bypassed a later native focus contradiction.");
+        }
+        private static void ChangedClickedControls()
+        {
+            var input = new FakeInput { MoveAfterClick = true };
+            Fails(() => new VanillaCredentialVerifier(input).Fill("test", "secret", true));
+            Assert(input.Revealed.Count == 0 && input.Typed.Count == 0,
+                "Changed controls received End from an earlier field click.");
+        }
+        private static void SiblingCaretAfterReveal()
+        {
+            var input = new FakeInput { SelectedPrefilled = true, SiblingCaret = true, FocusEvidence = VanillaFieldFocus.Unknown };
+            Fails(() => new VanillaCredentialVerifier(input).Fill("test", "secret", true));
+            Assert(input.Revealed.Count == 1 && input.Typed.Count == 0 && input.Submits == 0,
+                "Password-field caret authorized username entry.");
         }
         private static void WrongFieldFocus()
         {
             var input = new FakeInput { FocusEvidence = VanillaFieldFocus.Contradicted };
             Fails(() => new VanillaCredentialVerifier(input).Fill("test", "secret", true));
-            Assert(input.Typed.Count == 0 && input.Submits == 0, "Credentials typed into the wrong field.");
+            Assert(input.Revealed.Count == 0 && input.Typed.Count == 0 && input.Submits == 0,
+                "End or credentials sent despite contradictory field focus.");
         }
         private static void UnknownFocus()
         {
@@ -238,22 +300,40 @@ namespace Vanilla.Diagnostics.Tests
             internal bool NameMatches = true, MaskMatches = true, FormVisible = true;
             internal bool CancelAfterFirstEntry, MoveAfterFirstEntry;
             internal bool ChangeSurfaceEachCapture, MoveAfterMaskCapture;
+            internal bool SelectedPrefilled, SuppressCaret, SiblingCaret, MoveAfterClick;
+            internal bool CancelWhenClicked, CancelWhenRevealed, ContradictAfterReveal;
             internal VanillaFieldFocus FocusEvidence = VanillaFieldFocus.Confirmed;
             internal readonly List<string> Typed = new List<string>();
             internal readonly List<Rectangle> Clicks = new List<Rectangle>();
-            internal int Submits, NameChecks, MaskChecks;
+            internal readonly List<VanillaCredentialField> Revealed = new List<VanillaCredentialField>();
+            internal int Submits, NameChecks, MaskChecks, CustomCaretFrames;
             private int captures;
+            private VanillaCredentialField currentField;
+            private bool caretRevealed;
             public long SurfaceId { get { return ChangeSurfaceEachCapture ? captures : 1; } }
             public Bitmap Capture()
             {
                 captures++;
                 var image = new Bitmap(240, 120);
-                using (Graphics graphics = Graphics.FromImage(image)) graphics.Clear(Color.White);
+                using (Graphics graphics = Graphics.FromImage(image))
+                {
+                    graphics.Clear(Color.White);
+                    if (SelectedPrefilled && !caretRevealed)
+                        graphics.FillRectangle(Brushes.SteelBlue, 20, 14, 55, 12);
+                    if (SelectedPrefilled && caretRevealed && !SuppressCaret)
+                    {
+                        CustomCaretFrames++;
+                        bool user = currentField == VanillaCredentialField.UserName;
+                        if (SiblingCaret) user = !user;
+                        if (captures % 2 == 0) graphics.FillRectangle(Brushes.Black, 75, user ? 14 : 44, 1, 12);
+                    }
+                }
                 return image;
             }
             public bool Detect(Bitmap image, out VanillaLoginLayout layout)
             {
                 int x = MoveAfterFirstEntry && Typed.Count > 0 ? 40 : 10;
+                if (MoveAfterClick && Clicks.Count > 0) x++;
                 if (MoveAfterMaskCapture && Typed.Count >= 2) x += captures % 2;
                 layout = new VanillaLoginLayout
                 {
@@ -262,16 +342,31 @@ namespace Vanilla.Diagnostics.Tests
                 };
                 return FormVisible;
             }
-            public VanillaFieldFocus Focus(VanillaLoginLayout layout, VanillaCredentialField field) { return FocusEvidence; }
+            public VanillaFieldFocus Focus(VanillaLoginLayout layout, VanillaCredentialField field)
+            {
+                return ContradictAfterReveal && Revealed.Count > 0 ? VanillaFieldFocus.Contradicted : FocusEvidence;
+            }
             public bool VerifyUserName(Bitmap image, VanillaLoginLayout layout, string expected) { NameChecks++; return NameMatches; }
             public bool VerifyPasswordMask(Bitmap image, VanillaLoginLayout layout, int expectedLength) { MaskChecks++; return MaskMatches; }
-            public void Click(Rectangle field, Size imageSize) { Clicks.Add(field); }
+            public void Click(Rectangle field, Size imageSize)
+            {
+                Clicks.Add(field);
+                currentField = field.Top < 30 ? VanillaCredentialField.UserName : VanillaCredentialField.Password;
+                caretRevealed = false;
+            }
+            public void RevealCaret(VanillaLoginLayout layout, VanillaCredentialField field)
+            {
+                Revealed.Add(field);
+                caretRevealed = true;
+            }
             public void Replace(string value) { Typed.Add(value); }
             public void Submit() { Submits++; }
             public void Pause(int milliseconds) { CheckCancelled(); }
             public void CheckCancelled()
             {
                 if (CancelAfterFirstEntry && Typed.Count > 0) throw new OperationCanceledException();
+                if (CancelWhenClicked && Clicks.Count > 0) throw new OperationCanceledException();
+                if (CancelWhenRevealed && Revealed.Count > 0) throw new OperationCanceledException();
             }
         }
 

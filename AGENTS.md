@@ -571,8 +571,18 @@ Build, test, package and publish from the local Windows repository when availabl
 and use Windows GitHub Actions for reproducible restore/build/test/package/release
 validation when useful. Hosted Windows validation does not replace live Vanilla
 testing. Background-only development permits local compilers, Windows CI, offline
-tests and hidden, isolated mock rendering/package probes. Do not show application windows, observelive clients, send desktop input or disturb the user's active applications.
+tests and hidden, isolated mock rendering/package probes. Do not show application windows, observe live clients, send desktop input or disturb the user's active applications during background-only work.
 This replaces the former Actions-only validation policy without waiving tests.
+
+When the user explicitly requests live diagnosis, that request authorizes the
+necessary configured launcher/client start, foreground input and read-only
+monitoring for that task. Reuse the existing application input/state paths and
+saved credentials; keep input serialized and avoid competing supervision/tests.
+Do not ask again for already-authorized live steps. Never persist credential
+images, secret contents or credentials in tool arguments/output. Record geometry,
+focus state and verified outcomes instead. A requested live test must actually be
+performed or its concrete external blocker reported; offline checks alone do not
+establish the requested live result.
 
 Never select a Vanilla character or GAME START by fixed/normalized grid coordinates.
 Character-select automation must use focus-verified keyboard navigation from a
