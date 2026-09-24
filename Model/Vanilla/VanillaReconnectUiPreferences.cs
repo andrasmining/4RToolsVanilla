@@ -138,7 +138,7 @@ namespace _4RTools.Model.Vanilla
                 accounts.Columns.Add(new DataGridViewTextBoxColumn
                 {
                     Name = "AccountProxy",
-                    HeaderText = "Saved proxy",
+                    HeaderText = "Proxy",
                     ToolTipText = "Retained preference. Recovery accepts the client's current proxy selection with Enter.",
                     ReadOnly = true,
                     FillWeight = 70
