@@ -459,12 +459,13 @@ sizing over fixed tall sections or fixed column widths that clip important data.
 Keep regression coverage for the main layout breakpoints and portable smoke test.
 
 Recovery settings are auto-save UI: do not require a separate Save button. The
-launcher path, account edits, recovery/watchdog switches, and per-account proxy
-selection must persist automatically and surface a brief success/error indication.
+launcher path, account edits, recovery/watchdog switches, and retained per-account
+proxy preferences must persist automatically and surface a brief success/error indication.
 Launch arguments are intentionally hidden/empty. The managed-client count is not
 an independent setting: derive it from the number of enabled account rows (up to
-two). Proxy selection is account-specific and must follow the account being
-started or recovered, not one shared global proxy control.
+two). Preserve legacy account-specific proxy preferences without replacing them
+with a shared global control. Under the current service-confirmation policy below,
+Enter accepts the client's current selection rather than applying that preference.
 
 During the current live-hardening phase, global debug logging is ON by default.
 Keep one Debug log checkbox and one COPY DEBUG LOG action in the left action area
@@ -543,13 +544,28 @@ produce useful captures/logs.
 
 ## Resolution-agnostic character selection
 
-Service/login selection must use recognized names and independently verified
-selection/focus evidence. Offer all eight known proxy services while preserving
-the persisted numeric identities of the original four. Never substitute list
-ordinal, guessed dialog percentages or an unverified Enter for named service
-selection. Automatic and TESTS paths must share the same guarded selector.
+For the initial proxy selection and the game-server selection after credentials,
+activate the intended Vanilla window and send Enter once to accept the client's
+current selection. This explicit 2026-09-24 user instruction replaces the former
+named-service OCR/row/highlight requirement for those two stages. Preserve the
+configured cancellable loading/transition settle; verify foreground ownership
+again immediately before Enter. Automatic and TESTS paths share this selector.
+Keep saved proxy enum identities/preferences for compatibility, but do not claim
+they change the client's current selection or require them to permit login.
+Login credentials still require identified fields and their existing focus/content
+checks; character and gameplay identity checks remain in effect.
 Character navigation requires positive screen and selected-slot evidence before
 input and feedback after each key; an assumed keyboard clamp is not evidence.
+
+After every successful automated click or drag, release the mouse button, then
+move the cursor clear of the controls/region that will be checked before taking
+confirmation images. Apply this generally to login, selection, launcher and Cart
+workflows. Use a clear client-relative parking position rather than restoring a
+previous position that can obscure text, highlights or slots. Preserve foreground,
+ownership and cancellation checks; after focus loss/cancellation release any held
+button but do not move the cursor into another application. This cursor parking
+is for unobstructed observation, not randomized anti-detection behavior. The two
+service Enter steps do not relax Smart Teleport or Cart quantity-dialog checks.
 
 Build, test, package and publish from the local Windows repository when available,
 and use Windows GitHub Actions for reproducible restore/build/test/package/release

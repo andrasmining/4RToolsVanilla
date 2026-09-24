@@ -15,10 +15,16 @@ The Vanilla workspace is functionally dense, so keep its visible UI deliberately
 - The account table is the primary recovery-management surface. Reserve room for at least four account rows plus roughly one empty-row worth of breathing room. Let it consume available vertical space and show all saved profiles that fit; use an internal vertical scrollbar only when the profile list exceeds the available pane.
 - All account columns must remain inside the visible table. Measure compact fields and share remaining width among Description, Username, Character name and Status. Do not retain stale fill widths from the larger legacy layout.
 - Any number of account profiles may be saved persistently, but at most two profiles may be enabled/actively supervised at once. Preserve the existing two-active-client recovery/runtime limit.
-- Account-specific settings belong in the account row/edit dialog. Proxy is account-specific and visible in the table; edit it through the account editor. Do not add a second selected-account proxy control below the table.
+- Account-specific settings belong in the account row/edit dialog. Keep legacy proxy preferences visible as saved values; service selection now accepts the client's current choice with Enter and must not imply the saved value controls routing. Do not add a second selected-account proxy control below the table.
+
 - Do not expose redundant one-off actions such as a separate `Run login now` button when the normal supervisor/test flow already owns login/recovery behavior.
 - Preserve hover documentation for controls and panels so functionality remains discoverable without making the default workspace visually busy.
 - UI-only refactors must reuse existing behavior/event wiring where possible and must not change sequential startup, recovery, memory observation, or automation semantics unless the task explicitly requires that behavior change.
+
+## Service confirmation and cursor parking (2026-09-24)
+
+- For the initial proxy list and the server selection after login, activate the intended client and send Enter once after its configured cancellable settle. Do not block these two steps on named-row OCR or selected-highlight confirmation. Keep credential field verification, character selection and expected gameplay identity checks.
+- All shared click/drag paths must release the button and park the cursor outside the region being checked before confirmation capture, including login fields, launcher controls, Inventory/Cart tabs, slots and quantity dialogs. Do not restore the mouse onto the clicked text. Use current owned-client geometry and a clear position; cancellation or lost foreground permits button cleanup only, not further cursor movement.
 
 ## Required native UI validation
 

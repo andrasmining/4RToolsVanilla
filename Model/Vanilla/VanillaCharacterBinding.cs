@@ -134,7 +134,6 @@ namespace _4RTools.Model.Vanilla
             if (string.IsNullOrWhiteSpace(row.UserName)) return "Username is unknown";
             if (string.IsNullOrWhiteSpace(row.ProtectedPassword)) return "Password is not set";
             if (!row.CharacterSlot.HasValue || row.CharacterSlot < 1 || row.CharacterSlot > 15) return "Character slot is unknown or invalid";
-            if (row.ProxyNeedsConfiguration) return "Proxy is not selected";
             return null;
         }
     }

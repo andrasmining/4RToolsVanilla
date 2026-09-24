@@ -315,13 +315,13 @@ namespace _4RTools.Model.Vanilla
             var clientTarget = target;
             if (!ClientToScreen(window, ref target)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Cannot map Vanilla client coordinate.");
 
-            POINT previous;
-            bool restore = GetCursorPos(out previous);
             IntPtr hitBeforeMove = WindowFromPoint(target);
+            VerifyForeground();
             if (!SetCursorPos(target.X, target.Y)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows rejected the mouse position.");
-            Thread.Sleep(120);
+            DelayWithCancellation(120);
             POINT actual;
-            GetCursorPos(out actual);
+            if (!GetCursorPos(out actual) || actual.X != target.X || actual.Y != target.Y)
+                throw new InvalidOperationException("Cursor moved outside the intended target; click withheld.");
             IntPtr hitAtClick = WindowFromPoint(actual);
 
             VerifyForeground();
@@ -329,14 +329,18 @@ namespace _4RTools.Model.Vanilla
             GetWindowThreadProcessId(hitAtClick, out hitPid);
             if (hitPid != (uint)process.Id)
                 throw new InvalidOperationException("Mouse target no longer belongs to the intended client; no click sent.");
-            var down = new[] { new INPUT { type = INPUT_MOUSE, U = new INPUTUNION { mi = new MOUSEINPUT { dwFlags = MOUSEEVENTF_LEFTDOWN } } } };
-            uint downSent = SendInput(1, down, Marshal.SizeOf(typeof(INPUT)));
-            int downError = downSent == 1 ? 0 : Marshal.GetLastWin32Error();
-            Thread.Sleep(110);
-            var up = new[] { new INPUT { type = INPUT_MOUSE, U = new INPUTUNION { mi = new MOUSEINPUT { dwFlags = MOUSEEVENTF_LEFTUP } } } };
-            uint upSent = SendInput(1, up, Marshal.SizeOf(typeof(INPUT)));
-            int upError = upSent == 1 ? 0 : Marshal.GetLastWin32Error();
-            Thread.Sleep(130);
+            uint downSent = 0, upSent = 0;
+            int downError = 0, upError = 0;
+            DispatchGuardedClick(VerifyForeground, up =>
+            {
+                var button = new[] { new INPUT { type = INPUT_MOUSE, U = new INPUTUNION { mi = new MOUSEINPUT
+                    { dwFlags = up ? MOUSEEVENTF_LEFTUP : MOUSEEVENTF_LEFTDOWN } } } };
+                uint sent = SendInput(1, button, Marshal.SizeOf(typeof(INPUT)));
+                int error = sent == 1 ? 0 : Marshal.GetLastWin32Error();
+                if (up) { upSent = sent; upError = error; }
+                else { downSent = sent; downError = error; }
+                if (sent != 1) throw new Win32Exception(error, "Windows SendInput rejected the mouse " + (up ? "release." : "press."));
+            }, DelayWithCancellation, () => MoveCursorAwayFrom(new Rectangle(clientTarget.X, clientTarget.Y, 1, 1)));
 
             IntPtr foregroundAfter = GetForegroundWindow();
             string diagnostics = string.Format(
@@ -346,7 +350,6 @@ namespace _4RTools.Model.Vanilla
                 DescribeWindow(foregroundBefore), DescribeWindow(foregroundAfter), DescribeWindow(hitBeforeMove), DescribeWindow(hitAtClick),
                 downSent, downError, upSent, upError);
 
-            if (restore) SetCursorPos(previous.X, previous.Y);
             VanillaDebugLog.Write("INPUT", "PID=" + process.Id + " CLICK; " + diagnostics);
             if (downSent != 1 || upSent != 1)
                 throw new Win32Exception(downError != 0 ? downError : upError, "Windows SendInput did not send the complete mouse click. " + diagnostics);
@@ -388,44 +391,41 @@ namespace _4RTools.Model.Vanilla
                     X = origin.X + Math.Max(0, Math.Min(width - 1, (int)Math.Round(nx * width))),
                     Y = origin.Y + Math.Max(0, Math.Min(height - 1, (int)Math.Round(ny * height)))
                 };
-                POINT from = point(fromX, fromY), to = point(toX, toY), previous;
-                bool restore = GetCursorPos(out previous);
+                POINT from = point(fromX, fromY), to = point(toX, toY);
+                if (!SetCursorPos(from.X, from.Y)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows rejected the drag start position.");
+                DelayWithCancellation(startHoldMs);
+                VerifyMouseOwner(from, "drag start");
+                VerifyForeground();
+                var down = new[] { new INPUT { type = INPUT_MOUSE, U = new INPUTUNION { mi = new MOUSEINPUT { dwFlags = MOUSEEVENTF_LEFTDOWN } } } };
+                if (SendInput(1, down, Marshal.SizeOf(typeof(INPUT))) != 1)
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows rejected the drag mouse-down.");
                 try
                 {
-                    if (!SetCursorPos(from.X, from.Y)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows rejected the drag start position.");
-                    DelayWithCancellation(startHoldMs);
-                    VerifyMouseOwner(from, "drag start");
-                    VerifyForeground();
-                    var down = new[] { new INPUT { type = INPUT_MOUSE, U = new INPUTUNION { mi = new MOUSEINPUT { dwFlags = MOUSEEVENTF_LEFTDOWN } } } };
-                    if (SendInput(1, down, Marshal.SizeOf(typeof(INPUT))) != 1)
-                        throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows rejected the drag mouse-down.");
-                    try
+                    for (int step = 1; step <= moveSteps; step++)
                     {
-                        for (int step = 1; step <= moveSteps; step++)
-                        {
-                            ThrowIfCancelled(); VerifyForeground();
-                            int x = from.X + (to.X - from.X) * step / moveSteps;
-                            int y = from.Y + (to.Y - from.Y) * step / moveSteps;
-                            if (!SetCursorPos(x, y)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows rejected drag movement.");
-                            DelayWithCancellation(stepDelayMs);
-                        }
-                        VerifyMouseOwner(to, "drag destination");
-                        if (destinationHoldMs > 0) DelayWithCancellation(destinationHoldMs);
+                        ThrowIfCancelled(); VerifyForeground();
+                        int x = from.X + (to.X - from.X) * step / moveSteps;
+                        int y = from.Y + (to.Y - from.Y) * step / moveSteps;
+                        if (!SetCursorPos(x, y)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows rejected drag movement.");
+                        DelayWithCancellation(stepDelayMs);
                     }
-                    finally
-                    {
-                        var up = new[] { new INPUT { type = INPUT_MOUSE, U = new INPUTUNION { mi = new MOUSEINPUT { dwFlags = MOUSEEVENTF_LEFTUP } } } };
-                        if (SendInput(1, up, Marshal.SizeOf(typeof(INPUT))) != 1)
-                            VanillaDebugLog.Write("INPUT", "PID=" + process.Id + " drag mouse-up was not fully accepted by Windows.");
-                    }
-                    DelayWithCancellation(postReleaseMs);
-                    VanillaDebugLog.Write("INPUT", "PID=" + process.Id + " " + label + " client normalized ("
-                        + fromX.ToString("0.0000") + "," + fromY.ToString("0.0000") + ") -> ("
-                        + toX.ToString("0.0000") + "," + toY.ToString("0.0000") + "); startHoldMs="
-                        + startHoldMs + ", steps=" + moveSteps + ", stepDelayMs=" + stepDelayMs
-                        + ", destinationHoldMs=" + destinationHoldMs + ", postReleaseMs=" + postReleaseMs + ".");
+                    VerifyMouseOwner(to, "drag destination");
+                    if (destinationHoldMs > 0) DelayWithCancellation(destinationHoldMs);
                 }
-                finally { if (restore) SetCursorPos(previous.X, previous.Y); }
+                finally
+                {
+                    var up = new[] { new INPUT { type = INPUT_MOUSE, U = new INPUTUNION { mi = new MOUSEINPUT { dwFlags = MOUSEEVENTF_LEFTUP } } } };
+                    if (SendInput(1, up, Marshal.SizeOf(typeof(INPUT))) != 1)
+                        throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows rejected the drag mouse-up.");
+                }
+                MoveCursorAwayFrom(Rectangle.Union(new Rectangle(from.X - origin.X, from.Y - origin.Y, 1, 1),
+                    new Rectangle(to.X - origin.X, to.Y - origin.Y, 1, 1)));
+                DelayWithCancellation(postReleaseMs);
+                VanillaDebugLog.Write("INPUT", "PID=" + process.Id + " " + label + " client normalized ("
+                    + fromX.ToString("0.0000") + "," + fromY.ToString("0.0000") + ") -> ("
+                    + toX.ToString("0.0000") + "," + toY.ToString("0.0000") + "); startHoldMs="
+                    + startHoldMs + ", steps=" + moveSteps + ", stepDelayMs=" + stepDelayMs
+                    + ", destinationHoldMs=" + destinationHoldMs + ", postReleaseMs=" + postReleaseMs + ".");
             }
         }
 
@@ -547,13 +547,10 @@ namespace _4RTools.Model.Vanilla
                 VerifyCaptureProof(proof);
                 Point center = proof.ControlCenter(control);
                 var target = new POINT { X = proof.ClientOrigin.X + center.X, Y = proof.ClientOrigin.Y + center.Y };
-                POINT previous;
-                bool restore = GetCursorPos(out previous);
-                bool held = false;
-                try
+                if (!SetCursorPos(target.X, target.Y)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows rejected the mouse position.");
+                DelayWithCancellation(120);
+                DispatchGuardedClick(() =>
                 {
-                    if (!SetCursorPos(target.X, target.Y)) throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows rejected the mouse position.");
-                    DelayWithCancellation(120);
                     VerifyCaptureProof(proof);
                     POINT actual;
                     if (!GetCursorPos(out actual) || actual.X != target.X || actual.Y != target.Y)
@@ -561,17 +558,84 @@ namespace _4RTools.Model.Vanilla
                     IntPtr hit = WindowFromPoint(actual);
                     if (hit != proof.Window && !IsChild(proof.Window, hit))
                         throw new InvalidOperationException("Detected control is covered by another window; click withheld.");
-                    SendMouseButton(false);
-                    held = true;
-                    DelayWithCancellation(110);
-                }
-                finally
-                {
-                    try { if (held) SendMouseButton(true); }
-                    finally { if (restore) SetCursorPos(previous.X, previous.Y); }
-                }
-                DelayWithCancellation(130);
+                }, SendMouseButton, DelayWithCancellation, () => MoveCursorAwayFrom(control));
                 VanillaDebugLog.Write("INPUT", "PID=" + process.Id + " clicked captured control " + control + ".");
+            }
+        }
+
+        internal static void DispatchGuardedClick(System.Action verify, Action<bool> sendButton,
+            Action<int> pause, System.Action parkCursor)
+        {
+            verify();
+            sendButton(false);
+            try { pause(110); }
+            finally { sendButton(true); }
+            // Parking verifies current foreground ownership again. Do not restore a
+            // previous cursor position that may cover the text about to be checked.
+            parkCursor();
+            pause(130);
+        }
+
+        internal const int CursorParkingPadding = 48;
+
+        internal static Point SelectCursorParkingPoint(Size client, Rectangle excludedControl)
+        {
+            var bounds = new Rectangle(Point.Empty, client);
+            if (client.Width <= 0 || client.Height <= 0)
+                throw new InvalidOperationException("Client geometry is unavailable for cursor parking.");
+            if (excludedControl == Rectangle.Empty)
+                excludedControl = new Rectangle(client.Width / 4, client.Height / 4, client.Width / 2, client.Height / 2);
+            if (excludedControl.Width <= 0 || excludedControl.Height <= 0 || !bounds.Contains(excludedControl))
+                throw new InvalidOperationException("The cursor exclusion area is outside the current client.");
+            Rectangle excluded = Rectangle.Inflate(excludedControl, CursorParkingPadding, CursorParkingPadding);
+            int insetX = Math.Min(16, (client.Width - 1) / 2), insetY = Math.Min(16, (client.Height - 1) / 2);
+            var candidates = new[]
+            {
+                new Point(client.Width - 1 - insetX, client.Height - 1 - insetY),
+                new Point(insetX, client.Height - 1 - insetY),
+                new Point(client.Width - 1 - insetX, insetY), new Point(insetX, insetY)
+            };
+            Point? best = null;
+            double bestDistance = -1;
+            foreach (Point point in candidates)
+            {
+                if (excluded.Contains(point)) continue;
+                double dx = point.X - (excludedControl.Left + excludedControl.Width / 2.0);
+                double dy = point.Y - (excludedControl.Top + excludedControl.Height / 2.0);
+                double distance = dx * dx + dy * dy;
+                if (distance > bestDistance) { best = point; bestDistance = distance; }
+            }
+            if (!best.HasValue) throw new InvalidOperationException("No client corner is clear of the control; visual verification withheld.");
+            return best.Value;
+        }
+
+        internal Point MoveCursorAwayFrom(Rectangle excludedControl)
+        {
+            lock (ForegroundGate)
+            {
+                VerifyForeground();
+                RECT rectangle;
+                var origin = new POINT();
+                if (!GetClientRect(window, out rectangle) || !ClientToScreen(window, ref origin))
+                    throw new InvalidOperationException("Current client geometry is unavailable for cursor parking.");
+                Point point = SelectCursorParkingPoint(new Size(rectangle.Right - rectangle.Left, rectangle.Bottom - rectangle.Top), excludedControl);
+                var screen = new POINT { X = origin.X + point.X, Y = origin.Y + point.Y };
+                IntPtr hit = WindowFromPoint(screen);
+                if (hit != window && !IsChild(window, hit))
+                    throw new InvalidOperationException("Cursor parking area is covered by another window; visual verification withheld.");
+                VerifyForeground();
+                if (!SetCursorPos(screen.X, screen.Y))
+                    throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows rejected cursor parking.");
+                DelayWithCancellation(100);
+                VerifyForeground();
+                POINT actual;
+                if (!GetCursorPos(out actual) || actual.X != screen.X || actual.Y != screen.Y)
+                    throw new InvalidOperationException("Cursor moved before visual verification; re-observation is required.");
+                hit = WindowFromPoint(actual);
+                if (hit != window && !IsChild(window, hit))
+                    throw new InvalidOperationException("Cursor parking area no longer belongs to the intended client.");
+                VanillaDebugLog.Write("INPUT", "PID=" + process.Id + " cursor parked at client " + point + " outside " + excludedControl + ".");
+                return point;
             }
         }
 

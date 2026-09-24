@@ -45,8 +45,8 @@ namespace _4RTools.Model.Vanilla
             {
                 Verify(input, proof);
                 Point center = proof.ControlCenter(control);
-                PointNative target = Screen(proof, center), previous;
-                bool restore = GetCursorPos(out previous), held = false;
+                PointNative target = Screen(proof, center);
+                bool held = false;
                 try
                 {
                     Move(target); Pause(120, () => Verify(input, proof));
@@ -57,13 +57,11 @@ namespace _4RTools.Model.Vanilla
                     Post(proof.Window, 0x0201, true, center); held = true;
                     Pause(110, () => { Verify(input, proof); RequireCursor(proof, target); });
                     Release(proof.Window, center); held = false;
-                    Pause(80, () => { Verify(input, proof); RequireCursor(proof, target); });
                 }
-                finally
-                {
-                    try { if (held) Release(proof.Window, center); }
-                    finally { RestoreIfUnchanged(restore, target, previous); }
-                }
+                finally { if (held) Release(proof.Window, center); }
+                // The click may move the game camera. Cursor parking uses current
+                // owned-window geometry, not the prior visual scene, before capture.
+                input.MoveCursorAwayFrom(control);
                 VanillaDebugLog.Write("INPUT", "PID=" + proof.ProcessId + " compatibility click delivered at verified captured control " + control + ".");
             }
         }
@@ -74,8 +72,8 @@ namespace _4RTools.Model.Vanilla
             {
                 Verify(input, proof);
                 Point from = proof.ControlCenter(source), to = proof.ControlCenter(destination);
-                PointNative start = Screen(proof, from), end = Screen(proof, to), current = start, previous;
-                bool restore = GetCursorPos(out previous), held = false;
+                PointNative start = Screen(proof, from), end = Screen(proof, to), current = start;
+                bool held = false;
                 try
                 {
                     Move(start); Pause(VanillaForegroundInput.DeliberateDragStartHoldMs, () => Verify(input, proof));
@@ -94,13 +92,10 @@ namespace _4RTools.Model.Vanilla
                     }
                     Pause(VanillaForegroundInput.DeliberateDragDestinationHoldMs, () => { Verify(input, proof); RequireCursor(proof, end); });
                     DragButton(true); held = false;
-                    Pause(VanillaForegroundInput.DeliberateDragPostReleaseMs, () => Verify(input, proof));
                 }
-                finally
-                {
-                    try { if (held) DragButton(true); }
-                    finally { RestoreIfUnchanged(restore, current, previous); }
-                }
+                finally { if (held) DragButton(true); }
+                input.MoveCursorAwayFrom(Rectangle.Union(source, destination));
+                Pause(VanillaForegroundInput.DeliberateDragPostReleaseMs, () => Verify(input, proof));
                 VanillaDebugLog.Write("INPUT", "PID=" + proof.ProcessId + " verified captured drag: grabHoldMs=" + GrabHoldMs
                     + ", travelSteps=" + VanillaForegroundInput.DeliberateDragMoveSteps + ", travelStepMs=" + VanillaForegroundInput.DeliberateDragStepDelayMs + ".");
             }
@@ -139,11 +134,6 @@ namespace _4RTools.Model.Vanilla
             // Releasing only the button this operation pressed is permitted even after
             // cancellation. Never redirect this release to a replacement window.
             if (IsWindow(window)) Post(window, 0x0202, false, point);
-        }
-        private static void RestoreIfUnchanged(bool restore, PointNative expected, PointNative previous)
-        {
-            PointNative actual;
-            if (restore && GetCursorPos(out actual) && actual.X == expected.X && actual.Y == expected.Y) SetCursorPos(previous.X, previous.Y);
         }
         private static void Pause(int milliseconds, System.Action verify)
         {

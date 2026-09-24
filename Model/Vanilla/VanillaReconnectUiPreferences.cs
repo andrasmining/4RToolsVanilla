@@ -47,8 +47,10 @@ namespace _4RTools.Model.Vanilla
             if (changed || !string.Equals(lastProxyRouteLog, key, StringComparison.Ordinal))
             {
                 lastProxyRouteLog = key;
-                Log(label + ": account-level proxy route active: " + route + ".");
-                VanillaDebugLog.Write("RECOVERY", label + ": account-level proxy route active: " + route + ".");
+                string detail = label + ": saved proxy preference " + route
+                    + "; service confirmation uses Enter on the client's current selection.";
+                Log(detail);
+                VanillaDebugLog.Write("RECOVERY", detail);
             }
         }
     }
@@ -136,7 +138,8 @@ namespace _4RTools.Model.Vanilla
                 accounts.Columns.Add(new DataGridViewTextBoxColumn
                 {
                     Name = "AccountProxy",
-                    HeaderText = "Proxy",
+                    HeaderText = "Saved proxy",
+                    ToolTipText = "Retained preference. Recovery accepts the client's current proxy selection with Enter.",
                     ReadOnly = true,
                     FillWeight = 70
                 });

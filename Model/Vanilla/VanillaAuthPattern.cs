@@ -150,11 +150,17 @@ namespace _4RTools.Model.Vanilla
                 if (!recognized) continue;
                 if (best != null)
                 {
-                    bool same = Enumerable.Range(0, 3).All(index =>
-                        Math.Abs(best[index].CenterX - candidate.Item1[index].CenterX) <= 3
-                        && Math.Abs(best[index].CenterY - candidate.Item1[index].CenterY) <= 3
-                        && Math.Abs(best[index].Width - candidate.Item1[index].Width) <= 6);
-                    if (!same) { evidence = "more than one named login form is plausible"; return false; }
+                    // Raised/repainted control borders expose several valid edge pairs
+                    // for one physical form. Compare their overlapping control areas;
+                    // a fixed three-pixel cutoff splits those borders at ordinary DPI.
+                    bool same = Enumerable.Range(0, 3).All(index => SameLoginControl(best[index], candidate.Item1[index]));
+                    if (!same)
+                    {
+                        evidence = "more than one named login form is plausible; first="
+                            + string.Join(" | ", best.Select(Describe)) + "; other="
+                            + string.Join(" | ", candidate.Item1.Select(Describe));
+                        return false;
+                    }
                     continue;
                 }
                 best = candidate.Item1;
@@ -187,6 +193,19 @@ namespace _4RTools.Model.Vanilla
                 Evidence = evidence
             };
             return true;
+        }
+
+        private static bool SameLoginControl(ControlBox first, ControlBox second)
+        {
+            int minimumWidth = Math.Min(first.Width, second.Width), minimumHeight = Math.Min(first.Height, second.Height);
+            int maximumWidth = Math.Max(first.Width, second.Width), maximumHeight = Math.Max(first.Height, second.Height);
+            Rectangle overlap = Rectangle.Intersect(
+                Rectangle.FromLTRB(first.Left, first.Top.Y, first.Right + 1, first.Bottom.Y + 1),
+                Rectangle.FromLTRB(second.Left, second.Top.Y, second.Right + 1, second.Bottom.Y + 1));
+            return minimumWidth >= maximumWidth * .88 && minimumHeight >= maximumHeight * .55
+                && Math.Abs(first.CenterX - second.CenterX) <= Math.Max(3, minimumWidth * .04)
+                && Math.Abs(first.CenterY - second.CenterY) <= Math.Max(3, maximumHeight * .25)
+                && overlap.Width >= minimumWidth * .94 && overlap.Height >= minimumHeight * .80;
         }
 
         private static Rectangle LoginServiceTextInterior(ControlBox box, byte[] gray, int width)

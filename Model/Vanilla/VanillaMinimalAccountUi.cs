@@ -143,6 +143,7 @@ namespace _4RTools.Model.Vanilla
             proxy.Format += (s, e) => { if (e.ListItem is VanillaProxyRoute) e.Value = VanillaProxyPattern.NameForRoute((VanillaProxyRoute)e.ListItem); };
             proxy.DataSource = Enum.GetValues(typeof(VanillaProxyRoute));
             if (account.ProxyNeedsConfiguration) proxy.SelectedIndex = -1; else proxy.SelectedItem = proxyRoute;
+            proxy.Enabled = false;
             key = account.ResumeKey; ctrl = account.ResumeCtrl; alt = account.ResumeAlt; shift = account.ResumeShift;
             smartTeleport.Checked = account.SmartTeleportEnabled;
             teleportIdle.Value = Math.Max(teleportIdle.Minimum, Math.Min(teleportIdle.Maximum, account.SmartTeleportIdleSeconds));
@@ -180,7 +181,7 @@ namespace _4RTools.Model.Vanilla
             AddRow(table, 3, "Slot", slot);
             AddRow(table, 4, "Character name", character);
             AddRow(table, 5, "Password", password);
-            AddRow(table, 6, "Proxy", proxy);
+            AddRow(table, 6, "Saved proxy", proxy);
             AddRow(table, 7, "Resume hotkey", hotkey);
             var teleportOptions = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = Padding.Empty };
             teleportOptions.Controls.Add(smartTeleport);
@@ -201,7 +202,7 @@ namespace _4RTools.Model.Vanilla
             help.SetToolTip(character, "Saved expected character. The list contains freshly verified running character names.");
             help.SetToolTip(user, "Filled automatically only from verified memory. Without a verified username mapping, the saved username remains editable.");
             help.SetToolTip(slot, "1-based slot from 1 to 15; blank means unknown, not slot 1. Auto-filled only when verified memory provides it.");
-            help.SetToolTip(proxy, "Choose this character's proxy. Discovery never guesses this setting.");
+            help.SetToolTip(proxy, "Retained preference. Login now presses Enter on the client's current proxy selection.");
             help.SetToolTip(hotkey, "Press the key combination used to resume Vanilla Autobattle after login.");
             help.SetToolTip(smartTeleport, "Uses fresh verified X/Y for this saved username + character. When enabled, teleports after the configured stationary time; no process selection is needed.");
             help.SetToolTip(teleportIdle, "Default 60 seconds. Any verified X/Y movement resets the timer.");

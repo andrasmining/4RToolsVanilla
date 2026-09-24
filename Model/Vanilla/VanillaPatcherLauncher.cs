@@ -236,9 +236,10 @@ namespace _4RTools.Model.Vanilla
                                     UIntPtr result;
                                     IntPtr sent = SendMessageTimeout(nativeGameStart, BM_CLICK, IntPtr.Zero, IntPtr.Zero, SMTO_ABORTIFHUNG, 2000, out result);
                                     int error = sent == IntPtr.Zero ? Marshal.GetLastWin32Error() : 0;
+                                    string cursorEvidence = ParkLauncherCursor(patcherPid.Value, launcherHwnd, Rectangle.Empty, cancelled);
                                     log?.Invoke("GAME START attempt #" + clickAttempt + ": one semantic native-control invoke only; target="
                                         + DescribeWindow(nativeGameStart) + "; result=" + (sent == IntPtr.Zero ? "FAILED" : "OK")
-                                        + "; err=" + error + ". No second click is sent in this attempt; waiting " + retryMs + "ms before any retry.");
+                                        + "; err=" + error + "; " + cursorEvidence + ". No second click is sent in this attempt; waiting " + retryMs + "ms before any retry.");
                                 }
                                 else
                                 {
@@ -293,9 +294,9 @@ namespace _4RTools.Model.Vanilla
                                     }
                                     // The button location came from two stable launcher-client captures. Send the one
                                     // click directly to that verified launcher HWND instead of depending on global cursor focus.
-                                    string inputEvidence = ClickTargetedWindowAtPoint(patcherPid.Value, secondX, secondY);
+                                    string inputEvidence = ClickTargetedWindowAtPoint(patcherPid.Value, secondX, secondY, cancelled);
                                     log?.Invoke(string.Format(
-                                        "GAME START attempt #{0}: one visually confirmed launcher-window message at normalized=({1:0.000},{2:0.000}); first=[{3}]; second=[{4}]; input=[{5}]. No cursor movement or foreground-dependent SendInput was used. Waiting {6}ms before any retry.",
+                                        "GAME START attempt #{0}: one visually confirmed launcher-window message at normalized=({1:0.000},{2:0.000}); first=[{3}]; second=[{4}]; input=[{5}]. Waiting {6}ms before any retry.",
                                         clickAttempt, secondX, secondY, firstEvidence, secondEvidence, inputEvidence, retryMs));
                                 }
                             }
@@ -632,7 +633,7 @@ namespace _4RTools.Model.Vanilla
             catch { return null; } // Failed capture is unknown, never stalled-update evidence.
         }
 
-        private static string ClickTargetedWindowAtPoint(int processId, double x, double y)
+        private static string ClickTargetedWindowAtPoint(int processId, double x, double y, Func<bool> cancelled)
         {
             IntPtr main = ResolveLauncherWindow(processId);
             if (main == IntPtr.Zero || !IsWindow(main) || !IsWindowVisible(main))
@@ -651,6 +652,9 @@ namespace _4RTools.Model.Vanilla
                 Y = Math.Max(0, Math.Min(height - 1, (int)Math.Round(y * height)))
             };
             IntPtr packed = new IntPtr((clientPoint.Y << 16) | (clientPoint.X & 0xFFFF));
+            if (cancelled != null && cancelled()) throw new OperationCanceledException();
+            if (GetForegroundWindow() != main)
+                throw new InvalidOperationException("Launcher lost foreground before GAME START; no click sent.");
             bool moved = PostMessage(main, WM_MOUSEMOVE, IntPtr.Zero, packed);
             bool down = PostMessage(main, WM_LBUTTONDOWN, new IntPtr(1), packed);
             Thread.Sleep(100);
@@ -658,10 +662,43 @@ namespace _4RTools.Model.Vanilla
             int error = (!moved || !down || !up) ? Marshal.GetLastWin32Error() : 0;
             if (!moved || !down || !up)
                 throw new InvalidOperationException("Launcher rejected the verified GAME START window message; err=" + error + ".");
+            string cursorEvidence = ParkLauncherCursor(processId, main,
+                new Rectangle(clientPoint.X, clientPoint.Y, 1, 1), cancelled);
             return "main=" + DescribeWindow(main) + "; ownerPID=" + ownerPid
                 + "; client=" + width + "x" + height + "; targetClient=(" + clientPoint.X + "," + clientPoint.Y + ")"
                 + "; foregroundAtMessage=" + DescribeWindow(GetForegroundWindow())
-                + "; PostMessage(move/down/up)=" + moved + "/" + down + "/" + up + "; err=" + error;
+                + "; PostMessage(move/down/up)=" + moved + "/" + down + "/" + up + "; err=" + error + "; " + cursorEvidence;
+        }
+
+        private static string ParkLauncherCursor(int processId, IntPtr launcher, Rectangle excluded, Func<bool> cancelled)
+        {
+            if (cancelled != null && cancelled()) throw new OperationCanceledException();
+            // GAME START may already have closed the launcher or activated the new
+            // client. Do not move the pointer in a different foreground application.
+            if (!IsWindow(launcher) || GetForegroundWindow() != launcher)
+                return "cursor parking skipped: launcher exited or foreground transitioned";
+            try
+            {
+                using (var input = new VanillaForegroundInput(processId, launcher))
+                {
+                    input.CancellationRequested = cancelled;
+                    Point parked = input.MoveCursorAwayFrom(excluded);
+                    if (cancelled != null && cancelled()) throw new OperationCanceledException();
+                    uint owner;
+                    GetWindowThreadProcessId(launcher, out owner);
+                    if (owner != (uint)processId || !IsWindow(launcher) || GetForegroundWindow() != launcher)
+                        return "cursor parked; launcher then exited or foreground transitioned";
+                    // Clear the hover from the targeted message click even if the
+                    // physical cursor was already at this corner on a previous attempt.
+                    if (!PostMessage(launcher, WM_MOUSEMOVE, IntPtr.Zero,
+                        new IntPtr((parked.Y << 16) | (parked.X & 0xFFFF))))
+                        throw new InvalidOperationException("Launcher rejected the cursor hover-clear message.");
+                }
+            }
+            catch (OperationCanceledException) { throw; }
+            catch when (!IsWindow(launcher) || GetForegroundWindow() != launcher)
+            { return "cursor parking ended as launcher exited or foreground transitioned"; }
+            return "cursor parked clear before further launcher observation";
         }
 
         private static bool TryFindNativeGameStart(IntPtr root, out IntPtr control, out string inventory)

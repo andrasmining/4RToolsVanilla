@@ -17,6 +17,7 @@ namespace Vanilla.Diagnostics.Tests
         {
             Test("Login pattern distinguishes username and password across resolutions", LoginAcrossResolutions);
             Test("Login pattern tolerates softened rendering", LoginSoftened);
+            Test("Inner and outer borders of one login form are one candidate", LoginBeveledBorders);
             Test("Fixed login identity survives wide RDP-scaled combobox chrome", WideRdpLoginIdentity);
             Test("Softened login rejects similarly spelled service identities", RejectSimilarLowResolutionServices);
             Test("Login form may move independently from the client dimensions", LoginMoved);
@@ -111,6 +112,43 @@ namespace Vanilla.Diagnostics.Tests
                     new Rectangle(4, 4, reduced.Width - 8, reduced.Height - 8), out evidence);
                 Assert(recognized == string.Equals(label, "Vanilla MMO", StringComparison.Ordinal),
                     "Wide/RDP fixed service identity mismatch for '" + label + "': " + evidence);
+            }
+        }
+
+        private static void LoginBeveledBorders()
+        {
+            using (var original = new Bitmap(1280, 720))
+            {
+                using (Graphics graphics = Graphics.FromImage(original))
+                using (var border = new Pen(Color.FromArgb(95, 95, 95)))
+                using (var font = new Font("Tahoma", 15, FontStyle.Regular, GraphicsUnit.Pixel))
+                using (var format = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+                {
+                    graphics.Clear(Color.FromArgb(248, 251, 252));
+                    for (int row = 0; row < 3; row++)
+                    {
+                        var outer = new Rectangle(440, 260 + row * 48, 300, 38);
+                        graphics.FillRectangle(Brushes.White, outer);
+                        graphics.DrawRectangle(border, outer);
+                        graphics.DrawRectangle(border, Rectangle.Inflate(outer, -5, -5));
+                        if (row == 0) graphics.DrawString("Vanilla MMO", font, Brushes.Black, outer, format);
+                    }
+                }
+                foreach (double scale in new[] { 1.0, 1.5 })
+                using (var image = new Bitmap((int)(original.Width * scale), (int)(original.Height * scale)))
+                {
+                    using (Graphics graphics = Graphics.FromImage(image))
+                    {
+                        graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                        graphics.DrawImage(original, new Rectangle(Point.Empty, image.Size));
+                    }
+                    VanillaLoginLayout layout; string evidence;
+                    Assert(VanillaAuthPattern.TryDetectLogin(image, out layout, out evidence),
+                        "One beveled login form became ambiguous at scale " + scale + ": " + evidence);
+                    Assert(layout.UserName.Contains(new Point((int)(590 * scale), (int)(327 * scale)))
+                        && layout.Password.Contains(new Point((int)(590 * scale), (int)(375 * scale))),
+                        "Raised-border clustering selected the wrong credential controls.");
+                }
             }
         }
 

@@ -173,7 +173,7 @@ namespace _4RTools.Model.Vanilla
                         switch (step)
                         {
                             case VanillaReconnectTestStep.ProxySelection:
-                                SelectNamedService(input, VanillaAccountProxyPreferences.Get(account.Id, config.Proxy), "TEST " + account.Label + ": ");
+                                ConfirmDefaultService(input, VanillaServiceStep.Proxy, "TEST " + account.Label + ": ");
                                 break;
                             case VanillaReconnectTestStep.FillCredentials:
                                 string password = store.UnprotectPassword(account.ProtectedPassword);
@@ -186,7 +186,7 @@ namespace _4RTools.Model.Vanilla
                                 Log("TEST " + account.Label + ": login submitted after fresh field-focus, exact username and password-mask verification.");
                                 break;
                             case VanillaReconnectTestStep.SelectGameServer:
-                                SelectDetectedGameServer(input, discoveredPid.Value, config.StageDelayMs, "TEST " + account.Label + ": ");
+                                ConfirmDefaultService(input, VanillaServiceStep.GameServer, "TEST " + account.Label + ": ");
                                 break;
                             case VanillaReconnectTestStep.SelectCharacter:
                                 Func<bool> characterCancelled = cancelled;

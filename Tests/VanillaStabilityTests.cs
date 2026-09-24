@@ -41,6 +41,10 @@ namespace Vanilla.Diagnostics.Tests
             Test("Temporary delays begin after synchronous input completes", TemporaryInputCompletionTiming);
             Test("Temporary target geometry supports legacy settings and rejects invalid captures", TemporaryCaptureGeometry);
             Test("Observed Vanilla cards need unique selection and distinguish an empty slot", ObservedCards);
+            Test("Post-click cursor parking clears controls across client sizes and edges", CursorParkingGeometry);
+            Test("Post-click cursor parking clears the central form and rejects unavailable space", CursorParkingExclusion);
+            Test("Mouse release and cursor parking precede the next visual check", ClickParkingSequence);
+            Test("Cancelled or rejected clicks release owned buttons without cursor parking", ClickParkingFailure);
             Console.WriteLine("Stability integration: {0} passed; {1} failed. Isolated synthetic state/files/HTTP; no live game input.", passed, failed);
             return failed;
         }
@@ -441,6 +445,74 @@ namespace Vanilla.Diagnostics.Tests
                 }
             }
         }
+        private static void CursorParkingGeometry()
+        {
+            foreach (Size size in new[] { new Size(200, 120), new Size(320, 240), new Size(640, 480),
+                new Size(1024, 768), new Size(1920, 1080), new Size(3840, 2160) })
+            {
+                var bounds = new Rectangle(Point.Empty, size);
+                foreach (Rectangle control in new[]
+                {
+                    new Rectangle(size.Width / 2 - 30, size.Height / 2 - 8, 60, 16),
+                    new Rectangle(0, 0, 40, 20), new Rectangle(size.Width - 40, 0, 40, 20),
+                    new Rectangle(0, size.Height - 20, 40, 20), new Rectangle(size.Width - 40, size.Height - 20, 40, 20),
+                    new Rectangle(size.Width / 2, size.Height / 2, 1, 1)
+                })
+                {
+                    Point point = VanillaForegroundInput.SelectCursorParkingPoint(size, control);
+                    Assert(bounds.Contains(point), "Cursor parking escaped the client at " + size + ".");
+                    Assert(!Rectangle.Inflate(control, VanillaForegroundInput.CursorParkingPadding,
+                        VanillaForegroundInput.CursorParkingPadding).Contains(point), "Cursor still obscures the checked control.");
+                    Assert(point == VanillaForegroundInput.SelectCursorParkingPoint(size, control), "Cursor parking was nondeterministic.");
+                }
+            }
+        }
+
+        private static void CursorParkingExclusion()
+        {
+            foreach (Size size in new[] { new Size(320, 240), new Size(1024, 768), new Size(1920, 1080) })
+            {
+                Point point = VanillaForegroundInput.SelectCursorParkingPoint(size, Rectangle.Empty);
+                Rectangle center = new Rectangle(size.Width / 4, size.Height / 4, size.Width / 2, size.Height / 2);
+                Assert(!Rectangle.Inflate(center, VanillaForegroundInput.CursorParkingPadding,
+                    VanillaForegroundInput.CursorParkingPadding).Contains(point), "Cursor still covers the central form.");
+            }
+            Reject(() => VanillaForegroundInput.SelectCursorParkingPoint(Size.Empty, Rectangle.Empty));
+            Reject(() => VanillaForegroundInput.SelectCursorParkingPoint(new Size(1024, 768), new Rectangle(-1, 0, 20, 20)));
+            Reject(() => VanillaForegroundInput.SelectCursorParkingPoint(new Size(1024, 768), new Rectangle(1020, 700, 20, 20)));
+            Reject(() => VanillaForegroundInput.SelectCursorParkingPoint(new Size(100, 100), new Rectangle(0, 0, 100, 100)));
+        }
+
+        private static void ClickParkingSequence()
+        {
+            var events = new List<string>();
+            VanillaForegroundInput.DispatchGuardedClick(() => events.Add("verify"),
+                up => events.Add(up ? "up" : "down"), ms => events.Add("wait" + ms), () => events.Add("park"));
+            events.Add("capture");
+            Assert(string.Join(",", events) == "verify,down,wait110,up,park,wait130,capture",
+                "A visual check or cursor move happened before releasing the mouse: " + string.Join(",", events));
+        }
+
+        private static void ClickParkingFailure()
+        {
+            var events = new List<string>();
+            Reject(() => VanillaForegroundInput.DispatchGuardedClick(() => { throw new OperationCanceledException(); },
+                up => events.Add(up ? "up" : "down"), _ => { }, () => events.Add("park")));
+            Assert(events.Count == 0, "Cancellation before the click still sent mouse input.");
+            Reject(() => VanillaForegroundInput.DispatchGuardedClick(() => { },
+                up => events.Add(up ? "up" : "down"), _ => { throw new OperationCanceledException(); }, () => events.Add("park")));
+            Assert(string.Join(",", events) == "down,up", "Cancellation while pressed did not release only the owned button.");
+            events.Clear();
+            Reject(() => VanillaForegroundInput.DispatchGuardedClick(() => { },
+                up => { events.Add(up ? "up" : "down"); throw new InvalidOperationException("Mouse input rejected."); },
+                _ => { }, () => events.Add("park")));
+            Assert(string.Join(",", events) == "down", "A rejected press still moved the cursor or released an unowned button.");
+            events.Clear();
+            Reject(() => VanillaForegroundInput.DispatchGuardedClick(() => { }, up => events.Add(up ? "up" : "down"),
+                ms => events.Add("wait" + ms), () => { throw new InvalidOperationException("Foreground ownership lost before parking."); }));
+            Assert(string.Join(",", events) == "down,wait110,up", "Lost foreground continued into a post-click visual check.");
+        }
+
         private sealed class Handler : HttpMessageHandler
         {
             private readonly Func<HttpRequestMessage, HttpResponseMessage> callback;

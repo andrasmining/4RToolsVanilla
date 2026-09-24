@@ -508,7 +508,7 @@ namespace _4RTools.Model.Vanilla
                     runtime.RecoveryOwned = true;
                 }
                 RaiseUpdated();
-                VanillaDebugLog.Write("STARTUP", account.Label + ": bound PID " + pid.Value + ". Waiting for expected UI states, not fixed loading delays.");
+                VanillaDebugLog.Write("STARTUP", account.Label + ": bound PID " + pid.Value + ". Waiting for the interactive window and configured service settle before Enter.");
 
                 WaitForWindow(pid.Value, 60000, () => StartupAccountCancelled(generation, account)
                     || ResumeWorkerCancelled(runtime, pid.Value, resumeGeneration));
@@ -516,7 +516,7 @@ namespace _4RTools.Model.Vanilla
                 {
                     input.CancellationRequested = () => StartupCancelled(generation)
                         || ResumeWorkerCancelled(runtime, pid.Value, resumeGeneration);
-                    SelectProxyWhenVisible(input, pid.Value, account, config, generation);
+                    ConfirmDefaultService(input, VanillaServiceStep.Proxy, account.Label + ": sequential: ");
 
                     string password = store.UnprotectPassword(account.ProtectedPassword);
                     if (string.IsNullOrEmpty(password)) throw new InvalidOperationException(account.Label + ": decrypted password is empty.");
@@ -527,8 +527,7 @@ namespace _4RTools.Model.Vanilla
 
                     if (StartupCancelled(generation)) throw new OperationCanceledException("Sequential startup cancelled.");
                     input.Activate();
-                    SelectDetectedGameServer(input, pid.Value, 700, account.Label + ": sequential: ");
-                    VanillaDebugLog.Write("STARTUP", account.Label + ": server dialog handled after visual detection.");
+                    ConfirmDefaultService(input, VanillaServiceStep.GameServer, account.Label + ": sequential: ");
 
                     WaitForCharacterSurface(input, pid.Value, generation);
                     SelectConfiguredCharacterWithoutCoordinates(input, pid.Value, account,
@@ -665,13 +664,6 @@ namespace _4RTools.Model.Vanilla
                 Thread.Sleep(slice);
                 remaining -= slice;
             }
-        }
-
-        private void SelectProxyWhenVisible(VanillaForegroundInput input, int pid, VanillaReconnectAccount account,
-            VanillaReconnectSettings config, int generation)
-        {
-            if (StartupAccountCancelled(generation, account)) throw new OperationCanceledException("Sequential startup cancelled.");
-            SelectNamedService(input, VanillaAccountProxyPreferences.Get(account.Id, config.Proxy), account.Label + ": ");
         }
 
         private void WaitForCharacterSurface(VanillaForegroundInput input, int pid, int generation)

@@ -979,13 +979,10 @@ namespace _4RTools.Model.Vanilla
                     input.CancellationRequested = cancelled; input.Activate();
                     if (freshLaunch)
                     {
-                        Thread.Sleep(config.GepardWaitMs); input.Activate();
-                        SelectNamedService(input, VanillaAccountProxyPreferences.Get(account.Id, config.Proxy), account.Label + ": ");
-                        Thread.Sleep(config.StageDelayMs);
+                        ConfirmDefaultService(input, VanillaServiceStep.Proxy, account.Label + ": ");
                     }
                     input.Activate(); FillDetectedCredentials(input, account, password, pid, true, account.Label + ": ");
-                    Thread.Sleep(config.StageDelayMs);
-                    SelectDetectedGameServer(input, pid, config.StageDelayMs, account.Label + ": ");
+                    ConfirmDefaultService(input, VanillaServiceStep.GameServer, account.Label + ": ");
                     WaitForCharacterSurfaceCancellable(input, pid, cancelled, 30000, account.Label + ": recovery");
                     SelectConfiguredCharacterWithoutCoordinates(input, pid, account, cancelled, account.Label + ": recovery: ");
                     WaitForAutobattleReady(account, pid, cancelled, 60000, "Recovery post-character");
@@ -1050,7 +1047,6 @@ namespace _4RTools.Model.Vanilla
             Log(logPrefix + "credential fields and keyboard focus verified; exact username and password masking confirmed"
                 + (submit ? "; login submitted." : "; login left ready for explicit submission.") + " Credential captures and secret contents were not saved.");
         }
-        private void SelectDetectedGameServer(VanillaForegroundInput input, int pid, int stageDelayMs, string logPrefix) { SelectNamedService(input, null, logPrefix); }
         private void SaveUiCapture(Bitmap image, string fileName)
         {
             try { string directory = Path.Combine(baseDirectory, "Logs"); Directory.CreateDirectory(directory); image.Save(Path.Combine(directory, fileName), ImageFormat.Png); }
