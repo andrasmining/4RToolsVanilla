@@ -115,7 +115,9 @@ namespace _4RTools.Model.Vanilla
             }
             runtime.GameplaySince = runtime.LoginLikeSince = null;
             string reason = outage ? "Server Closed.(1)" : visual == VanillaVisualState.LoggingOut ? "Now Logging Out." : "Disconnected from Server.";
-            if (!running || disposed || !settings.VisualWatchdog || !settings.AutoRecover || !runtime.Account.Enabled)
+            // VisualWatchdog controls continuous captures, not a fresh terminal
+            // diagnosis requested by the unavailable/stalled-health watchdog.
+            if (!running || disposed || !settings.AutoRecover || !runtime.Account.Enabled)
             {
                 ResetTerminalEvidence(runtime);
                 if (running && !disposed) SetStage(runtime, VanillaReconnectStage.Error, reason + " Automatic recovery is disabled.");
@@ -146,7 +148,8 @@ namespace _4RTools.Model.Vanilla
             VanillaReconnectSettings config, Func<VanillaVisualState> readVisual, Func<DateTime> startTimeUtc, System.Action<int> pause)
         {
             if (StartupCancelled(startupGeneration)) throw new OperationCanceledException();
-            if (!config.VisualWatchdog) return false;
+            // START diagnoses an already assigned client even when continuous
+            // visual monitoring is off; a terminal shell cannot be adopted online.
             VanillaVisualState visual = readVisual();
             bool outage = visual == VanillaVisualState.ServerClosed;
             if (!IsTerminalDisconnect(visual) && !outage) return false;

@@ -653,11 +653,21 @@ namespace _4RTools.Model.Vanilla
             {
                 System.Action verify = FocusedProofGuard(proof, verifyFieldFocus);
                 verify();
-                VanillaDebugLog.Write("INPUT", "PID=" + process.Id + " verified-capture credential clear: Home, Shift+End, Backspace.");
+                VanillaDebugLog.Write("INPUT", "PID=" + process.Id + " verified-capture field clear: Home, Shift+End, Backspace.");
                 DispatchGuardedKey(Keys.Home, verify, SendKey, Thread.Sleep);
                 DispatchGuardedChord(false, false, true, Keys.End, verify, SendKey, Thread.Sleep);
                 DispatchGuardedKey(Keys.Back, verify, SendKey, Thread.Sleep);
                 DelayWithCancellation(80);
+            }
+        }
+
+        internal void SelectFocusedTextFromProof(VanillaVisualInputProof proof, System.Action verifyFieldFocus)
+        {
+            lock (ForegroundGate)
+            {
+                System.Action verify = FocusedProofGuard(proof, verifyFieldFocus);
+                DispatchGuardedKey(Keys.Home, verify, SendKey, Thread.Sleep);
+                DispatchGuardedChord(false, false, true, Keys.End, verify, SendKey, Thread.Sleep);
             }
         }
 

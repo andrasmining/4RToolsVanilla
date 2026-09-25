@@ -17,8 +17,96 @@ namespace _4RTools.Model.Vanilla
         internal VanillaVisualInputProof Proof;
     }
 
+    internal interface IVanillaQuantityPromptInput
+    {
+        Bitmap Capture();
+        VanillaVisualInputProof Proof { get; }
+        void Check();
+        void Pause(int milliseconds);
+        void Press(Keys key, VanillaVisualInputProof proof);
+    }
+
     internal static class VanillaCartQuantity
     {
+        private sealed class PromptInput : IVanillaQuantityPromptInput
+        {
+            private readonly VanillaForegroundInput input;
+            internal PromptInput(VanillaForegroundInput input) { this.input = input; }
+            public Bitmap Capture() { return input.CaptureClientBitmap(); }
+            public VanillaVisualInputProof Proof { get { return input.LastCaptureProof; } }
+            public void Check() { VanillaCartQuantity.Check(input); }
+            public void Pause(int milliseconds) { VanillaCartQuantity.Pause(input, milliseconds); }
+            public void Press(Keys key, VanillaVisualInputProof proof) { input.PressFromProof(key, proof); }
+        }
+
+        internal static bool CanAcceptWholeInventory(uint carriedWeight, uint cartWeight, uint cartMaximum)
+        {
+            return carriedWeight > 0 && cartMaximum == 10000 && cartWeight <= cartMaximum
+                && !VanillaWeightCartAutomation.RequiresPrecisionFill(cartWeight * 100m / cartMaximum)
+                && carriedWeight <= cartMaximum - cartWeight;
+        }
+
+        internal static void ConfirmDefault(VanillaForegroundInput input, Func<bool> capacityStillSafe, Rectangle[] beforeDrag = null)
+        { ConfirmDefault(new PromptInput(input), capacityStillSafe, beforeDrag); }
+
+        internal static void ConfirmDefault(IVanillaQuantityPromptInput input, Func<bool> capacityStillSafe, Rectangle[] beforeDrag = null)
+        {
+            VanillaQuantityObservation prompt = ReadPromptStable(input, beforeDrag);
+            input.Check();
+            if (capacityStillSafe == null || !capacityStillSafe())
+                throw new InvalidOperationException("Fresh carried/Cart weight no longer proves the untouched stack fits; no quantity submitted.");
+            input.Check();
+            input.Press(Keys.Enter, prompt.Proof);
+        }
+
+        private static VanillaQuantityObservation ReadPromptStable(IVanillaQuantityPromptInput input, Rectangle[] beforeDrag)
+        {
+            VanillaQuantityObservation previous = null;
+            for (int attempt = 0; attempt < 8; attempt++)
+            {
+                input.Check();
+                using (Bitmap image = input.Capture())
+                {
+                    if (!HasCaptureProof(image, input.Proof))
+                        throw new InvalidOperationException("Quantity capture is unavailable; no quantity submitted.");
+                    Rectangle dialog, field;
+                    if (VanillaInventoryVision.TryFindQuantityPrompt(image, out dialog, out field))
+                    {
+                        if (WasPresentBeforeDrag(dialog, beforeDrag))
+                            throw new InvalidOperationException("Quantity-like panel was already present before the drag; no quantity submitted.");
+                        var current = new VanillaQuantityObservation { Dialog = dialog, Field = field, Proof = input.Proof };
+                        if (SamePrompt(previous, current)) return current;
+                        previous = current;
+                    }
+                    else previous = null;
+                }
+                input.Pause(120);
+            }
+            throw new InvalidOperationException("No unique stable quantity dialog was verified; no quantity submitted.");
+        }
+
+        private static bool SamePrompt(VanillaQuantityObservation first, VanillaQuantityObservation second)
+        {
+            return first != null && second != null && first.Dialog == second.Dialog && first.Field == second.Field
+                && SameFreshSurface(first.Proof, second.Proof);
+        }
+
+        private static bool SameFreshSurface(VanillaVisualInputProof first, VanillaVisualInputProof second)
+        {
+            return first != null && second != null && first.ProcessId > 0 && first.Window != IntPtr.Zero
+                && second.CapturedAt > first.CapturedAt && first.ProcessId == second.ProcessId
+                && first.Window == second.Window && first.ClientOrigin == second.ClientOrigin && first.ClientSize == second.ClientSize;
+        }
+
+        private static bool HasCaptureProof(Bitmap image, VanillaVisualInputProof proof)
+        {
+            return image != null && image.Width >= 320 && image.Height >= 240 && image.Width <= 4096 && image.Height <= 4096
+                && proof != null && proof.ProcessId > 0 && proof.Window != IntPtr.Zero && image.Size == proof.ClientSize;
+        }
+
+        private static bool WasPresentBeforeDrag(Rectangle dialog, Rectangle[] beforeDrag)
+        { return beforeDrag != null && beforeDrag.Any(previous => previous.IntersectsWith(dialog)); }
+
         internal static uint ConservativeAmount(uint carriedWeight, uint offeredAmount, uint cartWeight, uint cartMaximum)
         {
             if (carriedWeight == 0 || offeredAmount == 0 || cartMaximum == 0 || cartWeight > cartMaximum) return 0;
@@ -121,73 +209,183 @@ namespace _4RTools.Model.Vanilla
         }
 
         // Count and geometry must agree before using the untouched offered quantity.
-        internal static VanillaQuantityObservation ReadStable(VanillaForegroundInput input)
+        internal static VanillaQuantityObservation ReadStable(VanillaForegroundInput input, Rectangle[] beforeDrag = null)
         {
             VanillaQuantityObservation previous = null;
+            string evidence = "no capture";
             for (int attempt = 0; attempt < 6; attempt++)
             {
                 Check(input);
                 using (Bitmap image = input.CaptureClientBitmap())
                 {
                     VanillaQuantityObservation current;
-                    if (TryObserve(image, out current))
+                    if (TryObserve(image, out current, out evidence))
                     {
+                        if (WasPresentBeforeDrag(current.Dialog, beforeDrag))
+                            throw new InvalidOperationException("Quantity-like panel was already present before the drag; no quantity submitted.");
                         current.Proof = input.LastCaptureProof;
-                        if (previous != null && previous.Amount == current.Amount && previous.Field == current.Field
-                            && previous.Proof.Window == current.Proof.Window && previous.Proof.ClientOrigin == current.Proof.ClientOrigin
-                            && previous.Proof.ClientSize == current.Proof.ClientSize) return current;
+                        if (previous != null && previous.Amount == current.Amount && SamePrompt(previous, current)) return current;
                         previous = current;
                     }
                     else previous = null;
                 }
                 Pause(input, 120);
             }
-            throw new InvalidOperationException("Quantity field and offered count were not independently verified; no quantity submitted.");
+            throw new InvalidOperationException("Quantity field and offered count were not independently verified; no quantity submitted. " + evidence);
         }
 
-        internal static void Submit(VanillaForegroundInput input, VanillaQuantityObservation offered, uint amount)
+        internal static void Submit(VanillaForegroundInput input, VanillaQuantityObservation offered, uint amount,
+            Func<bool> quantityStillFits)
         {
             if (offered == null || amount == 0 || amount > offered.Amount) throw new ArgumentException("Invalid observed quantity.");
-            input.ClickFromProof(offered.Field, offered.Proof);
-            // Native caret evidence or two visual blink transitions inside the actual edit
-            // establish field focus. A modal rectangle alone is not keyboard focus.
-            ConfirmFocus(input, offered.Field);
-            using (Bitmap fresh = input.CaptureClientBitmap())
+            if (amount != offered.Amount)
             {
-                var proof = input.LastCaptureProof;
-                input.ReplaceFocusedTextFromProof(amount.ToString(CultureInfo.InvariantCulture), proof,
-                    () => { Check(input); if (VanillaCredentialFocus.Observe(proof.Window, offered.Field) == VanillaFieldFocus.Contradicted)
-                        throw new InvalidOperationException("Quantity keyboard focus changed."); });
+                input.ClickFromProof(offered.Field, offered.Proof);
+                // These custom edit controls do not reliably implement Ctrl+A. As in
+                // login, the freshly clicked field authorizes clearing first; empty
+                // field and caret evidence authorize typing the replacement number.
+                using (Bitmap fresh = input.CaptureClientBitmap())
+                {
+                    var proof = input.LastCaptureProof;
+                    if (!SameFreshSurface(offered.Proof, proof)
+                        || !VanillaInventoryVision.HasQuantityDialogSurface(fresh, offered.Dialog))
+                        throw new InvalidOperationException("Quantity surface changed before clearing.");
+                    input.ClearFocusedTextFromProof(proof, () => RequireQuantityFocus(input, proof, offered.Field));
+                }
+                WaitForEmptyQuantityField(input, offered);
+                ConfirmFocus(input, offered.Field);
+                VanillaVisualInputProof emptyProof = WaitForEmptyQuantityField(input, offered);
+                input.TypeTextFromProof(amount.ToString(CultureInfo.InvariantCulture), emptyProof,
+                    () => RequireQuantityFocus(input, emptyProof, offered.Field));
+                using (Bitmap fresh = input.CaptureClientBitmap())
+                {
+                    var proof = input.LastCaptureProof;
+                    if (!SameFreshSurface(offered.Proof, proof)
+                        || !VanillaInventoryVision.HasQuantityDialogSurface(fresh, offered.Dialog))
+                        throw new InvalidOperationException("Quantity surface changed before numeric readback.");
+                    input.SelectFocusedTextFromProof(proof, () => RequireQuantityFocus(input, proof, offered.Field));
+                }
             }
-            // Select the entered number so the insertion caret cannot be read as a digit.
-            input.Chord(true, false, false, Keys.A);
+            // An already-correct offered amount stays untouched. Reduced quantities
+            // use selected readback so a caret cannot be mistaken for another digit.
             VanillaQuantityObservation confirmed = ReadStable(input);
             if (confirmed.Dialog != offered.Dialog || Math.Abs(confirmed.Field.Left - offered.Field.Left) > 3
-                || Math.Abs(confirmed.Field.Top - offered.Field.Top) > 3 || confirmed.Amount != amount)
+                || Math.Abs(confirmed.Field.Top - offered.Field.Top) > 3 || confirmed.Amount != amount
+                || !SameFreshSurface(offered.Proof, confirmed.Proof))
                 throw new InvalidOperationException("Typed quantity readback did not match; Enter withheld.");
-            if (VanillaCredentialFocus.Observe(confirmed.Proof.Window, confirmed.Field) == VanillaFieldFocus.Contradicted)
-                throw new InvalidOperationException("Quantity keyboard focus was lost; Enter withheld.");
+            RequireQuantityFocus(input, confirmed.Proof, confirmed.Field);
+            if (quantityStillFits == null || !quantityStillFits())
+                throw new InvalidOperationException("Quantity no longer fits fresh verified Cart capacity; Enter withheld.");
             input.PressFromProof(Keys.Enter, confirmed.Proof);
         }
 
-        internal static bool CancelKnownPrompt(VanillaForegroundInput input)
+        private static void RequireQuantityFocus(VanillaForegroundInput input, VanillaVisualInputProof proof, Rectangle field)
         {
-            using (Bitmap image = input.CaptureClientBitmap())
+            Check(input);
+            if (VanillaCredentialFocus.Observe(proof.Window, field) == VanillaFieldFocus.Contradicted)
+                throw new InvalidOperationException("Quantity keyboard focus changed; input withheld.");
+        }
+
+        private static VanillaVisualInputProof WaitForEmptyQuantityField(VanillaForegroundInput input, VanillaQuantityObservation offered)
+        {
+            VanillaVisualInputProof previous = null;
+            for (int pass = 0; pass < 16; pass++)
             {
-                VanillaQuantityObservation current;
-                if (!TryObserve(image, out current)) return !VanillaInventoryVision.HasQuantityPrompt(image);
-                input.PressFromProof(Keys.Escape, input.LastCaptureProof);
-            }
-            for (int pass = 0; pass < 2; pass++)
-            {
-                Pause(input, 120);
-                using (Bitmap image = input.CaptureClientBitmap())
+                Check(input);
+                using (Bitmap frame = input.CaptureClientBitmap())
                 {
-                    VanillaQuantityObservation current;
-                    if (TryObserve(image, out current) || VanillaInventoryVision.HasQuantityPrompt(image)) return false;
+                    VanillaVisualInputProof proof = input.LastCaptureProof;
+                    if (!SameFreshSurface(offered.Proof, proof)
+                        || !VanillaInventoryVision.HasQuantityDialogSurface(frame, offered.Dialog))
+                        throw new InvalidOperationException("Quantity surface changed after clearing; no value typed.");
+                    RequireQuantityFocus(input, proof, offered.Field);
+                    if (VanillaCredentialPattern.IsEmptyField(frame, offered.Field))
+                    {
+                        if (SameFreshSurface(previous, proof)) return proof;
+                        previous = proof;
+                    }
+                    else previous = null;
+                }
+                Pause(input, 100);
+            }
+            throw new InvalidOperationException("Quantity field did not become empty after clearing; no value typed.");
+        }
+
+        internal static bool CancelKnownPrompt(VanillaForegroundInput input, Rectangle[] beforeDrag = null,
+            Rectangle knownDialog = default(Rectangle))
+        { return CancelKnownPrompt(new PromptInput(input), beforeDrag, knownDialog); }
+
+        internal static bool CancelKnownPrompt(IVanillaQuantityPromptInput input, Rectangle[] beforeDrag = null,
+            Rectangle knownDialog = default(Rectangle))
+        {
+            VanillaQuantityObservation previous = null, cancelled = null;
+            VanillaVisualInputProof lastCapture = null;
+            int absent = 0;
+            // Escape only after two fresh observations of the same unique prompt.
+            // Reading its number is unnecessary for dismissing it.
+            for (int pass = 0; pass < 8; pass++)
+            {
+                input.Check();
+                using (Bitmap image = input.Capture())
+                {
+                    if (!HasCaptureProof(image, input.Proof)
+                        || (lastCapture != null && !SameFreshSurface(lastCapture, input.Proof))) return false;
+                    lastCapture = input.Proof;
+                    Rectangle dialog, field;
+                    if (VanillaInventoryVision.TryFindQuantityPrompt(image, out dialog, out field))
+                    {
+                        if (WasPresentBeforeDrag(dialog, beforeDrag)) return false;
+                        absent = 0;
+                        var current = new VanillaQuantityObservation { Dialog = dialog, Field = field, Proof = input.Proof };
+                        if (SamePrompt(previous, current))
+                        {
+                            input.Check();
+                            input.Press(Keys.Escape, current.Proof);
+                            cancelled = current;
+                            break;
+                        }
+                        previous = current;
+                    }
+                    else
+                    {
+                        if (VanillaInventoryVision.HasQuantityPrompt(image)) return false;
+                        // Limited quantity entry may have already removed the blue
+                        // selection. Its previously recognized modal must still be
+                        // absent before resume; blank edit text is not dismissal.
+                        if (!knownDialog.IsEmpty && VanillaInventoryVision.HasQuantityDialogSurface(image, knownDialog)) return false;
+                        if (previous != null && VanillaInventoryVision.HasQuantityDialogSurface(image, previous.Dialog)) return false;
+                        previous = null;
+                        if (++absent >= 2) return true;
+                    }
+                }
+                input.Pause(120);
+            }
+            if (cancelled == null) return false;
+            absent = 0;
+            for (int pass = 0; pass < 15; pass++)
+            {
+                input.Pause(120);
+                input.Check();
+                using (Bitmap image = input.Capture())
+                {
+                    if (!HasCaptureProof(image, input.Proof) || !SameFreshSurface(lastCapture, input.Proof)) return false;
+                    lastCapture = input.Proof;
+                    Rectangle dialog, field;
+                    if (!VanillaInventoryVision.HasQuantityPrompt(image))
+                    {
+                        // Losing only the blue selection is not proof of dismissal.
+                        if (VanillaInventoryVision.HasQuantityDialogSurface(image, cancelled.Dialog)) absent = 0;
+                        else if (++absent >= 2) return true;
+                    }
+                    else
+                    {
+                        absent = 0;
+                        if (!VanillaInventoryVision.TryFindQuantityPrompt(image, out dialog, out field)
+                            || dialog != cancelled.Dialog || field != cancelled.Field) return false;
+                    }
                 }
             }
-            return true;
+            return false;
         }
 
         private static void ConfirmFocus(VanillaForegroundInput input, Rectangle field)

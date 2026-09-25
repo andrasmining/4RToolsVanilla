@@ -410,22 +410,49 @@ namespace _4RTools.Model.Vanilla
 
     internal static class VanillaVisualProbe
     {
+        private static readonly VanillaRecoveryVisualCapture RecoveryCapture = new VanillaRecoveryVisualCapture();
         [DllImport("user32.dll", SetLastError = true)] private static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
         [DllImport("user32.dll", SetLastError = true)] private static extern bool GetClientRect(IntPtr hwnd, out RECT rect);
         [StructLayout(LayoutKind.Sequential)] private struct RECT { public int Left, Top, Right, Bottom; }
         public static VanillaVisualState Classify(IntPtr hwnd)
         {
-            RECT rect;
-            if (hwnd == IntPtr.Zero || !GetClientRect(hwnd, out rect)) return VanillaVisualState.Unknown;
-            int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;
+            int width, height;
+            string source;
+            if (hwnd == IntPtr.Zero || !VanillaBackgroundWindowInput.TryGetCaptureSize(hwnd, out width, out height, out source))
+                return VanillaVisualState.Unknown;
             if (width < 320 || height < 240 || width > 4096 || height > 4096) return VanillaVisualState.Unknown;
             using (var bitmap = new Bitmap(width, height, PixelFormat.Format24bppRgb))
             using (var graphics = Graphics.FromImage(bitmap))
             {
                 IntPtr hdc = graphics.GetHdc(); bool ok;
-                try { ok = PrintWindow(hwnd, hdc, 1); } finally { graphics.ReleaseHdc(hdc); }
+                try { ok = PrintWindow(hwnd, hdc, 3); } finally { graphics.ReleaseHdc(hdc); }
                 if (!ok) return VanillaVisualState.Unknown;
                 return Classify(bitmap);
+            }
+        }
+        internal static VanillaRecoveryVisualObservation ObserveProcess(int pid)
+        {
+            return RecoveryCapture.Observe(pid, () => ObserveProcessCore(pid), 1500);
+        }
+        private static VanillaRecoveryVisualObservation ObserveProcessCore(int pid)
+        {
+            // Window enumeration avoids Process.MainWindowHandle's protected metadata
+            // query. Normal background capture never restores or sends game input.
+            bool windowAvailable = false;
+            try
+            {
+                using (var input = new VanillaBackgroundWindowInput(pid, () => false))
+                {
+                    windowAvailable = true;
+                    using (Bitmap image = input.CaptureClientBitmap())
+                        return new VanillaRecoveryVisualObservation(Classify(image), true, null);
+                }
+            }
+            catch (Exception ex)
+            {
+                var native = ex as Win32Exception;
+                return new VanillaRecoveryVisualObservation(VanillaVisualState.Unknown, windowAvailable,
+                    ex.GetType().Name + (native == null ? "" : " nativeError=" + native.NativeErrorCode) + ": " + ex.Message);
             }
         }
         internal static VanillaVisualState Classify(Bitmap bitmap)
@@ -467,6 +494,61 @@ namespace _4RTools.Model.Vanilla
         }
     }
 
+    internal sealed class VanillaRecoveryVisualObservation
+    {
+        internal readonly VanillaVisualState State;
+        internal readonly bool WindowAvailable;
+        internal readonly string Error;
+        internal VanillaRecoveryVisualObservation(VanillaVisualState state, bool windowAvailable, string error)
+        { State = state; WindowAvailable = windowAvailable; Error = error; }
+    }
+
+    internal sealed class VanillaRecoveryVisualCapture
+    {
+        private readonly object gate = new object();
+        private readonly Dictionary<int, System.Threading.Tasks.Task<VanillaRecoveryVisualObservation>> pending
+            = new Dictionary<int, System.Threading.Tasks.Task<VanillaRecoveryVisualObservation>>();
+
+        internal VanillaRecoveryVisualObservation Observe(int pid, Func<VanillaRecoveryVisualObservation> capture, int timeoutMs)
+        {
+            if (pid <= 0 || capture == null || timeoutMs <= 0 || timeoutMs > 1500)
+                throw new ArgumentException("Recovery capture needs a PID, reader and bounded wait of at most 1500 ms.");
+            System.Threading.Tasks.Task<VanillaRecoveryVisualObservation> work;
+            lock (gate)
+            {
+                // Discard late frames: they cannot become the next fresh terminal
+                // observation. At most two native captures may remain in flight.
+                foreach (int completed in pending.Where(pair => pair.Value.IsCompleted).Select(pair => pair.Key).ToArray())
+                {
+                    var ignoredFailure = pending[completed].Exception;
+                    pending.Remove(completed);
+                }
+                if (pending.ContainsKey(pid) || pending.Count >= 2)
+                    return Unavailable("A prior background capture is still pending");
+                work = System.Threading.Tasks.Task.Run(capture);
+                pending.Add(pid, work);
+            }
+            try
+            {
+                if (!work.Wait(timeoutMs)) return Unavailable("Background capture exceeded its bounded observation time");
+                return work.Result ?? Unavailable("Background capture returned no observation");
+            }
+            catch (AggregateException ex)
+            { return Unavailable("Background capture failed: " + ex.GetBaseException().Message); }
+            finally
+            {
+                if (work.IsCompleted)
+                    lock (gate)
+                    {
+                        System.Threading.Tasks.Task<VanillaRecoveryVisualObservation> current;
+                        if (pending.TryGetValue(pid, out current) && ReferenceEquals(current, work)) pending.Remove(pid);
+                    }
+            }
+        }
+        private static VanillaRecoveryVisualObservation Unavailable(string reason)
+        { return new VanillaRecoveryVisualObservation(VanillaVisualState.Unknown, false, reason); }
+    }
+
     public sealed partial class VanillaReconnectSupervisor : IDisposable
     {
         private sealed class Runtime
@@ -500,6 +582,8 @@ namespace _4RTools.Model.Vanilla
             public VanillaVisualState TerminalVisual;
             public DateTimeOffset? TerminalObservedAt;
             public bool ServerOutagePending;
+            public long VisualObservationSequence;
+            public VanillaRecoveryVisualObservation LastVisualObservation;
         }
         private readonly object gate = new object();
         private readonly string baseDirectory;
@@ -509,6 +593,7 @@ namespace _4RTools.Model.Vanilla
         private System.Threading.Timer timer;
         private VanillaReconnectSettings settings;
         private bool running, disposed, ticking;
+        private Func<int, VanillaRecoveryVisualObservation> recoveryVisualSource = VanillaVisualProbe.ObserveProcess;
         public event System.Action Updated;
         public event System.Action<string> Logged;
         public VanillaReconnectSupervisor(string baseDirectory) : this(baseDirectory, new VanillaRecoveryRestartEnvironment()) { }
@@ -770,7 +855,6 @@ namespace _4RTools.Model.Vanilla
         }
         private void Probe(Runtime runtime, DateTimeOffset now)
         {
-            Process p = null;
             try
             {
                 if (runtime.ServerOutagePending && !runtime.RecoveryOwned)
@@ -779,18 +863,25 @@ namespace _4RTools.Model.Vanilla
                 }
                 if (runtime.NextRecoveryAt.HasValue && runtime.NextRecoveryAt.Value > now)
                 { SetStage(runtime, VanillaReconnectStage.Backoff, BackoffDetail(runtime, now)); return; }
-                p = Process.GetProcessById(runtime.ProcessId.Value); p.Refresh();
-                VanillaVisualState visual = settings.VisualWatchdog && p.MainWindowHandle != IntPtr.Zero
-                    ? VanillaVisualProbe.Classify(p.MainWindowHandle) : VanillaVisualState.Unknown;
-                runtime.Visual = visual;
-                if ((visual == VanillaVisualState.ServerClosed || IsTerminalDisconnect(visual))
-                    && HandleTerminalVisual(runtime, visual, now, () => p.StartTime.ToUniversalTime())) return;
-                if (CheckMovementWatchdog(runtime, now, () => p.StartTime.ToUniversalTime())) return;
+                Func<DateTime> identity = () => restartEnvironment.GetStartTimeUtc(runtime.ProcessId.Value);
+                long previousVisual = runtime.VisualObservationSequence;
+                if (settings.VisualWatchdog || runtime.RecoveryOwned)
+                {
+                    ObserveRecoveryVisual(runtime);
+                    now = restartEnvironment.UtcNow;
+                    // An unknown modal blocks action before the movement deadline
+                    // can authorize a close. Exact terminal messages still recover.
+                    if (HandleTerminalVisual(runtime, runtime.Visual, now, identity)) return;
+                }
+                if (CheckMovementWatchdogWithVisual(runtime, now, identity, runtime.VisualObservationSequence != previousVisual)) return;
+                now = restartEnvironment.UtcNow;
+                bool visualObserved = runtime.VisualObservationSequence != previousVisual;
+                VanillaVisualState visual = visualObserved ? runtime.Visual : VanillaVisualState.Unknown;
                 if (runtime.MovementRecoveryPending)
                 { QueueAutobattleClientRestartLocked(runtime, now, runtime.ResumeFailureDetail ?? "Restart-only autobattle verification failed"); return; }
-                if (p.MainWindowHandle == IntPtr.Zero)
+                if (visualObserved && runtime.LastVisualObservation != null
+                    && !runtime.LastVisualObservation.WindowAvailable)
                 { SetStage(runtime, VanillaReconnectStage.WaitingForWindow, "Waiting for Vanilla main window"); return; }
-                if (HandleTerminalVisual(runtime, visual, now, () => p.StartTime.ToUniversalTime())) return;
                 if (visual == VanillaVisualState.Gameplay)
                 {
                     runtime.LoginLikeSince = null; runtime.HasBeenOnline = true; runtime.ResumeVerificationFailed = false; runtime.ResumeFailureDetail = null;
@@ -818,7 +909,7 @@ namespace _4RTools.Model.Vanilla
                     if (!runtime.LoginLikeSince.HasValue) runtime.LoginLikeSince = now;
                     if (runtime.HasBeenOnline && !runtime.RecoveryOwned && settings.AutoRecover
                         && (now - runtime.LoginLikeSince.Value).TotalMilliseconds >= settings.LoginStableMs)
-                    { CloseForRecovery(runtime, p, now, "Login/service screen detected after confirmed gameplay", false); return; }
+                    { QueueClientRestart(runtime, now, "Login/service screen detected after confirmed gameplay", false, identity); return; }
                     if (runtime.RecoveryOwned && settings.AutoRecover && (now - runtime.LoginLikeSince.Value).TotalMilliseconds >= settings.LoginStableMs)
                         QueueLogin(runtime, true, "Replacement client login shell detected");
                     else if (runtime.RecoveryOwned) SetStage(runtime, VanillaReconnectStage.WaitingForGameplay, "Replacement login/service screen detected; waiting before login input");
@@ -840,7 +931,26 @@ namespace _4RTools.Model.Vanilla
                 if (runtime.RecoveryOwned) ScheduleRecoveryFailureLocked(runtime, now, "Probe failed: " + ex.Message);
                 else SetStage(runtime, VanillaReconnectStage.Backoff, "Probe failed: " + ex.Message);
             }
-            finally { p?.Dispose(); }
+        }
+
+        private void ObserveRecoveryVisual(Runtime runtime)
+        {
+            VanillaRecoveryVisualObservation observation;
+            try { observation = recoveryVisualSource(runtime.ProcessId.Value); }
+            catch (Exception ex)
+            {
+                observation = new VanillaRecoveryVisualObservation(VanillaVisualState.Unknown, false,
+                    ex.GetType().Name + ": " + ex.Message);
+            }
+            if (observation == null)
+                observation = new VanillaRecoveryVisualObservation(VanillaVisualState.Unknown, false, "No visual observation returned");
+            VanillaRecoveryVisualObservation previous = runtime.LastVisualObservation;
+            if (previous == null || previous.State != observation.State || previous.Error != observation.Error)
+                Log(runtime.Account.Label + ": recovery screen diagnosis=" + observation.State
+                    + (observation.Error == null ? "" : "; capture unavailable: " + observation.Error));
+            runtime.LastVisualObservation = observation;
+            runtime.VisualObservationSequence++;
+            runtime.Visual = observation.State;
         }
         private bool CanLaunch(Runtime runtime, int aliveCount, DateTimeOffset now)
         {
@@ -933,6 +1043,7 @@ namespace _4RTools.Model.Vanilla
             }
             runtime.ProcessId = pid; runtime.CharacterSession = freshLaunch ? (Guid?)null : CurrentCharacter(pid)?.Session;
             runtime.ConfirmedCharacter = null; runtime.ClosingForRecovery = false; runtime.NonMinimizedSince = null;
+            runtime.LastVisualObservation = null;
             runtime.MovementRecoveryPending = false; runtime.MovementWatchdog.Reset(); ResetTerminalEvidence(runtime);
             runtime.ResumeSent = !freshLaunch;
             if (freshLaunch) { runtime.ResumeVerificationFailed = false; runtime.ResumeFailureDetail = null; }

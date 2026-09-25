@@ -30,6 +30,14 @@ namespace Vanilla.Diagnostics.Tests
             Test("Manifest rejects missing executable, extras, duplicates and user data", ManifestSafety);
             Test("Observed stack quantities never exceed capacity or the offered stack", QuantityBounds);
             Test("Production quantity recognition reads selected numeric fields", QuantityVision);
+            Test("Untouched stack acceptance requires all carried weight to fit below precision fill", QuantityDefaultCapacity);
+            Test("Quantity capacity evidence requires fresh matching character and process state", QuantityFreshWeights);
+            Test("Quantity capacity evidence rejects stale or inconsistent individual weight fields", QuantityWeightFields);
+            Test("Unreadable default quantity is confirmed once from stable prompt and capacity evidence", QuantityDefaultPrompt);
+            Test("Quantity-like panels seen before the drag never authorize default confirmation or Escape", QuantityBeforeDragPanels);
+            Test("Quantity confirmation rejects stale, changed, missing and ambiguous prompt evidence", QuantityPromptGuards);
+            Test("Quantity cancellation waits for delayed dismissal and two consecutive absent frames", QuantityCancelPrompt);
+            Test("Quantity cancellation rejects stale or replaced absence evidence and remaining modals", QuantityDismissalGuards);
             Test("Temporary pending cast finishes before move and sit", TemporaryRestSequence);
             Test("Temporary sit requires movement and fails on the bounded deadline", TemporaryMoveTimeout);
             Test("Temporary pending input rejects death, session change and cancellation", TemporaryIdentity);
@@ -245,6 +253,272 @@ namespace Vanilla.Diagnostics.Tests
                 }
             }
         }
+        private static void QuantityDefaultCapacity()
+        {
+            Assert(VanillaCartQuantity.CanAcceptWholeInventory(10000, 0, 10000), "Exact entire-inventory fit was rejected.");
+            Assert(VanillaCartQuantity.CanAcceptWholeInventory(2501, 7499, 10000), "Exact fit immediately below 75% was rejected.");
+            Assert(!VanillaCartQuantity.CanAcceptWholeInventory(2502, 7499, 10000), "A one-weight capacity overflow was accepted.");
+            foreach (uint cart in new[] { 7500U, 9999U, 10000U, 10001U, uint.MaxValue })
+                Assert(!VanillaCartQuantity.CanAcceptWholeInventory(1, cart, 10000), "Precision-fill/full/invalid Cart accepted an unedited stack.");
+            Assert(!VanillaCartQuantity.CanAcceptWholeInventory(0, 0, 10000), "Missing carried weight became capacity proof.");
+            Assert(!VanillaCartQuantity.CanAcceptWholeInventory(10001, 0, 10000), "Excess carried weight was accepted.");
+            foreach (uint maximum in new[] { 0U, 9999U, 10001U, uint.MaxValue })
+                Assert(!VanillaCartQuantity.CanAcceptWholeInventory(1, 0, maximum), "An unverified Cart maximum was accepted.");
+        }
+
+        private static readonly DateTimeOffset QuantityEpoch = new DateTimeOffset(2026, 1, 1, 12, 0, 0, TimeSpan.Zero);
+        private static VanillaReconnectAccount QuantityAccount()
+        { return new VanillaReconnectAccount { UserName = "quantity-account", CharacterName = "Quantity Farmer", CharacterSlot = 2 }; }
+        private static VanillaFleetClientInfo QuantityClient()
+        {
+            var values = new Dictionary<VanillaField, object>
+            {
+                { VanillaField.UserName, "quantity-account" }, { VanillaField.CharacterName, "Quantity Farmer" },
+                { VanillaField.CharacterSlot, 2 }, { VanillaField.CurrentWeight, 1000U }, { VanillaField.MaxWeight, 4000U },
+                { VanillaField.CurrentCartWeight, 100U }, { VanillaField.MaxCartWeight, 10000U },
+                { VanillaField.Loading, false }, { VanillaField.ClientReady, true }
+            };
+            var state = VanillaClientState.Create(Guid.NewGuid(), QuantityEpoch, null, values, null, null);
+            state.ProcessId = 201;
+            foreach (StateValue field in state.Fields.Values.Where(value => value.IsAvailable)) field.Validation = StateValidation.Valid;
+            return new VanillaFleetClientInfo
+            {
+                ProcessId = 201, CurrentWeight = 1000, MaxWeight = 4000, CurrentCartWeight = 100, MaxCartWeight = 10000,
+                WeightVerified = true, CartWeightVerified = true, Snapshot = state, Identity = VanillaCharacterIdentity.FromState(state)
+            };
+        }
+        private static void QuantityFreshWeights()
+        {
+            var account = QuantityAccount();
+            Assert(VanillaWeightCartAutomation.HasFreshQuantityWeights(QuantityClient(), account, 201, QuantityEpoch), "Coherent weights rejected.");
+            Assert(VanillaWeightCartAutomation.HasFreshQuantityWeights(QuantityClient(), account, 201, QuantityEpoch.AddSeconds(3)), "Freshness boundary rejected.");
+            Assert(!VanillaWeightCartAutomation.HasFreshQuantityWeights(QuantityClient(), account, 201, QuantityEpoch.AddMilliseconds(3001)), "Stale weights accepted.");
+            Assert(!VanillaWeightCartAutomation.HasFreshQuantityWeights(QuantityClient(), account, 201, QuantityEpoch.AddTicks(-1)), "Future weights accepted.");
+            Assert(!VanillaWeightCartAutomation.HasFreshQuantityWeights(null, account, 201, QuantityEpoch), "Missing client accepted.");
+            Assert(!VanillaWeightCartAutomation.HasFreshQuantityWeights(QuantityClient(), null, 201, QuantityEpoch), "Missing account accepted.");
+            Action<VanillaFleetClientInfo>[] corruptions = {
+                c => c.ProcessId = 202, c => c.CurrentWeight = null, c => c.MaxWeight = 0, c => c.CurrentWeight = 4001,
+                c => c.CurrentCartWeight = null, c => c.MaxCartWeight = 9999, c => c.CurrentCartWeight = 10001,
+                c => c.WeightVerified = false, c => c.CartWeightVerified = false, c => c.Snapshot = null,
+                c => c.Snapshot.IsDemo = true, c => c.Snapshot.Error = "synthetic read failure", c => c.Snapshot.ProcessId = 202,
+                c => c.Snapshot.SessionId = Guid.NewGuid(), c => c.Identity = null,
+                c => c.Identity = new VanillaCharacterIdentity(201, c.Snapshot.SessionId, QuantityEpoch, "Other Farmer", "quantity-account", 2),
+                c => c.Identity = new VanillaCharacterIdentity(201, c.Snapshot.SessionId, QuantityEpoch, "Quantity Farmer", "other-account", 2),
+                c => c.Identity = new VanillaCharacterIdentity(201, c.Snapshot.SessionId, QuantityEpoch.AddTicks(-1), "Quantity Farmer", "quantity-account", 2)
+            };
+            foreach (var corrupt in corruptions)
+            {
+                var client = QuantityClient(); corrupt(client);
+                Assert(!VanillaWeightCartAutomation.HasFreshQuantityWeights(client, account, 201, QuantityEpoch), "Invalid or mixed-identity weights accepted.");
+            }
+        }
+        private static void QuantityWeightFields()
+        {
+            foreach (VanillaField field in new[] { VanillaField.CurrentWeight, VanillaField.MaxWeight, VanillaField.CurrentCartWeight, VanillaField.MaxCartWeight })
+            foreach (int corruption in new[] { 0, 1, 2, 3 })
+            {
+                var client = QuantityClient();
+                if (corruption == 0) client.Snapshot.Fields[field].IsAvailable = false;
+                else if (corruption == 1) client.Snapshot.Fields[field].Validation = StateValidation.Unverified;
+                else if (corruption == 2) client.Snapshot.Fields[field].LastObservedAtUtc = QuantityEpoch.AddTicks(-1);
+                else
+                {
+                    var fields = client.Snapshot.Fields.ToDictionary(pair => pair.Key, pair => pair.Value);
+                    fields.Remove(field); client.Snapshot.Fields = fields;
+                }
+                Assert(!VanillaWeightCartAutomation.HasFreshQuantityWeights(client, QuantityAccount(), 201, QuantityEpoch),
+                    "Unavailable, unverified, stale or missing weight field accepted: " + field);
+            }
+            foreach (int field in new[] { 0, 1, 2, 3 })
+            {
+                var client = QuantityClient();
+                if (field == 0) client.CurrentWeight++; else if (field == 1) client.MaxWeight++;
+                else if (field == 2) client.CurrentCartWeight++; else client.MaxCartWeight++;
+                Assert(!VanillaWeightCartAutomation.HasFreshQuantityWeights(client, QuantityAccount(), 201, QuantityEpoch),
+                    "Cached quantity weight differed from its coherent snapshot.");
+            }
+        }
+
+        private static void QuantityDefaultPrompt()
+        {
+            using (Bitmap image = QuantityPromptImage(new QuantityFrame()))
+            {
+                VanillaQuantityObservation numeric;
+                Assert(!VanillaCartQuantity.TryObserve(image, out numeric), "Unreadable-number fixture unexpectedly authorized numeric fill.");
+            }
+            var input = new FakeQuantityPrompt();
+            int capacityChecks = 0;
+            VanillaCartQuantity.ConfirmDefault(input, () => { capacityChecks++; return VanillaCartQuantity.CanAcceptWholeInventory(1000, 100, 10000); });
+            Assert(input.Captures == 2 && capacityChecks == 1 && input.Keys.SequenceEqual(new[] { Keys.Enter }),
+                "Default quantity required OCR, skipped repeated prompt evidence or sent duplicate Enter.");
+            Assert(input.PressedCapture == 2, "Enter did not use the latest prompt capture.");
+        }
+        private static void QuantityPromptGuards()
+        {
+            foreach (string change in new[] { "timestamp", "window", "process", "origin", "size", "dialog", "missing", "proof", "none", "multiple", "fields" })
+            {
+                var input = new FakeQuantityPrompt { Frame = n => QuantityChangedFrame(change, n) };
+                Reject(() => VanillaCartQuantity.ConfirmDefault(input, () => true));
+                Assert(input.Keys.Count == 0, "Changed or ambiguous prompt received Enter: " + change);
+            }
+            foreach (Func<bool> capacity in new Func<bool>[] { null, () => false })
+            {
+                var input = new FakeQuantityPrompt();
+                Reject(() => VanillaCartQuantity.ConfirmDefault(input, capacity));
+                Assert(input.Keys.Count == 0, "Missing/failed final capacity check received Enter.");
+            }
+            foreach (int cancelAt in new[] { 0, 1, 2 })
+            {
+                var input = new FakeQuantityPrompt { CancelAtCapture = cancelAt };
+                Reject(() => VanillaCartQuantity.ConfirmDefault(input, () => true));
+                Assert(input.Keys.Count == 0, "STOP around prompt capture received Enter.");
+            }
+            var late = new FakeQuantityPrompt();
+            Reject(() => VanillaCartQuantity.ConfirmDefault(late, () => { late.Cancelled = true; return true; }));
+            Assert(late.Keys.Count == 0, "STOP inside the capacity callback received Enter.");
+        }
+        private static void QuantityBeforeDragPanels()
+        {
+            Rectangle dialog, field;
+            using (Bitmap image = QuantityPromptImage(new QuantityFrame()))
+                Assert(VanillaInventoryVision.TryFindQuantityPrompt(image, out dialog, out field), "Baseline prompt fixture was not found.");
+            var input = new FakeQuantityPrompt();
+            int capacityChecks = 0;
+            Reject(() => VanillaCartQuantity.ConfirmDefault(input, () => { capacityChecks++; return true; }, new[] { dialog }));
+            Assert(input.Keys.Count == 0 && capacityChecks == 0, "An old panel authorized a newly offered stack.");
+            var cancel = new FakeQuantityPrompt();
+            Assert(!VanillaCartQuantity.CancelKnownPrompt(cancel, new[] { dialog }) && cancel.Keys.Count == 0,
+                "A preexisting lookalike received Escape.");
+            var unrelated = new FakeQuantityPrompt();
+            VanillaCartQuantity.ConfirmDefault(unrelated, () => true, new[] { new Rectangle(0, 0, 100, 40) });
+            Assert(unrelated.Keys.SequenceEqual(new[] { Keys.Enter }), "An unrelated old panel blocked the newly observed prompt.");
+        }
+        private static void QuantityCancelPrompt()
+        {
+            var delayed = new FakeQuantityPrompt { Frame = n => new QuantityFrame { Count = n <= 5 || n == 7 ? 1 : 0 } };
+            Assert(VanillaCartQuantity.CancelKnownPrompt(delayed), "Delayed dismissal was not given time to settle.");
+            Assert(delayed.Captures == 9 && delayed.Keys.SequenceEqual(new[] { Keys.Escape }),
+                "Cancellation repeated Escape or combined nonconsecutive absent frames.");
+            var absent = new FakeQuantityPrompt { Frame = n => new QuantityFrame { Count = 0 } };
+            Assert(VanillaCartQuantity.CancelKnownPrompt(absent) && absent.Captures == 2 && absent.Keys.Count == 0,
+                "Already absent prompt required input or skipped confirmation.");
+            var persistent = new FakeQuantityPrompt();
+            Assert(!VanillaCartQuantity.CancelKnownPrompt(persistent) && persistent.Keys.SequenceEqual(new[] { Keys.Escape })
+                && persistent.Captures == 17, "A persistent prompt was accepted or cancellation was unbounded.");
+            var stopped = new FakeQuantityPrompt { CancelAfterEscape = true };
+            Reject(() => VanillaCartQuantity.CancelKnownPrompt(stopped));
+            Assert(stopped.Keys.SequenceEqual(new[] { Keys.Escape }), "STOP after Escape sent further keys.");
+        }
+        private static void QuantityDismissalGuards()
+        {
+            Rectangle knownDialog, knownField;
+            using (Bitmap image = QuantityPromptImage(new QuantityFrame()))
+                Assert(VanillaInventoryVision.TryFindQuantityPrompt(image, out knownDialog, out knownField),
+                    "Known dialog fixture was not recognized.");
+            var edited = new FakeQuantityPrompt { Frame = n => new QuantityFrame { Unselected = true } };
+            Assert(!VanillaCartQuantity.CancelKnownPrompt(edited, null, knownDialog) && edited.Keys.Count == 0,
+                "An already edited quantity modal became successful dismissal or received blind Escape.");
+            foreach (bool afterEscape in new[] { false, true })
+            foreach (string change in new[] { "timestamp", "window", "process", "origin", "size", "missing", "proof", "multiple", "fields", "unselected" })
+            {
+                // With no earlier selected prompt, a plain white panel has no
+                // established quantity identity. The post-Escape case pins that identity.
+                if (!afterEscape && change == "unselected") continue;
+                var input = new FakeQuantityPrompt
+                {
+                    Frame = n =>
+                    {
+                        if (afterEscape && n <= 2) return new QuantityFrame();
+                        QuantityFrame frame = QuantityChangedFrame(change, n);
+                        if (change != "multiple" && change != "fields" && change != "unselected") frame.Count = 0;
+                        return frame;
+                    }
+                };
+                bool dismissed = false;
+                try { dismissed = VanillaCartQuantity.CancelKnownPrompt(input); }
+                catch (InvalidOperationException) { }
+                Assert(!dismissed && input.Keys.Count <= (afterEscape ? 1 : 0),
+                    "Failed/replaced/stale absence or remaining modal became successful dismissal: " + change);
+            }
+        }
+
+        private sealed class QuantityFrame
+        {
+            internal int Count = 1, Offset;
+            internal bool SplitField, Unselected, MissingImage, MissingProof;
+            internal int ProcessId = 201;
+            internal IntPtr Window = new IntPtr(501);
+            internal Point Origin = new Point(20, 30);
+            internal Size Size = new Size(640, 480);
+            internal long? Timestamp;
+        }
+        private static QuantityFrame QuantityChangedFrame(string change, int capture)
+        {
+            var frame = new QuantityFrame(); int toggle = capture % 2;
+            if (change == "timestamp") frame.Timestamp = 1;
+            else if (change == "window") frame.Window = new IntPtr(501 + toggle);
+            else if (change == "process") frame.ProcessId += toggle;
+            else if (change == "origin") frame.Origin = new Point(20 + toggle, 30);
+            else if (change == "size") frame.Size = new Size(640 + toggle, 480);
+            else if (change == "dialog") frame.Offset = toggle;
+            else if (change == "missing") frame.MissingImage = true;
+            else if (change == "proof") frame.MissingProof = true;
+            else if (change == "none") frame.Count = 0;
+            else if (change == "multiple") frame.Count = 2;
+            else if (change == "fields") frame.SplitField = true;
+            else if (change == "unselected") frame.Unselected = true;
+            return frame;
+        }
+        private static Bitmap QuantityPromptImage(QuantityFrame frame)
+        {
+            if (frame.MissingImage) return null;
+            var image = new Bitmap(frame.Size.Width, frame.Size.Height);
+            using (Graphics graphics = Graphics.FromImage(image))
+            using (var font = new Font("Tahoma", 16, FontStyle.Regular, GraphicsUnit.Pixel))
+            {
+                graphics.Clear(Color.FromArgb(90, 95, 90));
+                graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                for (int index = 0; index < frame.Count; index++)
+                {
+                    int x = 180 + frame.Offset, y = 170 + index * 120;
+                    graphics.FillRectangle(Brushes.White, x, y, 270, 80);
+                    graphics.FillRectangle(frame.Unselected ? Brushes.WhiteSmoke : Brushes.Blue, x + 20, y + 40, 90, 24);
+                    graphics.DrawString("abc", font, frame.Unselected ? Brushes.Black : Brushes.White,
+                        x + 24, y + 42, StringFormat.GenericTypographic);
+                    if (frame.SplitField) graphics.FillRectangle(Brushes.Blue, x + 130, y + 40, 30, 24);
+                }
+            }
+            return image;
+        }
+        private sealed class FakeQuantityPrompt : IVanillaQuantityPromptInput
+        {
+            internal Func<int, QuantityFrame> Frame = n => new QuantityFrame();
+            internal readonly List<Keys> Keys = new List<Keys>();
+            internal int Captures, PressedCapture, CancelAtCapture = -1;
+            internal bool Cancelled, CancelAfterEscape;
+            public VanillaVisualInputProof Proof { get; private set; }
+            public Bitmap Capture()
+            {
+                Captures++;
+                QuantityFrame frame = Frame(Captures);
+                Proof = frame.MissingProof ? null : new VanillaVisualInputProof(frame.ProcessId, frame.Window, frame.Size,
+                    frame.Origin, frame.Timestamp ?? Captures * 100L);
+                return QuantityPromptImage(frame);
+            }
+            public void Check()
+            {
+                if (Cancelled || (CancelAtCapture >= 0 && Captures >= CancelAtCapture)) throw new OperationCanceledException();
+            }
+            public void Pause(int milliseconds) { Check(); }
+            public void Press(Keys key, VanillaVisualInputProof proof)
+            {
+                Check();
+                Assert(proof != null && object.ReferenceEquals(proof, Proof), "Input reused a different capture proof.");
+                Keys.Add(key); PressedCapture = Captures;
+                if (key == System.Windows.Forms.Keys.Escape && CancelAfterEscape) Cancelled = true;
+            }
+        }
+
         private sealed class FakeTemporary : IVanillaTemporaryIo
         {
             private static readonly DateTimeOffset Epoch = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);

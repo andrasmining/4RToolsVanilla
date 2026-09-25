@@ -113,6 +113,8 @@ namespace _4RTools.Model.Vanilla
             bool cartFull = false, cartSafetyStop = false, retryLater = false;
             string retryLaterReason = null;
             Rectangle inventory = Rectangle.Empty, cart = Rectangle.Empty;
+            Rectangle[] quantityBeforeDrag = new Rectangle[0];
+            Rectangle knownQuantityDialog = Rectangle.Empty;
             int moved = 0;
             decimal? stoppedHpBaselinePercent = null;
             bool hpDanger = false;
@@ -293,9 +295,10 @@ namespace _4RTools.Model.Vanilla
 
                                 uint? pendingWeightBefore;
                                 Point sourcePoint;
+                                knownQuantityDialog = Rectangle.Empty;
                                 if (!TryDragNextDetectedItem(token, input, inventory, cart, categoryName,
                                     moved * TransferAttemptLimit + transferAttempt - 1, cancelled, activity,
-                                    out sourcePoint, out pendingWeightBefore))
+                                    out sourcePoint, out pendingWeightBefore, out quantityBeforeDrag))
                                 {
                                     if (transferAttempt == 1)
                                     {
@@ -329,28 +332,49 @@ namespace _4RTools.Model.Vanilla
                                     + TransferAttemptLimit + " sent; allowing the client to settle before checking quantity/progress.");
                                 WaitWithCancellation(TransferSettleMs, cancelled);
 
-                                quantity = WaitForQuantityPrompt(input, cancelled, QuantityPromptTimeoutMs);
+                                quantity = WaitForQuantityPrompt(input, cancelled, QuantityPromptTimeoutMs, out knownQuantityDialog);
                                 requestedQuantity = null;
                                 if (quantity)
                                 {
-                                    VanillaQuantityObservation offered = VanillaCartQuantity.ReadStable(input);
-                                    VanillaCartWeightSample capacity = CurrentCartWeight(token.ProcessId);
-                                    if (!pendingWeightBefore.HasValue || capacity == null || capacity.Maximum != cartBefore.Maximum)
-                                        throw new InvalidOperationException("Verified carried/Cart weight changed or disappeared before quantity confirmation.");
-                                    uint fit = VanillaCartQuantity.ConservativeAmount(pendingWeightBefore.Value, offered.Amount,
-                                        capacity.Current, capacity.Maximum);
-                                    if (fit == 0)
+                                    VanillaFleetClientInfo capacity = QuantityWeights(token, cartBefore.Maximum);
+                                    if (VanillaCartQuantity.CanAcceptWholeInventory(capacity.CurrentWeight.Value,
+                                        capacity.CurrentCartWeight.Value, capacity.MaxCartWeight.Value))
                                     {
-                                        if (!VanillaCartQuantity.CancelKnownPrompt(input))
-                                            throw new InvalidOperationException("Capacity-limited quantity dialog could not be cancelled safely.");
-                                        cartSafetyStop = true; abortForCapacity = true;
-                                        activity(token.Account.Label + ": remaining Cart capacity cannot safely accept this observed stack; category skipped without submitting a quantity.");
-                                        break;
+                                        activity(token.Account.Label + ": quantity dialog detected; all carried weight "
+                                            + capacity.CurrentWeight + " fits in free Cart capacity "
+                                            + (capacity.MaxCartWeight.Value - capacity.CurrentCartWeight.Value)
+                                            + "; confirming the untouched quantity once, then verifying Cart-weight progress.");
+                                        VanillaCartQuantity.ConfirmDefault(input, () =>
+                                        {
+                                            VanillaFleetClientInfo fresh = QuantityWeights(token, cartBefore.Maximum);
+                                            return VanillaCartQuantity.CanAcceptWholeInventory(fresh.CurrentWeight.Value,
+                                                fresh.CurrentCartWeight.Value, fresh.MaxCartWeight.Value);
+                                        }, quantityBeforeDrag);
                                     }
-                                    requestedQuantity = fit;
-                                    activity(token.Account.Label + ": verified offered stack=" + offered.Amount
-                                        + "; conservative capacity-safe quantity=" + fit + "; verifying field focus and typed readback before Enter.");
-                                    VanillaCartQuantity.Submit(input, offered, fit);
+                                    else
+                                    {
+                                        VanillaQuantityObservation offered = VanillaCartQuantity.ReadStable(input, quantityBeforeDrag);
+                                        capacity = QuantityWeights(token, cartBefore.Maximum);
+                                        uint fit = VanillaCartQuantity.ConservativeAmount(capacity.CurrentWeight.Value, offered.Amount,
+                                            capacity.CurrentCartWeight.Value, capacity.MaxCartWeight.Value);
+                                        if (fit == 0)
+                                        {
+                                            if (!VanillaCartQuantity.CancelKnownPrompt(input, quantityBeforeDrag, knownQuantityDialog))
+                                                throw new InvalidOperationException("Capacity-limited quantity dialog could not be cancelled safely.");
+                                            cartSafetyStop = true; abortForCapacity = true;
+                                            activity(token.Account.Label + ": remaining Cart capacity cannot safely accept this observed stack; category skipped without submitting a quantity.");
+                                            break;
+                                        }
+                                        requestedQuantity = fit;
+                                        activity(token.Account.Label + ": verified offered stack=" + offered.Amount
+                                            + "; conservative capacity-safe quantity=" + fit + "; verifying field focus and typed readback before Enter.");
+                                        VanillaCartQuantity.Submit(input, offered, fit, () =>
+                                        {
+                                            VanillaFleetClientInfo fresh = QuantityWeights(token, cartBefore.Maximum);
+                                            return VanillaCartQuantity.ConservativeAmount(fresh.CurrentWeight.Value, offered.Amount,
+                                                fresh.CurrentCartWeight.Value, fresh.MaxCartWeight.Value) >= fit;
+                                        });
+                                    }
                                     WaitWithCancellation(TransferSettleMs, cancelled);
                                 }
                                 else
@@ -526,7 +550,7 @@ namespace _4RTools.Model.Vanilla
 
                         completed = true;
                         return RecoverPaused(token, input, settings, inventory, cart, paused, moved, cartFull,
-                            cartSafetyStop, supervisorCancelled, activity, danger);
+                            cartSafetyStop, supervisorCancelled, activity, danger, quantityBeforeDrag, knownQuantityDialog);
                     }
 
                     string detail = "Weight/cart maintenance cancelled by supervisor/settings/client ownership change: " + ex.Message;
@@ -559,7 +583,7 @@ namespace _4RTools.Model.Vanilla
                     }
                     completed = true;
                     return RecoverPaused(token, input, settings, inventory, cart, paused, moved, cartFull,
-                        cartSafetyStop, supervisorCancelled, activity, detail);
+                        cartSafetyStop, supervisorCancelled, activity, detail, quantityBeforeDrag, knownQuantityDialog);
                 }
                 finally
                 {
@@ -570,7 +594,8 @@ namespace _4RTools.Model.Vanilla
 
         private VanillaWeightCartResult RecoverPaused(VanillaWeightMaintenanceToken token, VanillaForegroundInput input,
             VanillaWeightAlertSettings settings, Rectangle inventory, Rectangle cart, bool paused, int moved,
-            bool cartFull, bool safetyStop, Func<bool> cancelled, System.Action<string> report, string reason)
+            bool cartFull, bool safetyStop, Func<bool> cancelled, System.Action<string> report, string reason,
+            Rectangle[] quantityBeforeDrag = null, Rectangle knownQuantityDialog = default(Rectangle))
         {
             try
             {
@@ -584,7 +609,7 @@ namespace _4RTools.Model.Vanilla
                 bool neededResume = paused;
                 if (paused)
                 {
-                    if (!VanillaCartQuantity.CancelKnownPrompt(input))
+                    if (!VanillaCartQuantity.CancelKnownPrompt(input, quantityBeforeDrag, knownQuantityDialog))
                         throw new InvalidOperationException("Quantity dialog could not be safely cleared before resume.");
                     VerifyResume(token, input, cancelled, report);
                     paused = false;

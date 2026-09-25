@@ -41,6 +41,44 @@ namespace _4RTools.Model.Vanilla
             };
         }
 
+        internal static bool HasFreshQuantityWeights(VanillaFleetClientInfo client, VanillaReconnectAccount account,
+            int processId, DateTimeOffset now)
+        {
+            return client != null && client.ProcessId == processId && client.WeightVerified && client.CartWeightVerified
+                && client.CurrentWeight.HasValue && client.MaxWeight.HasValue && client.MaxWeight.Value > 0
+                && client.CurrentWeight.Value > 0 && client.CurrentWeight.Value <= client.MaxWeight.Value
+                && client.CurrentCartWeight.HasValue && client.MaxCartWeight == 10000
+                && client.CurrentCartWeight.Value <= client.MaxCartWeight.Value
+                && client.Snapshot != null && !client.Snapshot.IsDemo && client.Snapshot.Error == null
+                && client.Snapshot.ProcessId == processId && client.Snapshot.SampledAtUtc <= now
+                && now - client.Snapshot.SampledAtUtc <= TimeSpan.FromSeconds(3)
+                && VanillaCharacterRoster.Matches(account, client.Identity, now)
+                && client.Identity.ProcessId == processId && client.Identity.Session == client.Snapshot.SessionId
+                && client.Identity.At == client.Snapshot.SampledAtUtc
+                && SameQuantityWeight(client.Snapshot, VanillaField.CurrentWeight, client.CurrentWeight)
+                && SameQuantityWeight(client.Snapshot, VanillaField.MaxWeight, client.MaxWeight)
+                && SameQuantityWeight(client.Snapshot, VanillaField.CurrentCartWeight, client.CurrentCartWeight)
+                && SameQuantityWeight(client.Snapshot, VanillaField.MaxCartWeight, client.MaxCartWeight);
+        }
+
+        private static bool SameQuantityWeight(VanillaClientState snapshot, VanillaField field, uint? expected)
+        {
+            StateValue observed;
+            if (snapshot.Fields == null || !snapshot.Fields.TryGetValue(field, out observed)) return false;
+            var value = observed as StateValue<uint>;
+            return value != null && value.IsAvailable && value.Validation == StateValidation.Valid
+                && value.LastObservedAtUtc == snapshot.SampledAtUtc && value.Value == expected;
+        }
+
+        private VanillaFleetClientInfo QuantityWeights(VanillaWeightMaintenanceToken token, uint expectedMaximum)
+        {
+            VanillaFleetClientInfo client = CurrentClient(token.ProcessId);
+            if (!HasFreshQuantityWeights(client, token.Account, token.ProcessId, DateTimeOffset.UtcNow)
+                || client.MaxCartWeight != expectedMaximum)
+                throw new InvalidOperationException("Fresh same-character carried/Cart weights are unavailable before quantity confirmation.");
+            return client;
+        }
+
         private bool WaitForCartWeightIncrease(int pid, uint before, Func<bool> cancelled,
             out VanillaCartWeightSample after, int timeoutMs = CartProgressTimeoutMs)
         {
@@ -147,17 +185,20 @@ namespace _4RTools.Model.Vanilla
                 && IsFarmingComplete(client.CartWeightPercent.Value, client.WeightPercent.Value);
         }
 
-        private static bool WaitForQuantityPrompt(VanillaForegroundInput input, Func<bool> cancelled, int timeoutMs)
+        private static bool WaitForQuantityPrompt(VanillaForegroundInput input, Func<bool> cancelled, int timeoutMs,
+            out Rectangle dialog)
         {
+            dialog = Rectangle.Empty;
             Stopwatch watch = Stopwatch.StartNew();
             while (watch.ElapsedMilliseconds < timeoutMs)
             {
                 ThrowIfCancelled(cancelled);
                 using (Bitmap frame = input.CaptureClientBitmap())
-                    {
-                        VanillaQuantityObservation quantity;
-                        if (VanillaCartQuantity.TryObserve(frame, out quantity) || VanillaInventoryVision.HasQuantityPrompt(frame)) return true;
-                    }
+                {
+                    Rectangle field;
+                    if (VanillaInventoryVision.TryFindQuantityPrompt(frame, out dialog, out field)) return true;
+                    if (VanillaInventoryVision.HasQuantityPrompt(frame)) return true;
+                }
                 WaitWithCancellation(100, cancelled);
             }
             return false;
@@ -452,10 +493,11 @@ namespace _4RTools.Model.Vanilla
 
         private bool TryDragNextDetectedItem(VanillaWeightMaintenanceToken token, VanillaForegroundInput input,
             Rectangle inventory, Rectangle cart, string categoryName, int transferSequence, Func<bool> cancelled, System.Action<string> report,
-            out Point sourcePoint, out uint? weightBefore)
+            out Point sourcePoint, out uint? weightBefore, out Rectangle[] existingQuantityDialogs)
         {
             sourcePoint = Point.Empty;
             weightBefore = null;
+            existingQuantityDialogs = new Rectangle[0];
             int emptyStable = 0, occupiedStable = 0;
 
             for (int sample = 1; sample <= FirstSlotVerifySamples; sample++)
@@ -489,6 +531,7 @@ namespace _4RTools.Model.Vanilla
                             Point destination = VanillaInventoryVision.CartDropPoint(cart, transferSequence);
                             sourcePoint = first.Center;
                             weightBefore = CurrentWeight(token.ProcessId);
+                            existingQuantityDialogs = VanillaInventoryVision.QuantityPromptBounds(frame);
                             report(categoryName + " first slot confirmed occupied on two fresh captures; dragging it to a safe detected Cart interior point.");
                             input.DragFromProof(new Rectangle(sourcePoint.X - 1, sourcePoint.Y - 1, 3, 3),
                                 new Rectangle(destination.X - 1, destination.Y - 1, 3, 3), input.LastCaptureProof);

@@ -156,6 +156,9 @@ namespace _4RTools.Model.Vanilla
         }
 
         private bool CheckMovementWatchdog(Runtime runtime, DateTimeOffset now, Func<DateTime> startTimeUtc)
+        { return CheckMovementWatchdogWithVisual(runtime, now, startTimeUtc, false); }
+
+        private bool CheckMovementWatchdogWithVisual(Runtime runtime, DateTimeOffset now, Func<DateTime> startTimeUtc, bool visualObserved)
         {
             if (!running || disposed || !settings.AutoRecover || !runtime.Account.Enabled || !runtime.ProcessId.HasValue
                 || runtime.ScriptRunning || runtime.RecoveryOwned || positionSource == null
@@ -164,13 +167,29 @@ namespace _4RTools.Model.Vanilla
             VanillaPositionSample sample = null;
             try { sample = positionSource(runtime.ProcessId.Value); }
             catch (Exception ex) { Log(runtime.Account.Label + ": coordinate source unavailable: " + ex.Message); }
+            // Captures and sibling diagnosis can take time while the shared fleet
+            // continues polling. A newer real sample must not look like future data.
+            now = restartEnvironment.UtcNow;
             string reason = runtime.MovementWatchdog.Observe(runtime.ProcessId.Value, sample, restartEnvironment.MonotonicNow, now);
             double stalled = runtime.MovementWatchdog.StalledSeconds(restartEnvironment.MonotonicNow);
+            bool unavailable = sample == null || sample.Pid != runtime.ProcessId.Value || !sample.Verified
+                || sample.Error != null || sample.Session == Guid.Empty || !sample.X.HasValue || !sample.Y.HasValue
+                || sample.At > now || (now - sample.At).TotalSeconds > 3;
+            if ((unavailable || stalled >= VanillaMovementWatchdog.TimeoutSeconds || runtime.TerminalSamples > 0)
+                && !visualObserved)
+            {
+                // Diagnose this client even when continuous visual monitoring is off.
+                // A failed screenshot must not skip or reset the monotonic deadline.
+                ObserveRecoveryVisual(runtime);
+                now = restartEnvironment.UtcNow;
+                if (HandleTerminalVisual(runtime, runtime.Visual, now, startTimeUtc)) return true;
+            }
             int restartAfter = Math.Max(60, settings.MovementRestartSeconds);
             if (stalled < restartAfter) return false;
             string detail = (reason ?? ("No verified X/Y movement for " + (int)stalled + "s"))
                 + ". Configured no-movement restart threshold " + restartAfter
-                + "s reached after Smart Teleport had time to self-heal; restarting only this client. No steady-state Autobattle hotkey is sent.";
+                + "s reached after Smart Teleport had time to self-heal; screen diagnosis=" + runtime.Visual
+                + "; restarting only this client. No steady-state Autobattle hotkey is sent.";
             Log(runtime.Account.Label + ": " + detail);
             QueueClientRestart(runtime, now, detail, false, startTimeUtc);
             return true;

@@ -140,7 +140,7 @@ namespace _4RTools.Model.Vanilla
                                 try
                                 {
                                     if (CloseTerminalBeforeStartup(runtime, existingPid.Value, generation, config,
-                                        () => { process.Refresh(); return VanillaVisualProbe.Classify(process.MainWindowHandle); },
+                                        () => VanillaVisualProbe.ObserveProcess(existingPid.Value).State,
                                         () => process.StartTime.ToUniversalTime(), milliseconds => PauseCharacterSelection(
                                             () => StartupAccountCancelled(generation, account), milliseconds)))
                                         existingPid = null;

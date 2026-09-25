@@ -100,6 +100,17 @@ not only the reconnect session log.
 
 ## Weight / Cart UI automation
 
+- Below the 75% precision threshold, a fresh coherent same-character snapshot
+  proving that all carried weight fits in the free Cart capacity permits one
+  confirmation of the untouched default quantity. Require a unique stable prompt
+  newly appearing after the drag and recheck capacity immediately before input;
+  verify Cart-weight progress afterward. Reading/retyping the number is unnecessary
+  for this case. Capacity-limited entry retains exact numeric readback and uses
+  Home/Shift+End rather than Ctrl+A in the custom edit control.
+- Quantity cancellation does not depend on number OCR. Require fresh owned-window
+  evidence of actual modal disappearance with a bounded settle, not merely loss of
+  its blue selection. Never treat missing captures as successful dismissal.
+
 - Critical farming emergency overrides every Cart resume/retry and recovery path:
   a single fresh verified same-client snapshot with carried weight >50%, SP <25%
   and HP <50% closes that exact creation-time-pinned client immediately, without

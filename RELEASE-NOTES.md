@@ -1,37 +1,42 @@
-# 4RTools Vanilla 0.6.79
+# 4RTools Vanilla 0.6.80
 
-## Reliable credential replacement
+## Cart quantity confirmation
 
-- Clear remembered login text with Home, Shift+End and Backspace. Vanilla's
-  custom login control does not reliably select all text with Ctrl+A, which
-  allowed repeated login attempts to append usernames.
-- Clear a freshly identified, clicked field before requiring its blinking
-  caret. Full text can hide that caret. Require a visibly empty field and
-  independently confirmed focus before typing the actual username or password.
-- Accept the observed one-pixel bottom-border repaint of the same control;
-  continue rejecting changed positions, widths, windows and stale input proofs.
-- Calibrate the accurate reader for small login text while retaining exact,
-  case-sensitive username comparison on repeated fresh frames and rejection of
-  confident contradictory readings. No configured name is supplied as an OCR hint.
-- Preserve exact username and password-mask checks, foreground ownership,
-  cancellation and saved settings. Cart quantity entry keeps its existing input
-  sequence. Earlier server-selection, cursor-parking, farming emergency and
-  temporary-action fixes remain included.
+- Confirm the untouched stack quantity when fresh verified weights prove the
+  entire carried inventory fits in the Cart, below the 75% precision threshold.
+  An unreadable number no longer blocks this safe transfer. Require a newly
+  appearing, unique stable quantity popup, recheck capacity before Enter and
+  verify Cart-weight progress afterward.
+- Cancel a recognized quantity popup without depending on number OCR. Wait for
+  actual dismissal rather than treating a delayed response or lost blue selection
+  as success. This prevents a quantity-reading failure from also blocking cleanup
+  and causing a client-restart loop.
+- Retain exact count and capacity checks for limited transfers. Leave an already
+  correct number untouched; use Home/Shift+End for replacement and readback instead
+  of the custom control's unreliable Ctrl+A behavior. Log numeric-recognition
+  evidence when the count cannot be verified.
+
+## Disconnect recovery
+
+- Diagnose minimized clients using the existing background window-capture path.
+  The former zero-size client-area check could miss a disconnect while minimized.
+- Freshly check the affected screen when movement stalls or its state becomes
+  unavailable, including when continuous visual monitoring is disabled.
+- Bound capture waits and outstanding capture workers. Discard late images and
+  keep native capture failures from bypassing the movement-restart deadline.
+- Preserve two-observation confirmation of exact disconnect/logout dialogs,
+  serialized replacement, healthy-client isolation, STOP cancellation, farming
+  holds and the separate confirmed server-outage retry interval.
 
 ## Validation
 
-Live diagnosis reproduced accumulated username text after Ctrl+A replacement.
-One ordinary selection-and-Backspace sequence cleared the whole field, and
-independent focus verification then succeeded. No credential images or secret
-contents were exported.
+Local session logs confirmed two quantity-reader failures followed by failed
+popup cancellation and affected-client restarts. The logs did not retain a
+quantity screenshot, so they cannot independently establish the displayed count.
 
-The production credential flow accepted the second saved account, selected its
-configured character, verified its living gameplay identity/map/position and
-confirmed movement after the configured Autobattle hotkey. The first farming
-client stayed running throughout that second-account test.
-
-Regression coverage includes retained text after failed or partial clearing,
-empty-field recognition, caret visibility, control-border repaint, cancellation
-and ownership changes. Release gates cover full Windows Debug/Release tests,
-native test-owned processes, isolated mock UI, portable packaging and updater
-discovery/download/staging separately from live-game evidence.
+Regression coverage exercises unreadable numbers, capacity boundaries, coherent
+resource observations, stale/replaced windows, delayed dismissal, minimized
+test-owned windows and unavailable-state recovery. Windows release gates cover
+Debug/Release tests, native test-owned processes, isolated mock UI, portable
+packaging and real updater discovery/download/staging. These checks are separate
+from live-game validation and do not claim reproduction on the other PC.

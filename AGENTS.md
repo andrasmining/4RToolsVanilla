@@ -752,6 +752,35 @@ updater's discovery/download/staging path before declaring completion.
 
 ## Weight / Cart maintenance
 
+### Quantity confirmation and failed-state diagnosis (2026-09-25)
+
+After a verified Inventory-to-Cart drag, separate recognition of the quantity
+dialog from reading its number. Below the 75% precision threshold, when a fresh,
+coherent same-character snapshot proves free Cart capacity can hold the entire
+carried inventory, confirm the untouched default quantity once without numeric
+OCR or rewriting it. Require two fresh unique prompt observations, reject panels
+already present before the drag, recheck capacity immediately before Enter, and
+require verified Cart-weight progress before reporting transfer success.
+Capacity-limited transfers retain observed-count bounds and exact numeric
+readback; custom edit fields use Home/Shift+End selection rather than Ctrl+A.
+Never infer an item identity from its Inventory category.
+
+Cancel a positively recognized quantity dialog without requiring readable digits.
+Allow bounded dismissal time; require fresh same-window captures proving that both
+the selected field and known modal surface disappeared. Lost selection, missing
+captures, a changed window or an ambiguous prompt do not prove dismissal.
+
+Unavailable or stalled verified movement must trigger fresh diagnosis of the
+affected client even when continuous visual monitoring is disabled. Observe
+minimized clients through the existing ordinary background window-capture path;
+never restore healthy siblings for diagnosis. Bound capture waits and pending
+workers, discard late captures, and do not let native window/capture errors skip
+or reset the movement-restart deadline. Two fresh exact disconnect/logout
+observations use the existing serialized replacement flow. Unknown modals receive
+no blind dismissal; unavailable captures alone do not prove disconnection.
+Preserve emergency/completion/manual holds, process identity checks, cancellation
+and the special confirmed server-outage retry policy.
+
 ### Critical farming emergency stop (2026-09-23)
 
 While 4RTools runs, protect every enabled saved username + character row even

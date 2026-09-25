@@ -535,22 +535,27 @@ namespace _4RTools.Model.Vanilla
                 throw new InvalidOperationException("Background Vanilla client size is unavailable; no teleport input continued.");
 
             var bitmap = new Bitmap(width, height, PixelFormat.Format24bppRgb);
-            using (Graphics graphics = Graphics.FromImage(bitmap))
+            try
             {
-                IntPtr hdc = graphics.GetHdc();
-                try
+                using (Graphics graphics = Graphics.FromImage(bitmap))
                 {
-                    if (!PrintWindow(window, hdc, PW_CLIENTONLY | PW_RENDERFULLCONTENT))
-                        throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows could not capture the background Vanilla client.");
+                    IntPtr hdc = graphics.GetHdc();
+                    try
+                    {
+                        if (!PrintWindow(window, hdc, PW_CLIENTONLY | PW_RENDERFULLCONTENT))
+                            throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows could not capture the background Vanilla client.");
+                    }
+                    finally { graphics.ReleaseHdc(hdc); }
                 }
-                finally { graphics.ReleaseHdc(hdc); }
+                if (!VanillaTeleportVision.FrameLooksUsable(bitmap))
+                    throw new InvalidOperationException("Background window capture was blank/indeterminate; no teleport input continued.");
+                return bitmap;
             }
-            if (!VanillaTeleportVision.FrameLooksUsable(bitmap))
+            catch
             {
                 bitmap.Dispose();
-                throw new InvalidOperationException("Background window capture was blank/indeterminate; no teleport input continued.");
+                throw;
             }
-            return bitmap;
         }
 
         private void Key(Keys key, bool up, bool system)
@@ -599,7 +604,7 @@ namespace _4RTools.Model.Vanilla
             return best;
         }
 
-        private static bool TryGetCaptureSize(IntPtr hwnd, out int width, out int height, out string source)
+        internal static bool TryGetCaptureSize(IntPtr hwnd, out int width, out int height, out string source)
         {
             width = height = 0;
             source = "none";

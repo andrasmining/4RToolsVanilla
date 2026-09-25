@@ -382,7 +382,36 @@ namespace _4RTools.Model.Vanilla
 
         internal static bool HasQuantityPrompt(Bitmap frame)
         {
-            if (frame == null) return false;
+            return FindQuantityPrompts(frame).Count != 0;
+        }
+
+        internal static bool TryFindQuantityPrompt(Bitmap frame, out Rectangle dialog, out Rectangle field)
+        {
+            var prompts = FindQuantityPrompts(frame);
+            dialog = field = Rectangle.Empty;
+            if (prompts.Count != 1) return false;
+            dialog = prompts[0].Item1;
+            field = prompts[0].Item2;
+            return !field.IsEmpty;
+        }
+
+        internal static Rectangle[] QuantityPromptBounds(Bitmap frame)
+        { return FindQuantityPrompts(frame).Select(prompt => prompt.Item1).ToArray(); }
+
+        internal static bool HasQuantityDialogSurface(Bitmap frame, Rectangle expected)
+        {
+            if (frame == null || expected.IsEmpty || !new Rectangle(Point.Empty, frame.Size).Contains(expected)) return true;
+            PixelBuffer pixels = PixelBuffer.Read(frame);
+            return ConnectedComponents(pixels, new Rectangle(Point.Empty, frame.Size), p => p.Light,
+                100, 440, 30, 95, 900, 60000).Any(component =>
+                Math.Abs(component.Bounds.Left - expected.Left) <= 2 && Math.Abs(component.Bounds.Top - expected.Top) <= 2
+                && Math.Abs(component.Bounds.Right - expected.Right) <= 2 && Math.Abs(component.Bounds.Bottom - expected.Bottom) <= 2);
+        }
+
+        private static List<Tuple<Rectangle, Rectangle>> FindQuantityPrompts(Bitmap frame)
+        {
+            var result = new List<Tuple<Rectangle, Rectangle>>();
+            if (frame == null || frame.Width > 4096 || frame.Height > 4096) return result;
             PixelBuffer pixels = PixelBuffer.Read(frame);
             Rectangle whole = new Rectangle(Point.Empty, frame.Size);
             // The Vanilla quantity prompt is a short, wide white modal containing a focused
@@ -398,9 +427,17 @@ namespace _4RTools.Model.Vanilla
                 if (aspect < 2.4 || aspect > 7.0 || fill < 0.45) continue;
                 Rectangle leftBody = new Rectangle(box.Left, box.Top + box.Height / 4,
                     Math.Max(1, (int)Math.Round(box.Width * 0.68)), Math.Max(1, box.Height * 3 / 4));
-                if (pixels.BlueSelectionCount(leftBody) >= 18) return true;
+                if (pixels.BlueSelectionCount(leftBody) < 18) continue;
+                // Locate the selected edit independently of its digits. An unreadable
+                // number can still be cancelled, or accepted unchanged when the entire
+                // carried inventory fits. Multiple fields remain an ambiguous modal.
+                var fields = ConnectedComponents(pixels, leftBody,
+                    p => p.B >= 180 && p.B - p.R >= 60 && p.B - p.G >= 30,
+                    3, 350, 5, 65, 18, 22750)
+                    .Where(c => c.Area >= c.Bounds.Width * c.Bounds.Height * .4).ToArray();
+                result.Add(Tuple.Create(box, fields.Length == 1 ? fields[0].Bounds : Rectangle.Empty));
             }
-            return false;
+            return result;
         }
 
         private static Rectangle FindChangedLightPanel(Bitmap primary, Bitmap secondary)
