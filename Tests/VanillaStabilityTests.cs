@@ -30,6 +30,10 @@ namespace Vanilla.Diagnostics.Tests
             Test("Manifest rejects missing executable, extras, duplicates and user data", ManifestSafety);
             Test("Observed stack quantities never exceed capacity or the offered stack", QuantityBounds);
             Test("Production quantity recognition reads selected numeric fields", QuantityVision);
+            Test("Captured Cart quantities retain dark selected digits", CapturedQuantityVision);
+            Test("Quantity recognition supports both observed text polarities", QuantityContrastVision);
+            Test("Blank, mixed-polarity and non-positive quantities authorize no numeric input", QuantityRejectedVision);
+            Test("Competing repeated-digit OCR readings cannot authorize a quantity", QuantityAmbiguousVision);
             Test("Untouched stack acceptance requires all carried weight to fit below precision fill", QuantityDefaultCapacity);
             Test("Quantity capacity evidence requires fresh matching character and process state", QuantityFreshWeights);
             Test("Quantity capacity evidence rejects stale or inconsistent individual weight fields", QuantityWeightFields);
@@ -252,6 +256,105 @@ namespace Vanilla.Diagnostics.Tests
                         + " evidence=[" + recognitionEvidence + "]");
                 }
             }
+        }
+        private static void CapturedQuantityVision()
+        {
+            foreach (uint amount in new[] { 305U, 273U })
+            using (var crop = new Bitmap(Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Fixtures", "quantity-dark-" + amount + ".png")))
+            foreach (Size size in new[] { new Size(640, 480), new Size(1024, 768) })
+            using (var image = new Bitmap(size.Width, size.Height))
+            {
+                using (Graphics graphics = Graphics.FromImage(image))
+                {
+                    graphics.Clear(Color.FromArgb(90, 95, 90));
+                    graphics.DrawImageUnscaled(crop, (size.Width - crop.Width) / 2, (size.Height - crop.Height) / 2);
+                }
+                AssertQuantity(image, amount, "captured " + amount + " at " + size);
+            }
+        }
+        private static void QuantityContrastVision()
+        {
+            foreach (Color ink in new[] { Color.Black, Color.White })
+            foreach (Color selection in new[] { Color.Blue, Color.FromArgb(111, 158, 242) })
+            foreach (string text in new[] { "1", "273", "305", "1000", "9999" })
+            using (Bitmap image = NumericQuantityImage(text, ink, selection))
+                AssertQuantity(image, uint.Parse(text), "synthetic " + text + " ink=" + ink + " background=" + selection);
+        }
+        private static void QuantityRejectedVision()
+        {
+            foreach (Color ink in new[] { Color.Black, Color.White })
+            foreach (Color selection in new[] { Color.Blue, Color.FromArgb(111, 158, 242) })
+            foreach (string text in new[] { "", "abc", "0", "-273", "2000001" })
+            using (Bitmap image = NumericQuantityImage(text, ink, selection))
+                AssertQuantity(image, null, "invalid " + text + " ink=" + ink + " background=" + selection);
+            using (Bitmap image = NumericQuantityImage("273", Color.Black, Color.FromArgb(111, 158, 242)))
+            {
+                using (Graphics graphics = Graphics.FromImage(image))
+                    graphics.FillRectangle(Brushes.White, 275, 216, 3, 8);
+                AssertQuantity(image, null, "competing dark/light selected glyphs");
+            }
+            using (Bitmap image = NumericQuantityImage("273", Color.FromArgb(57, 81, 123), Color.FromArgb(111, 158, 242)))
+                AssertQuantity(image, null, "unestablished weak text contrast");
+            using (Bitmap image = NumericQuantityImage("273", Color.Black, Color.FromArgb(111, 158, 242)))
+            {
+                using (Bitmap second = image.Clone(new Rectangle(180, 170, 270, 80), image.PixelFormat))
+                using (Graphics graphics = Graphics.FromImage(image))
+                    graphics.DrawImageUnscaled(second, 180, 300);
+                AssertQuantity(image, null, "two independently readable quantity fields");
+            }
+        }
+        private static void QuantityAmbiguousVision()
+        {
+            // The expanded rendering study exposed 9999 being misread as 9333 by
+            // two profiles among six competing same-length interpretations.
+            foreach (Color ink in new[] { Color.Black, Color.White })
+            foreach (Color selection in new[] { Color.Blue, Color.FromArgb(111, 158, 242) })
+            foreach (TextRenderingHint hint in new[] { TextRenderingHint.SingleBitPerPixelGridFit, TextRenderingHint.AntiAliasGridFit })
+            foreach (bool compact in new[] { false, true })
+            using (var image = new Bitmap(800, 600))
+            using (Graphics graphics = Graphics.FromImage(image))
+            using (var font = new Font("Microsoft Sans Serif", 11, FontStyle.Regular, GraphicsUnit.Pixel))
+            using (var background = new SolidBrush(selection))
+            using (var foreground = new SolidBrush(ink))
+            {
+                graphics.Clear(Color.FromArgb(80, 70, 55));
+                graphics.FillRectangle(Brushes.White, 290, 250, 220, 58);
+                graphics.TextRenderingHint = hint;
+                int width = compact ? (int)Math.Ceiling(graphics.MeasureString("9999", font, 200, StringFormat.GenericTypographic).Width) + 4 : 70;
+                graphics.FillRectangle(background, 306, 281, width, 17);
+                graphics.FillRectangle(Brushes.LightGray, 445, 278, 48, 22);
+                graphics.DrawString("9999", font, foreground, 308, 282, StringFormat.GenericTypographic);
+                VanillaQuantityObservation observed;
+                string evidence;
+                bool found = VanillaCartQuantity.TryObserve(image, out observed, out evidence);
+                Assert(!found || observed.Amount == 9999,
+                    "Ambiguous repeated digits became a different quantity; " + evidence);
+            }
+        }
+        private static Bitmap NumericQuantityImage(string text, Color ink, Color selection)
+        {
+            var image = new Bitmap(640, 480);
+            using (Graphics graphics = Graphics.FromImage(image))
+            using (var font = new Font("Tahoma", 16, FontStyle.Regular, GraphicsUnit.Pixel))
+            using (var background = new SolidBrush(selection))
+            using (var foreground = new SolidBrush(ink))
+            {
+                graphics.Clear(Color.FromArgb(90, 95, 90));
+                graphics.FillRectangle(Brushes.White, 180, 170, 270, 80);
+                graphics.FillRectangle(background, 200, 210, 90, 24);
+                graphics.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                graphics.DrawString(text, font, foreground, 204, 212, StringFormat.GenericTypographic);
+            }
+            return image;
+        }
+        private static void AssertQuantity(Bitmap image, uint? expected, string description)
+        {
+            VanillaQuantityObservation observed;
+            string evidence;
+            bool found = VanillaCartQuantity.TryObserve(image, out observed, out evidence);
+            Assert(found == expected.HasValue && (!found || observed.Amount == expected.Value),
+                description + "; expected=" + (expected.HasValue ? expected.Value.ToString() : "rejected")
+                + "; observed=" + (found ? observed.Amount.ToString() : "rejected") + "; " + evidence);
         }
         private static void QuantityDefaultCapacity()
         {

@@ -1,4 +1,22 @@
-# 4RTools Vanilla 0.6.80
+# 4RTools Vanilla 0.6.81
+
+## Live quantity-reader correction
+
+- Read both dark and light digits on the selected quantity field. Live Vanilla
+  popups render black digits on a light-blue selection; the former white-digit
+  reconstruction erased those numbers before OCR. Keep the existing confidence,
+  capacity and fresh-capture checks.
+- Compare additional integer-scale OCR views without smoothing the observed
+  pixels. Require at least three agreeing readings across multiple scales and a
+  majority of readings that match the visible digit count. Lone readings and
+  small pluralities among conflicting results no longer authorize input.
+- Require the recognized digit count to match the visible glyph count, so OCR
+  cannot silently drop a minus sign or another extra mark and accept the result.
+- Cover the actual cropped 305 and 273 Mastela quantity dialogs as offline
+  regression fixtures. These contain only the item label, number and OK button.
+
+This release also includes the Cart confirmation and disconnect-recovery fixes
+from 0.6.80 described below.
 
 ## Cart quantity confirmation
 
@@ -30,9 +48,18 @@
 
 ## Validation
 
-Local session logs confirmed two quantity-reader failures followed by failed
-popup cancellation and affected-client restarts. The logs did not retain a
-quantity screenshot, so they cannot independently establish the displayed count.
+Earlier session logs confirmed two quantity-reader failures followed by failed
+popup cancellation and affected-client restarts. During subsequent live testing,
+the new default-quantity path transferred 305 and 273 Mastela respectively:
+Cart weight rose from 21 to 936 and from 21 to 840. Both clients resumed verified
+farming movement. The captured quantity crops then identified the dark-digit
+reader defect corrected in this release. The nearly-full Cart count path is
+covered offline; a nearly-full live Cart was not manufactured for testing.
+
+The live 0.6.80 supervisor also replaced one client after 181 seconds without
+verified movement despite an Unknown screen, then verified its login and farming
+movement while leaving the other client online. This verifies the stall fallback;
+it does not establish visual detection of the other PC's disconnect dialog.
 
 Regression coverage exercises unreadable numbers, capacity boundaries, coherent
 resource observations, stale/replaced windows, delayed dismissal, minimized

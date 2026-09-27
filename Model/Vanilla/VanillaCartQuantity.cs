@@ -143,7 +143,7 @@ namespace _4RTools.Model.Vanilla
                 evidence += "; too many selected-field candidates";
                 return false;
             }
-            string last = evidence;
+            string last = evidence, candidateFailure = null, acceptedEvidence = null;
             foreach (Rectangle field in fields)
             {
                 Rectangle[] parents = forms.Where(box => box.Contains(field) && field.Top >= box.Top + box.Height / 4).ToArray();
@@ -154,27 +154,26 @@ namespace _4RTools.Model.Vanilla
                 }
                 Rectangle dialog = parents[0];
                 VanillaTextLine[] lines; string ocrEvidence;
-                // OCR expects dark glyphs on a light surface. The selected number is
-                // white on blue; grayscale of the whole selection creates a dark box
-                // and can erase or merge digits. Remove only the observed selection
-                // background, preserving glyph intensities without substituting text.
+                // Selected glyphs can be dark or light on blue, depending on the skin.
+                // Remove the observed selection background using the glyph contrast;
+                // grayscale of the whole selection can erase or merge these digits.
                 using (Bitmap textImage = pixels.SelectedText(field))
                 {
                     if (textImage == null)
                     {
-                        last = evidence + "; field=" + field + "; selected text reconstruction failed";
+                        candidateFailure = candidateFailure ?? evidence + "; field=" + field + "; selected text reconstruction failed (blank or ambiguous glyph contrast)";
                         continue;
                     }
                     if (!VanillaTextRecognition.TryReadDigitsPixelPreserving(textImage,
                         new Rectangle(Point.Empty, textImage.Size), out lines, out ocrEvidence))
                     {
-                        last = evidence + "; field=" + field + "; " + ocrEvidence;
+                        candidateFailure = candidateFailure ?? evidence + "; field=" + field + "; " + ocrEvidence;
                         continue;
                     }
                 }
                 if (lines.Length != 1)
                 {
-                    last = evidence + "; field=" + field + "; OCR lines=" + lines.Length;
+                    candidateFailure = candidateFailure ?? evidence + "; field=" + field + "; OCR lines=" + lines.Length;
                     continue;
                 }
                 string text = lines[0].Text.Trim(); uint value;
@@ -191,7 +190,7 @@ namespace _4RTools.Model.Vanilla
                     || text.Length == 0 || text.Length > 7 || text.Any(c => c < '0' || c > '9')
                     || !uint.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out value) || value == 0 || value > 2000000)
                 {
-                    last = evidence + "; field=" + field + "; OCR='" + text + "' confidence=" + confidence
+                    candidateFailure = candidateFailure ?? evidence + "; field=" + field + "; OCR='" + text + "' confidence=" + confidence
                         + " words=[" + wordConfidence + "]; " + ocrEvidence + "; rejected by numeric bounds/confidence";
                     continue;
                 }
@@ -202,9 +201,9 @@ namespace _4RTools.Model.Vanilla
                     return false;
                 }
                 observation = new VanillaQuantityObservation { Dialog = dialog, Field = Rectangle.Inflate(field, 2, 2), Amount = value };
-                last = "quantity=" + value + "; field=" + field + "; confidence=" + confidence + "; " + ocrEvidence;
+                acceptedEvidence = "quantity=" + value + "; field=" + field + "; confidence=" + confidence + "; " + ocrEvidence;
             }
-            evidence = observation != null ? last : last + "; no unique valid quantity";
+            evidence = observation != null ? acceptedEvidence : (candidateFailure ?? last) + "; no unique valid quantity";
             return observation != null;
         }
 
@@ -458,6 +457,17 @@ namespace _4RTools.Model.Vanilla
                 var mode = background.OrderByDescending(item => item.Value).First();
                 if (mode.Value < field.Width * field.Height / 3) return null;
                 int[] color = { mode.Key & 255, mode.Key >> 8 & 255, mode.Key >> 16 & 255 };
+                bool lightInk = false, darkInk = false;
+                for (int y = field.Top; y < field.Bottom; y++)
+                for (int x = field.Left; x < field.Right; x++)
+                {
+                    int i = (y * width + x) * 3;
+                    lightInk |= Contrast(i, color, true) >= .5;
+                    darkInk |= Contrast(i, color, false) >= .5;
+                }
+                // No text, or competing foreground polarities, must not become a
+                // guessed number. The existing numeric OCR consensus is unchanged.
+                if (lightInk == darkInk) return null;
                 const int padding = 4;
                 var result = new Bitmap(field.Width + padding * 2, field.Height + padding * 2, PixelFormat.Format24bppRgb);
                 using (Graphics graphics = Graphics.FromImage(result)) graphics.Clear(Color.White);
@@ -465,15 +475,8 @@ namespace _4RTools.Model.Vanilla
                 for (int y = field.Top; y < field.Bottom; y++)
                 for (int x = field.Left; x < field.Right; x++)
                 {
-                    int i = (y * width + x) * 3, channels = 0;
-                    double alpha = 0;
-                    for (int channel = 0; channel < 3; channel++)
-                    {
-                        if (color[channel] >= 240) continue;
-                        alpha += Math.Max(0, Math.Min(1, (rgb[i + channel] - color[channel]) / (255.0 - color[channel])));
-                        channels++;
-                    }
-                    int gray = (int)Math.Round(255 * (1 - alpha / Math.Max(1, channels)));
+                    int i = (y * width + x) * 3;
+                    int gray = (int)Math.Round(255 * (1 - Contrast(i, color, lightInk)));
                     int px = x - field.Left + padding, py = y - field.Top + padding;
                     result.SetPixel(px, py, Color.FromArgb(gray, gray, gray));
                     if (gray < 245)
@@ -489,6 +492,21 @@ namespace _4RTools.Model.Vanilla
                 Bitmap cropped = result.Clone(crop, PixelFormat.Format24bppRgb);
                 result.Dispose();
                 return cropped;
+            }
+
+            private double Contrast(int pixel, int[] background, bool light)
+            {
+                double alpha = 0;
+                int channels = 0;
+                for (int channel = 0; channel < 3; channel++)
+                {
+                    if (light ? background[channel] >= 240 : background[channel] <= 15) continue;
+                    double difference = light ? rgb[pixel + channel] - background[channel] : background[channel] - rgb[pixel + channel];
+                    double range = light ? 255.0 - background[channel] : background[channel];
+                    alpha += Math.Max(0, Math.Min(1, difference / range));
+                    channels++;
+                }
+                return alpha / Math.Max(1, channels);
             }
 
             internal Rectangle[] Components(bool selected)

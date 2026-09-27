@@ -72,14 +72,14 @@ namespace _4RTools.Model.Vanilla
 
             // The caller already crops to the observed numeric glyph bounds. Windows
             // Tesseract benefits from enlargement for some short numbers (for example
-            // 123), while repeated narrow glyphs such as 9999 can be distorted by that
-            // same enlargement. Read both independent pixel scales and accept only one
-            // unambiguous numeric interpretation. If both scales recognize digits they
-            // must agree exactly; disagreement is unknown and therefore authorizes no
-            // quantity input.
+            // 123), while small native glyphs can disagree at one enlargement (the
+            // captured 305 regression). Read bounded integral pixel scales, preserving
+            // glyph edges and gaps. Require a majority of geometry-matched observations
+            // with repeated support across multiple scales; a lone reading or small
+            // plurality among disagreeing profiles cannot authorize quantity input.
             var candidates = new List<Tuple<string, VanillaTextLine>>();
             var attempts = new List<string>();
-            foreach (int scale in new[] { 1, 4 })
+            foreach (int scale in new[] { 1, 2, 3, 4 })
             foreach (PageSegMode mode in new[] { PageSegMode.SingleWord, PageSegMode.SingleLine })
             {
                 VanillaTextLine[] observed;
@@ -107,42 +107,46 @@ namespace _4RTools.Model.Vanilla
             var geometryMatched = glyphCount > 0 && glyphCount <= 7
                 ? candidates.Where(candidate => candidate.Item2.Text.Trim().Length == glyphCount).ToList()
                 : new List<Tuple<string, VanillaTextLine>>();
-            var votingPool = geometryMatched.Count > 0 ? geometryMatched : candidates;
+            if (geometryMatched.Count == 0)
+            {
+                // A digit whitelist can silently discard a minus sign or other ink.
+                // Agreement on the remaining digits never overrides that contradiction.
+                evidence = "digit OCR disagreed with observed glyph count; glyphs=" + glyphCount
+                    + "; observations=" + string.Join(",", candidates.Select(candidate => candidate.Item1 + ":" + candidate.Item2.Text.Trim()));
+                return false;
+            }
 
-            var groups = votingPool
+            var groups = geometryMatched
                 .GroupBy(candidate => candidate.Item2.Text.Trim(), StringComparer.Ordinal)
                 .Select(group => new
                 {
                     Text = group.Key,
                     Count = group.Count(),
+                    Scales = group.Select(candidate => candidate.Item1.Split('/')[0]).Distinct().Count(),
                     Members = group.ToArray(),
                     Confidence = group.Max(candidate => candidate.Item2.Confidence)
                 })
                 .OrderByDescending(group => group.Count)
                 .ThenByDescending(group => group.Confidence)
                 .ToArray();
-            bool uniqueConsensus = groups[0].Count >= 2
-                && !(groups.Length > 1 && groups[1].Count == groups[0].Count);
-            bool geometryBackedSingle = geometryMatched.Count == 1
-                && geometryMatched[0].Item2.Confidence >= 65;
+            bool uniqueConsensus = groups[0].Count >= 3 && groups[0].Scales >= 2
+                && groups[0].Count * 2 > geometryMatched.Count;
 
-            if (!uniqueConsensus && !geometryBackedSingle)
+            if (!uniqueConsensus)
             {
                 evidence = "digit OCR had no unique geometry-backed consensus; glyphs=" + glyphCount
                     + "; observations=" + string.Join(",", candidates.Select(candidate => candidate.Item1 + ":" + candidate.Item2.Text.Trim()));
                 return false;
             }
 
-            var consensus = geometryBackedSingle
-                ? new { Text = geometryMatched[0].Item2.Text.Trim(), Count = 1,
-                    Members = new[] { geometryMatched[0] }, Confidence = geometryMatched[0].Item2.Confidence }
-                : groups[0];
+            var consensus = groups[0];
             VanillaTextLine winner = consensus.Members
                 .OrderByDescending(candidate => candidate.Item2.Confidence)
                 .ThenBy(candidate => candidate.Item1, StringComparer.Ordinal)
                 .First().Item2;
             lines = new[] { winner };
             evidence = "digit OCR consensus=" + consensus.Count + "/" + candidates.Count
+                + "; geometryMatches=" + geometryMatched.Count + "; scales=" + consensus.Scales
                 + "; glyphs=" + glyphCount + "; valueLength=" + consensus.Text.Length
                 + "; agreeingProfiles=" + string.Join(",", consensus.Members.Select(candidate => candidate.Item1));
             return true;
