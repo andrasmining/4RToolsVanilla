@@ -42,6 +42,19 @@ internal static class TemporaryUiHarness
                     workspace.Enabled = true;
                     TabPage page = workspace.TabPages.Cast<TabPage>().Single(p => p.Text == "Temporary actions");
                     page.Controls.Add(panel); workspace.SelectedTab = page;
+                    var interval = (NumericUpDown)Field(panel, "interval");
+                    string settingsPath = (string)Field(panel, "settingsPath");
+                    string before = File.Exists(settingsPath) ? File.ReadAllText(settingsPath) : null;
+                    int intervalBefore = (int)Field(panel, "saved").GetType().GetProperty("IntervalMs").GetValue(Field(panel, "saved"), null);
+                    interval.Text = "70000";
+                    typeof(Control).GetMethod("OnLeave", All).Invoke(interval, new object[] { EventArgs.Empty });
+                    Require((int)Field(panel, "saved").GetType().GetProperty("IntervalMs").GetValue(Field(panel, "saved"), null) == intervalBefore
+                        && before == (File.Exists(settingsPath) ? File.ReadAllText(settingsPath) : null)
+                        && ((Label)Field(panel, "status")).Text.StartsWith("Not saved:"), "Invalid temporary interval was clamped/persisted.");
+                    interval.Text = 2.25M.ToString();
+                    typeof(Control).GetMethod("OnLeave", All).Invoke(interval, new object[] { EventArgs.Empty });
+                    Require((int)Field(panel, "saved").GetType().GetProperty("IntervalMs").GetValue(Field(panel, "saved"), null) == 2250
+                        && File.ReadAllText(settingsPath).Contains("2250"), "Valid temporary interval did not auto-save.");
                     foreach (int width in new[] { 1600, 1050 })
                     {
                         main.WindowState = FormWindowState.Normal; main.ClientSize = new Size(width, 900);
@@ -67,7 +80,7 @@ internal static class TemporaryUiHarness
                     }
                 }
             }
-            File.WriteAllText(Path.Combine(output, "temporary-report.txt"), "Failures: 0\nTwo viewport sizes; recorded chords; captures; shared ownership; no live polling/input.\n");
+            File.WriteAllText(Path.Combine(output, "temporary-report.txt"), "Failures: 0\nTwo viewport sizes; recorded chords; captures; numeric auto-save/rejection; shared ownership; no live polling/input.\n");
             return 0;
         }
         catch (Exception failure) { File.WriteAllText(Path.Combine(output, "temporary-report.txt"), failure.ToString()); return 1; }

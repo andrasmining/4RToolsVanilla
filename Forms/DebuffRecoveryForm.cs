@@ -17,7 +17,7 @@ namespace _4RTools.Forms
         public DebuffRecoveryForm(Subject subject)
         {
             this.KeyPreview = true;
-            InitializeComponent();
+            using (FormUtils.BeginLoading(this)) { InitializeComponent(); }
 
             this.txtStatusKey.KeyDown += new System.Windows.Forms.KeyEventHandler(FormUtils.OnKeyDown);
             this.txtStatusKey.KeyPress += new KeyPressEventHandler(FormUtils.OnKeyPress);
@@ -38,12 +38,14 @@ namespace _4RTools.Forms
             switch ((subject as Subject).Message.code)
             {
                 case MessageCode.PROFILE_CHANGED:
+                    using (FormUtils.BeginLoading(this))
+                    {
                     BuffRenderer.doUpdate(new Dictionary<EffectStatusIDs, Key>(ProfileSingleton.GetCurrent().DebuffsRecovery.buffMapping), this);
 
                     this.txtStatusKey.Text = ProfileSingleton.GetCurrent().StatusRecovery.buffMapping.Keys.Contains(EffectStatusIDs.SILENCE) ? ProfileSingleton.GetCurrent().StatusRecovery.buffMapping[EffectStatusIDs.SILENCE].ToString() : Keys.None.ToString();
                     this.txtNewStatusKey.Text = ProfileSingleton.GetCurrent().StatusRecovery.buffMapping.Keys.Contains(EffectStatusIDs.CRITICALWOUND) ? ProfileSingleton.GetCurrent().StatusRecovery.buffMapping[EffectStatusIDs.CRITICALWOUND].ToString() : Keys.None.ToString();
                     this.autoStandCB.Checked = ProfileSingleton.GetCurrent().StatusRecovery.autoStand;
-
+                    }
                     break;
                 case MessageCode.TURN_OFF:
                     ProfileSingleton.GetCurrent().StatusRecovery.Stop();
@@ -58,6 +60,7 @@ namespace _4RTools.Forms
 
         private void onStatusKeyChange(object sender, EventArgs e)
         {
+            if (FormUtils.IsLoading(this)) return;
             Key k = (Key)Enum.Parse(typeof(Key), this.txtStatusKey.Text.ToString());
 
             ProfileSingleton.GetCurrent().StatusRecovery.AddKeyToBuff(EffectStatusIDs.POISON, k);
@@ -73,6 +76,7 @@ namespace _4RTools.Forms
 
         private void on3RDStatusKeyChange(object sender, EventArgs e)
         {
+            if (FormUtils.IsLoading(this)) return;
             Key k = (Key)Enum.Parse(typeof(Key), this.txtNewStatusKey.Text.ToString());
 
             ProfileSingleton.GetCurrent().StatusRecovery.AddKeyToBuff(EffectStatusIDs.CRITICALWOUND, k);
@@ -87,6 +91,7 @@ namespace _4RTools.Forms
 
         private void autoStandCB_CheckedChanged(object sender, EventArgs e)
         {
+            if (FormUtils.IsLoading(this)) return;
             CheckBox chk = sender as CheckBox;
             ProfileSingleton.GetCurrent().StatusRecovery.autoStand = chk.Checked;
             ProfileSingleton.SetConfiguration(ProfileSingleton.GetCurrent().StatusRecovery);

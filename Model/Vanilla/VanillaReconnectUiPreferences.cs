@@ -416,7 +416,7 @@ namespace _4RTools.Model.Vanilla
                 settings.Proxy = VanillaAccountProxyPreferences.Get(firstEnabled.Id, settings.Proxy);
         }
 
-        private void PersistCatalogAndRefresh(string message)
+        private void PersistCatalogAndRefresh(string message, bool reportFailure = false)
         {
             if (accountCatalogStore == null || accountCatalog == null) return;
             VanillaAccountCatalogStore.NormalizeEnabledLimit(accountCatalog);
@@ -424,7 +424,7 @@ namespace _4RTools.Model.Vanilla
             SynchronizeSupervisorAccountsFromCatalog();
             RefreshAccountGridFromCatalog();
             QueueAutoSave(message);
-            SaveAutomaticallyNow(); // A character selection/edit cancels stale work immediately, not after the debounce.
+            SaveAutomaticallyNow(reportFailure); // A character selection/edit cancels stale work immediately, not after the debounce.
         }
 
         // Existing callers use this name after Add/Edit; keep it as a compatibility wrapper.
@@ -449,6 +449,13 @@ namespace _4RTools.Model.Vanilla
             autoRecover.CheckedChanged += (s, e) => QueueAutoSave("Auto relog saved");
             visualWatchdog.CheckedChanged += (s, e) => QueueAutoSave("Visual watchdog saved");
             movementRestartSeconds.ValueChanged += (s, e) => QueueAutoSave("No-movement restart threshold saved");
+            movementRestartSeconds.TextChanged += (s, e) => QueueAutoSave("No-movement restart threshold saved");
+            movementRestartSeconds.Leave += (s, e) => { if (autosaveTimer.Enabled) SaveAutomaticallyNow(); };
+            movementRestartSeconds.KeyDown += (s, e) =>
+            {
+                if (e.KeyCode != Keys.Enter) return;
+                SaveAutomaticallyNow(); e.Handled = e.SuppressKeyPress = true;
+            };
             accounts.CellDoubleClick += (s, e) =>
             {
                 if (e.RowIndex >= 0) EditAccountMinimal();
@@ -468,7 +475,7 @@ namespace _4RTools.Model.Vanilla
             autosaveTimer.Start();
         }
 
-        private void SaveAutomaticallyNow()
+        private void SaveAutomaticallyNow(bool reportFailure = false)
         {
             autosaveTimer.Stop();
             if (autosaveSuppress || IsDisposed) return;
@@ -493,7 +500,8 @@ namespace _4RTools.Model.Vanilla
             catch (Exception ex)
             {
                 VanillaDebugLog.Write("SETTINGS", "Auto-save FAILED: " + ex);
-                ShowSaveToast("Save failed", true);
+                ShowSaveToast("Save failed: " + ex.Message, true);
+                if (reportFailure) throw;
             }
         }
 
@@ -524,7 +532,7 @@ namespace _4RTools.Model.Vanilla
             if (saveToastTimer != null)
             {
                 saveToastTimer.Stop();
-                saveToastTimer.Start();
+                if (!error) saveToastTimer.Start();
             }
         }
 

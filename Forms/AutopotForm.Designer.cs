@@ -31,7 +31,7 @@
             this.txtHPpct = new System.Windows.Forms.NumericUpDown();
             this.labelSP = new System.Windows.Forms.Label();
             this.labelHP = new System.Windows.Forms.Label();
-            this.txtAutopotDelay = new System.Windows.Forms.TextBox();
+            this.txtAutopotDelay = new System.Windows.Forms.NumericUpDown();
             this.picBoxSP = new System.Windows.Forms.PictureBox();
             this.picBoxHP = new System.Windows.Forms.PictureBox();
             this.label2 = new System.Windows.Forms.Label();
@@ -81,9 +81,11 @@
             this.txtAutopotDelay.Font = new System.Drawing.Font("Microsoft Sans Serif", 10F);
             this.txtAutopotDelay.Location = new System.Drawing.Point(168, 84);
             this.txtAutopotDelay.Name = "txtAutopotDelay";
+            this.txtAutopotDelay.Minimum = 1;
+            this.txtAutopotDelay.Maximum = 32767;
             this.txtAutopotDelay.Size = new System.Drawing.Size(44, 23);
             this.txtAutopotDelay.TabIndex = 36;
-            this.txtAutopotDelay.TextChanged += new System.EventHandler(this.txtAutopotDelayTextChanged);
+            this.txtAutopotDelay.ValueChanged += new System.EventHandler(this.txtAutopotDelayTextChanged);
             // 
             // picBoxSP
             // 
@@ -204,7 +206,7 @@
         private System.Windows.Forms.NumericUpDown txtHPpct;
         private System.Windows.Forms.Label labelSP;
         private System.Windows.Forms.Label labelHP;
-        private System.Windows.Forms.TextBox txtAutopotDelay;
+        private System.Windows.Forms.NumericUpDown txtAutopotDelay;
         private System.Windows.Forms.PictureBox picBoxSP;
         private System.Windows.Forms.PictureBox picBoxHP;
         private System.Windows.Forms.Label label2;

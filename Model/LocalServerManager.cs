@@ -3,113 +3,156 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 
 namespace _4RTools.Model
 {
     internal class LocalServerManager
     {
-
-        private static readonly string localServerName = Vanilla.VanillaAppData.LocalServersPath;
+        private static readonly LocalServerStore store = new LocalServerStore(Vanilla.VanillaAppData.LocalServersPath);
 
         static LocalServerManager()
         {
             Vanilla.VanillaAppData.InitializeAndMigrateLegacy(AppDomain.CurrentDomain.BaseDirectory);
         }
 
-        public static void AddServer(string hpAddress, string nameAddress, string processName)
+        public static ClientDTO AddServer(string hpAddress, string nameAddress, string processName)
         {
-            if (Client.IsVanillaProcessName(processName))
-                throw new ArgumentException("Use the Vanilla Companion to connect Vanilla MMO through its read-only state layer.");
-            if (!isValid(hpAddress))
-            {
-                throw new ArgumentException("HP Address is Invalid. Please type a valid Hex value.");
-            }
-
-            if(!isValid(nameAddress))
-            {
-                throw new ArgumentException("Name Address is Invalid. Please type a valid Hex value.");
-            }
-            ClientDTO dto = new ClientDTO(processName, null, hpAddress, nameAddress);
-            ClientListSingleton.AddClient(new Client(dto));
-
-            List<ClientDTO> clients = GetLocalClients();
-            clients.Add(dto);
-            OverwriteLocalFile(clients);
-
-            /**
-             * Cases
-             * 1. Local file don't exists
-             *  Solution: Create a empty file
-             * 2. Local file exists with wrong syntax
-             *  Solution: Remove invalid file and create new one
-             * 3. Arquivo Local existe e é válido
-             */
+            ClientDTO added = store.Add(hpAddress, nameAddress, processName);
+            ClientListSingleton.AddClient(new Client(added));
+            return added;
         }
 
-        public static void RemoveClient(ClientDTO dto)
+        public static ClientDTO UpdateServer(ClientDTO original, string hpAddress, string nameAddress, string processName)
         {
-            List<ClientDTO> clients = GetLocalClients();
-            clients.RemoveAt(dto.index);
-            OverwriteLocalFile(clients);
-            ClientListSingleton.RemoveClient(Client.FromDTO(dto));
+            ClientDTO updated = store.Update(original, hpAddress, nameAddress, processName);
+            ClientListSingleton.RemoveClient(Client.FromDTO(original));
+            ClientListSingleton.AddClient(new Client(updated));
+            return updated;
         }
 
-        private static void OverwriteLocalFile(List<ClientDTO> clients)
+        public static void RemoveClient(ClientDTO original)
         {
-            string output = JsonConvert.SerializeObject(clients, Formatting.Indented);
-            File.WriteAllText(localServerName, string.Empty);
-            File.WriteAllText(localServerName, output);
+            store.Remove(original);
+            ClientListSingleton.RemoveClient(Client.FromDTO(original));
         }
 
-
-        private static string LoadLocalServerFile()
+        public static List<ClientDTO> GetLocalClients()
         {
-            if (!File.Exists(localServerName))
-            {
-                string startJson = "[]";
-                FileStream f = File.Create(localServerName);
-                f.Close();
-                File.WriteAllText(localServerName, startJson);
-                return startJson;
-            }
-            string json = File.ReadAllText(localServerName);
-            return json;
-        }
-
-        public static List<ClientDTO> GetLocalClients() {
-            string localServers = LoadLocalServerFile();
-
-            if (string.IsNullOrEmpty(localServers)) return new List<ClientDTO>();
-
-            try
-            {
-                return JsonConvert.DeserializeObject<List<ClientDTO>>(localServers)?.Where(client => client != null).ToList() ?? new List<ClientDTO>();
-            }catch
-            {
-                return new List<ClientDTO>();
-            }
-        }
-
-        private static bool isValid(IEnumerable<char> chars)
-        {
-            return IsHex(chars) && chars.Count() == 8;
+            // Startup can still operate without a broken optional stock server list.
+            // Mutation uses the strict store and never overwrites that broken file.
+            try { return store.Read(); }
+            catch (JsonException) { return new List<ClientDTO>(); }
+            catch (InvalidDataException) { return new List<ClientDTO>(); }
         }
 
         public static bool IsHex(IEnumerable<char> chars)
         {
-            bool isHex;
-            foreach (var c in chars)
-            {
-                isHex = ((c >= '0' && c <= '9') ||
-                         (c >= 'a' && c <= 'f') ||
-                         (c >= 'A' && c <= 'F'));
+            return LocalServerStore.IsHex(chars);
+        }
+    }
 
-                if (!isHex)
-                    return false;
+    // Isolated file store lets edits validate and commit before touching the live catalog.
+    internal sealed class LocalServerStore
+    {
+        private static readonly object gate = new object();
+        private readonly string path;
+        internal LocalServerStore(string path) { this.path = Path.GetFullPath(path); }
+
+        internal List<ClientDTO> Read()
+        {
+            lock (gate)
+            {
+                if (!File.Exists(path)) return new List<ClientDTO>();
+                if (new FileInfo(path).Length > 1024 * 1024) throw new InvalidDataException("The local server list exceeds 1 MiB and was preserved.");
+                var clients = JsonConvert.DeserializeObject<List<ClientDTO>>(File.ReadAllText(path));
+                if (clients == null || clients.Any(client => client == null))
+                    throw new InvalidDataException("The local server list is invalid and was preserved.");
+                return clients;
             }
-            return true;
+        }
+
+        internal ClientDTO Add(string hpAddress, string nameAddress, string processName)
+        {
+            ClientDTO candidate = Validate(hpAddress, nameAddress, processName);
+            lock (gate)
+            {
+                var clients = Read();
+                if (clients.Any(client => Matches(client, candidate))) throw new InvalidOperationException("This server already exists.");
+                clients.Add(candidate);
+                Write(clients);
+                return candidate;
+            }
+        }
+
+        internal ClientDTO Update(ClientDTO original, string hpAddress, string nameAddress, string processName)
+        {
+            ClientDTO candidate = Validate(hpAddress, nameAddress, processName);
+            lock (gate)
+            {
+                var clients = Read();
+                int index = FindOriginal(clients, original);
+                if (clients.Where((client, position) => position != index).Any(client => Matches(client, candidate)))
+                    throw new InvalidOperationException("This server already exists.");
+                candidate.description = clients[index].description;
+                clients[index] = candidate;
+                Write(clients);
+                return candidate;
+            }
+        }
+
+        internal void Remove(ClientDTO original)
+        {
+            lock (gate)
+            {
+                var clients = Read();
+                clients.RemoveAt(FindOriginal(clients, original));
+                Write(clients);
+            }
+        }
+
+        private static int FindOriginal(List<ClientDTO> clients, ClientDTO original)
+        {
+            var matches = clients.Select((client, index) => new { client, index }).Where(entry => Matches(entry.client, original)).ToArray();
+            if (matches.Length != 1) throw new InvalidOperationException("This server changed in another window. Reopen it before editing.");
+            return matches[0].index;
+        }
+
+        private static bool Matches(ClientDTO first, ClientDTO second)
+        {
+            return first != null && second != null && string.Equals(first.name, second.name, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(first.hpAddress, second.hpAddress, StringComparison.OrdinalIgnoreCase)
+                && string.Equals(first.nameAddress, second.nameAddress, StringComparison.OrdinalIgnoreCase);
+        }
+
+        internal static ClientDTO Validate(string hpAddress, string nameAddress, string processName)
+        {
+            if (string.IsNullOrWhiteSpace(processName)) throw new ArgumentException("Choose a process name.");
+            processName = processName.Trim();
+            if (Client.IsVanillaProcessName(processName))
+                throw new ArgumentException("Use the Vanilla workspace to connect Vanilla MMO through its read-only state layer.");
+            if (hpAddress == null || hpAddress.Length != 8 || !IsHex(hpAddress))
+                throw new ArgumentException("HP address needs exactly eight hexadecimal digits.");
+            if (nameAddress == null || nameAddress.Length != 8 || !IsHex(nameAddress))
+                throw new ArgumentException("Name address needs exactly eight hexadecimal digits.");
+            return new ClientDTO(processName, null, hpAddress, nameAddress);
+        }
+
+        internal static bool IsHex(IEnumerable<char> chars)
+        {
+            return chars != null && chars.All(c => (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'));
+        }
+
+        private void Write(List<ClientDTO> clients)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(path));
+            string temporary = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                File.WriteAllText(temporary, JsonConvert.SerializeObject(clients, Formatting.Indented));
+                if (File.Exists(path)) File.Replace(temporary, path, path + ".bak");
+                else File.Move(temporary, path);
+            }
+            finally { if (File.Exists(temporary)) File.Delete(temporary); }
         }
     }
 }

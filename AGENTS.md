@@ -416,6 +416,23 @@ upstream MIT license and all required copyright/permission notices, including
 
 ## Release/version and persistent-data policy
 
+### All settings auto-save (2026-09-27)
+
+All application settings, including embedded and legacy settings dialogs, must
+save automatically. Do not expose Save/Apply buttons for settings. Persist
+checkboxes, selections and captured hotkeys promptly; debounce text/number edits
+and flush valid pending edits when leaving the field or closing its editor.
+Show a compact saved/error indication. Loading a profile must not write it;
+invalid/incomplete input or a failed write must retain the last valid persisted
+value. New Vanilla settings stores must persist before publishing runtime changes.
+Avoid letting one unfinished field discard unrelated edits.
+Profile switching and disposal must not redirect a delayed save into a different
+profile or silently lose valid pending edits. Keep secret fields masked and
+encrypted through the existing storage paths; autosave never sends test mail or
+enables automation by itself. Explicit create/copy/import/export/delete actions
+remain actions, not substitutes for saving edited settings. Dialogs whose edits
+already persist close with Close rather than implying Cancel rolls back changes.
+
 Use conservative pre-1.0 versioning while the Vanilla integration is still being
 stabilized live. Prefer patch releases for iterative fixes and UX/reliability
 improvements, minor releases for coherent larger milestones, and do not approach

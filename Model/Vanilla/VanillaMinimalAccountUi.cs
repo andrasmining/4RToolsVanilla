@@ -33,7 +33,7 @@ namespace _4RTools.Model.Vanilla
             parent.Controls.Add(replacement);
             parent.Controls.SetChildIndex(replacement, index);
             help.SetToolTip(replacement, text == "Add"
-                ? "Save another character, including another slot on the same username. At most two characters may be enabled."
+                ? "Create another character, including another slot on the same username. At most two characters may be enabled."
                 : text == "Edit" ? "Edit description, username, slot, character name, password, proxy and resume hotkey."
                 : "Remove the selected character profile; a running client is left untouched.");
         }
@@ -57,22 +57,35 @@ namespace _4RTools.Model.Vanilla
             try
             {
                 using (var dialog = new VanillaMinimalAccountDialog(supervisor, copy,
-                    VanillaAccountProxyPreferences.Get(copy.Id, settings.Proxy)))
-                {
-                    if (dialog.ShowDialog(this) != DialogResult.OK) return;
-                    var candidate = accountCatalog.Select(a => a.Clone()).ToList();
-                    int index = candidate.FindIndex(a => a.Id == replacingId);
-                    if (index < 0) candidate.Add(dialog.Account); else candidate[index] = dialog.Account;
-                    VanillaCharacterRoster.Validate(candidate);
-                    accountCatalogStore.Save(candidate);
-                    if (!dialog.Account.ProxyNeedsConfiguration)
-                        VanillaAccountProxyPreferences.Set(dialog.Account.Id, dialog.ProxyRoute);
-                    accountCatalog = candidate;
-                    PersistCatalogAndRefresh("Character saved");
-                }
+                    VanillaAccountProxyPreferences.Get(copy.Id, settings.Proxy), PersistEditedCharacter, replacingId == null))
+                    dialog.ShowDialog(this);
             }
             catch (Exception ex) { MessageBox.Show(this, ex.Message, "Character", MessageBoxButtons.OK, MessageBoxIcon.Error); }
             finally { characterEditorOpen = false; }
+        }
+
+        private void PersistEditedCharacter(VanillaReconnectAccount edited, VanillaProxyRoute route)
+        {
+            var candidate = accountCatalog.Select(a => a.Clone()).ToList();
+            int index = candidate.FindIndex(a => a.Id == edited.Id);
+            if (index < 0) candidate.Add(edited.Clone()); else candidate[index] = edited.Clone();
+            VanillaCharacterRoster.Validate(candidate);
+            var previous = accountCatalog;
+            var previousSettings = settings.Clone();
+            try
+            {
+                accountCatalogStore.Save(candidate);
+                accountCatalog = candidate;
+                PersistCatalogAndRefresh("Character saved", true);
+            }
+            catch
+            {
+                accountCatalog = previous; settings = previousSettings;
+                accountCatalogStore.Save(previous);
+                RefreshAccountGridFromCatalog();
+                throw;
+            }
+            // Proxy is retained and read-only in this editor.
         }
 
         private void RemoveAccountMinimal()
@@ -108,25 +121,34 @@ namespace _4RTools.Model.Vanilla
         private readonly ComboBox proxy = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 150 };
         private readonly TextBox hotkey = new TextBox { Width = 160, ReadOnly = true };
         private readonly CheckBox smartTeleport = new CheckBox { Text = "Smart Teleport", AutoSize = true };
-        private readonly NumericUpDown teleportIdle = new NumericUpDown { Minimum = 5, Maximum = 3600, Value = 60, Width = 90 };
+        private readonly NumericUpDown teleportIdle = new VanillaSettingsNumber { Minimum = 5, Maximum = 3600, Value = 60, Width = 90 };
         private readonly TextBox teleportHotkey = new TextBox { Width = 160, ReadOnly = true };
         private readonly ToolTip help = new ToolTip { ShowAlways = true, AutoPopDelay = 30000 };
+        private readonly System.Action<VanillaReconnectAccount, VanillaProxyRoute> persist;
+        private readonly Label saveStatus = new Label { AutoSize = true, Dock = DockStyle.Fill, ForeColor = Color.DimGray };
+        private readonly Button create = new Button { Text = "Create", AutoSize = true };
+        private readonly Button discard = new Button { Text = "Discard unsaved", AutoSize = true, Visible = false, CausesValidation = false };
+        private bool isNew, dirty, discarding;
         private int key, teleportKey;
         private bool ctrl, alt, shift, teleportCtrl, teleportAlt, teleportShift, passwordEdited, passwordUnavailable;
         public VanillaReconnectAccount Account { get; private set; }
         public VanillaProxyRoute ProxyRoute { get; private set; }
 
-        internal VanillaMinimalAccountDialog(VanillaReconnectSupervisor supervisor, VanillaReconnectAccount account, VanillaProxyRoute proxyRoute)
+        internal VanillaMinimalAccountDialog(VanillaReconnectSupervisor supervisor, VanillaReconnectAccount account,
+            VanillaProxyRoute proxyRoute, System.Action<VanillaReconnectAccount, VanillaProxyRoute> persist, bool isNew)
         {
             this.supervisor = supervisor ?? throw new ArgumentNullException(nameof(supervisor));
-            Account = account ?? throw new ArgumentNullException(nameof(account));
+            Account = (account ?? throw new ArgumentNullException(nameof(account))).Clone();
+            this.persist = persist ?? throw new ArgumentNullException(nameof(persist));
+            this.isNew = isNew;
             ProxyRoute = proxyRoute;
             Text = "Character";
             Font = new Font("Segoe UI", 9F);
             StartPosition = FormStartPosition.CenterParent;
             FormBorderStyle = FormBorderStyle.FixedDialog;
             MaximizeBox = MinimizeBox = false;
-            ClientSize = new Size(520, 455);
+            ClientSize = new Size(550, 390);
+            AutoScroll = true;
             KeyPreview = true;
             Build();
             enabled.Checked = account.Enabled;
@@ -154,6 +176,28 @@ namespace _4RTools.Model.Vanilla
             password.TextChanged += (s, e) => passwordEdited = true;
             hotkey.KeyDown += CaptureHotkey;
             teleportHotkey.KeyDown += CaptureTeleportHotkey;
+            foreach (Control input in new Control[] { label, user, slot, character, password, teleportIdle })
+            {
+                input.TextChanged += (s, e) => dirty = true;
+                input.Validated += (s, e) => SaveAutomatically();
+                input.KeyDown += (s, e) =>
+                {
+                    if (e.KeyCode != Keys.Enter) return;
+                    ValidateChildren(); SaveAutomatically();
+                    e.Handled = e.SuppressKeyPress = true;
+                };
+            }
+            teleportIdle.TextChanged += (s, e) => dirty = true;
+            teleportIdle.ValueChanged += (s, e) => dirty = true;
+            foreach (var input in new[] { enabled, cartMaintenance, weightEmail, smartTeleport })
+                input.CheckedChanged += (s, e) => { dirty = true; SaveAutomatically(); };
+            character.SelectionChangeCommitted += (s, e) => { dirty = true; SaveAutomatically(); };
+            FormClosing += (s, e) =>
+            {
+                if (discarding || isNew) return;
+                if (!SaveAutomatically()) e.Cancel = true;
+            };
+            saveStatus.Text = isNew ? "Create when ready; later edits save automatically." : "Changes save automatically when you leave a field or press Enter.";
         }
 
         private void FillSelectedIdentity()
@@ -168,11 +212,10 @@ namespace _4RTools.Model.Vanilla
 
         private void Build()
         {
-            var table = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(14), ColumnCount = 2, RowCount = 11 };
+            var table = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(14), ColumnCount = 2, RowCount = 12 };
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 125));
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            for (int i = 0; i < 10; i++) table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            table.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            for (int i = 0; i < 12; i++) table.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             var toggles = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = Padding.Empty };
             toggles.Controls.Add(enabled); toggles.Controls.Add(cartMaintenance); toggles.Controls.Add(weightEmail);
             AddRow(table, 0, string.Empty, toggles);
@@ -191,10 +234,14 @@ namespace _4RTools.Model.Vanilla
             AddRow(table, 8, "Smart Teleport", teleportOptions);
             AddRow(table, 9, "Teleport hotkey", teleportHotkey);
             var buttons = new FlowLayoutPanel { AutoSize = true, Anchor = AnchorStyles.Right };
-            var save = new Button { Text = "Save", AutoSize = true };
-            var cancel = new Button { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel };
-            save.Click += Save; buttons.Controls.Add(save); buttons.Controls.Add(cancel);
-            table.Controls.Add(buttons, 1, 10); Controls.Add(table); AcceptButton = save; CancelButton = cancel;
+            var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.Cancel };
+            create.Visible = isNew;
+            create.Click += (s, e) => SaveAutomatically(true);
+            discard.Click += (s, e) => { discarding = true; Close(); };
+            help.SetToolTip(discard, "Close and discard only the unsaved draft. Earlier saved edits are retained.");
+            buttons.Controls.Add(create); buttons.Controls.Add(discard); buttons.Controls.Add(close);
+            table.Controls.Add(saveStatus, 0, 10); table.SetColumnSpan(saveStatus, 2);
+            table.Controls.Add(buttons, 1, 11); Controls.Add(table); CancelButton = close;
             help.SetToolTip(enabled, "Enable at most two character profiles. Multiple rows may use the same login account.");
             help.SetToolTip(cartMaintenance, "Enable UI-only Cart maintenance for this character. Shared Cart thresholds, category choices and hotkeys are configured on the Weight tab.");
             help.SetToolTip(weightEmail, "Enable e-mail for this character. If Cart maintenance is inactive, use the carried-weight threshold. If this character's Cart switch and the shared Cart master are both active, suppress carried-only warnings and mail waits for BOTH Cart >=99% and carried weight >=50%, after verified Autobattle STOP.");
@@ -220,6 +267,7 @@ namespace _4RTools.Model.Vanilla
             if (e.KeyCode == Keys.ControlKey || e.KeyCode == Keys.ShiftKey || e.KeyCode == Keys.Menu) return;
             key = (int)e.KeyCode; ctrl = e.Control; alt = e.Alt; shift = e.Shift;
             UpdateHotkey(); e.SuppressKeyPress = e.Handled = true;
+            dirty = true; SaveAutomatically();
         }
         private void UpdateHotkey()
         { hotkey.Text = (ctrl ? "Ctrl+" : "") + (alt ? "Alt+" : "") + (shift ? "Shift+" : "") + ((Keys)key); }
@@ -229,6 +277,7 @@ namespace _4RTools.Model.Vanilla
             if (e.KeyCode == Keys.ControlKey || e.KeyCode == Keys.ShiftKey || e.KeyCode == Keys.Menu) return;
             teleportKey = (int)e.KeyCode; teleportCtrl = e.Control; teleportAlt = e.Alt; teleportShift = e.Shift;
             UpdateTeleportHotkey(); e.SuppressKeyPress = e.Handled = true;
+            dirty = true; SaveAutomatically();
         }
         private void UpdateTeleportHotkey()
         {
@@ -236,8 +285,9 @@ namespace _4RTools.Model.Vanilla
                 : (teleportCtrl ? "Ctrl+" : "") + (teleportAlt ? "Alt+" : "") + (teleportShift ? "Shift+" : "") + ((Keys)teleportKey);
         }
 
-        private void Save(object sender, EventArgs e)
+        private bool SaveAutomatically(bool creating = false)
         {
+            if ((!dirty && !creating) || (isNew && !creating)) return true;
             try
             {
                 int parsed;
@@ -253,30 +303,46 @@ namespace _4RTools.Model.Vanilla
                 candidate.CharacterSlot = string.IsNullOrWhiteSpace(slot.Text) ? (int?)null : int.Parse(slot.Text);
                 candidate.ProxyNeedsConfiguration = !(proxy.SelectedItem is VanillaProxyRoute);
                 // Preserve an inaccessible DPAPI value on a disabled row unless explicitly replaced.
-                if (!passwordUnavailable || passwordEdited) candidate.ProtectedPassword = string.IsNullOrEmpty(password.Text)
+                if (passwordEdited) candidate.ProtectedPassword = string.IsNullOrEmpty(password.Text)
                     ? string.Empty : supervisor.ProtectPassword(password.Text);
                 if (!VanillaCharacterRoster.Same(candidate.UserName, Account.UserName) && !passwordEdited
                     && !string.IsNullOrWhiteSpace(Account.ProtectedPassword))
                     throw new ArgumentException("Enter the password for the changed username; the old password will not be reused.");
                 candidate.ResumeKey = key; candidate.ResumeCtrl = ctrl; candidate.ResumeAlt = alt; candidate.ResumeShift = shift;
                 candidate.SmartTeleportEnabled = smartTeleport.Checked;
-                candidate.SmartTeleportIdleSeconds = (int)teleportIdle.Value;
+                candidate.SmartTeleportIdleSeconds = (int)VanillaSettingsNumber.Read(teleportIdle);
                 candidate.SmartTeleportKey = teleportKey; candidate.SmartTeleportCtrl = teleportCtrl;
                 candidate.SmartTeleportAlt = teleportAlt; candidate.SmartTeleportShift = teleportShift;
                 if (key < 8 || key > 254) throw new ArgumentException("Choose a valid resume hotkey.");
                 if (candidate.SmartTeleportEnabled && (candidate.SmartTeleportKey < 8 || candidate.SmartTeleportKey > 254))
                     throw new ArgumentException("Click Teleport hotkey and press the exact key combination before enabling Smart Teleport.");
                 VanillaCharacterRoster.Validate(new[] { candidate });
+                if (isNew && VanillaCharacterRoster.Key(candidate) == null)
+                    throw new ArgumentException("Enter the username and character name before creating the row.");
                 if (candidate.Enabled)
                 {
                     string missing = VanillaReconnectSupervisor.MissingCharacterConfiguration(candidate);
                     if (missing != null || (passwordUnavailable && !passwordEdited))
-                        throw new ArgumentException((missing ?? "Enter this Windows user's password") + ". Save as disabled until configured.");
+                        throw new ArgumentException((missing ?? "Enter this Windows user's password") + ". Keep disabled until configured.");
                 }
-                if (!candidate.ProxyNeedsConfiguration) ProxyRoute = (VanillaProxyRoute)proxy.SelectedItem;
-                Account = candidate; DialogResult = DialogResult.OK; Close();
+                var route = candidate.ProxyNeedsConfiguration ? ProxyRoute : (VanillaProxyRoute)proxy.SelectedItem;
+                if (isNew || route != ProxyRoute || !Newtonsoft.Json.Linq.JToken.DeepEquals(
+                    Newtonsoft.Json.Linq.JObject.FromObject(Account), Newtonsoft.Json.Linq.JObject.FromObject(candidate)))
+                    persist(candidate, route);
+                Account = candidate; ProxyRoute = route;
+                if (passwordEdited) passwordUnavailable = false;
+                passwordEdited = dirty = isNew = false;
+                create.Visible = false;
+                discard.Visible = false;
+                saveStatus.ForeColor = Color.DarkGreen; saveStatus.Text = "Saved";
+                return true;
             }
-            catch (Exception ex) { MessageBox.Show(this, ex.Message, "Character", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+            catch (Exception ex)
+            {
+                saveStatus.ForeColor = Color.Firebrick; saveStatus.Text = "Not saved: " + ex.Message;
+                discard.Visible = !isNew;
+                return false;
+            }
         }
         protected override void Dispose(bool disposing)
         { if (disposing) help.Dispose(); base.Dispose(disposing); }

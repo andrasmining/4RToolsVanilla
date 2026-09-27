@@ -16,8 +16,9 @@ namespace _4RTools.Forms
         public MacroSwitchForm(Subject subject)
         {
             subject.Attach(this);
-            InitializeComponent();
+            using (FormUtils.BeginLoading(this)) { InitializeComponent(); }
             configureMacroLanes();
+            FormUtils.CommitNumericEditsOnClose(this);
         }
 
         public void Update(ISubject subject)
@@ -25,7 +26,7 @@ namespace _4RTools.Forms
             switch ((subject as Subject).Message.code)
             {
                 case MessageCode.PROFILE_CHANGED:
-                    updateUi();
+                    using (FormUtils.BeginLoading(this)) { updateUi(); }
                     break;
                 case MessageCode.TURN_ON:
                     ProfileSingleton.GetCurrent().MacroSwitch.Start();
@@ -43,6 +44,8 @@ namespace _4RTools.Forms
                 GroupBox group = (GroupBox)this.Controls.Find("chainGroup" + id, true)[0];
                 ChainConfig chainConfig = new ChainConfig(ProfileSingleton.GetCurrent().MacroSwitch.chainConfigs[id - 1]);
                 FormUtils.ResetForm(group);
+                foreach (NumericUpDown delay in FormUtils.GetAll(group, typeof(NumericUpDown)))
+                    delay.Value = Math.Max(delay.Minimum, Math.Min(delay.Maximum, 50));
 
                 List<string> names = new List<string>(chainConfig.macroEntries.Keys);
                 foreach (string cbName in names)
@@ -76,6 +79,7 @@ namespace _4RTools.Forms
 
         private void onTextChange(object sender, EventArgs e)
         {
+            if (FormUtils.IsLoading(this)) return;
             TextBox textBox = (TextBox)sender;
             int chainID = Int16.Parse(textBox.Parent.Name.Split(new[] { "chainGroup" }, StringSplitOptions.None)[1]);
             GroupBox group = (GroupBox)this.Controls.Find("chainGroup" + chainID, true)[0];
@@ -83,7 +87,8 @@ namespace _4RTools.Forms
 
             Key key = (Key)Enum.Parse(typeof(Key), textBox.Text.ToString());
             NumericUpDown delayInput = (NumericUpDown)group.Controls.Find($"{textBox.Name}delay", true)[0];
-            chainConfig.macroEntries[textBox.Name] = new MacroKey(key, decimal.ToInt16(delayInput.Value));
+            CheckBox clickInput = (CheckBox)group.Controls.Find($"{textBox.Name}click", true)[0];
+            chainConfig.macroEntries[textBox.Name] = new MacroKey(key, decimal.ToInt16(delayInput.Value)) { hasClick = clickInput.Checked };
 
             bool isFirstInput = Regex.IsMatch(textBox.Name, $"in1mac{chainID}");
             if (isFirstInput) { chainConfig.trigger = key; }
@@ -94,24 +99,32 @@ namespace _4RTools.Forms
 
         private void onDelayChange(object sender, EventArgs e)
         {
+            if (FormUtils.IsLoading(this)) return;
             NumericUpDown delayInput = (NumericUpDown)sender;
             int chainID = Int16.Parse(delayInput.Parent.Name.Split(new[] { "chainGroup" }, StringSplitOptions.None)[1]);
             ChainConfig chainConfig = ProfileSingleton.GetCurrent().MacroSwitch.chainConfigs.Find(config => config.id == chainID);
 
             String cbName = delayInput.Name.Split(new[] { "delay" }, StringSplitOptions.None)[0];
-            chainConfig.macroEntries[cbName].delay = decimal.ToInt16(delayInput.Value);
+            MacroKey entry;
+            if (!chainConfig.macroEntries.TryGetValue(cbName, out entry))
+                chainConfig.macroEntries[cbName] = entry = new MacroKey(Key.None, 50);
+            entry.delay = decimal.ToInt16(delayInput.Value);
 
             ProfileSingleton.SetConfiguration(ProfileSingleton.GetCurrent().MacroSwitch);
         }
 
         private void onCheckClickChange(object sender, EventArgs e)
         {
+            if (FormUtils.IsLoading(this)) return;
             CheckBox checkInput = (CheckBox)sender;
             int chainID = Int16.Parse(checkInput.Parent.Name.Split(new[] { "chainGroup" }, StringSplitOptions.None)[1]);
             ChainConfig chainConfig = ProfileSingleton.GetCurrent().MacroSwitch.chainConfigs.Find(config => config.id == chainID);
 
             String cbName = checkInput.Name.Split(new[] { "click" }, StringSplitOptions.None)[0];
-            chainConfig.macroEntries[cbName].hasClick = checkInput.Checked;
+            MacroKey entry;
+            if (!chainConfig.macroEntries.TryGetValue(cbName, out entry))
+                chainConfig.macroEntries[cbName] = entry = new MacroKey(Key.None, 50);
+            entry.hasClick = checkInput.Checked;
             ProfileSingleton.SetConfiguration(ProfileSingleton.GetCurrent().MacroSwitch);
         }
 

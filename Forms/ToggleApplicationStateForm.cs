@@ -34,6 +34,13 @@ namespace _4RTools.Forms
             this.txtStatusToggleKey.KeyDown += new KeyEventHandler(FormUtils.OnKeyDown);
             this.txtStatusToggleKey.KeyPress += new KeyPressEventHandler(FormUtils.OnKeyPress);
             this.txtStatusToggleKey.TextChanged += new EventHandler(this.onStatusToggleKeyChange);
+            this.cbAudio.Checked = ProfileSingleton.GetCurrent().UserPreferences.audioEnabled;
+            this.cbAudio.CheckedChanged += (sender, args) =>
+            {
+                if (FormUtils.IsLoading(this)) return;
+                ProfileSingleton.GetCurrent().UserPreferences.audioEnabled = cbAudio.Checked;
+                ProfileSingleton.SetConfiguration(ProfileSingleton.GetCurrent().UserPreferences);
+            };
 
             InitializeContextualMenu();
             if (smokeTest) this.notifyIconTray.Visible = false;
@@ -62,7 +69,11 @@ namespace _4RTools.Forms
                 Keys currentToggleKey = (Keys)Enum.Parse(typeof(Keys), ProfileSingleton.GetCurrent().UserPreferences.toggleStateKey);
                 if (!smokeTest) KeyboardHook.Remove(lastKey);
 
-                this.txtStatusToggleKey.Text = currentToggleKey.ToString();
+                using (FormUtils.BeginLoading(this))
+                {
+                    this.txtStatusToggleKey.Text = currentToggleKey.ToString();
+                    this.cbAudio.Checked = ProfileSingleton.GetCurrent().UserPreferences.audioEnabled;
+                }
                 if (!smokeTest) KeyboardHook.Add(currentToggleKey, new KeyboardHook.KeyPressed(this.toggleStatus));
                 lastKey = currentToggleKey;
             }
@@ -72,6 +83,7 @@ namespace _4RTools.Forms
 
         private void onStatusToggleKeyChange(object sender, EventArgs e)
         {
+            if (FormUtils.IsLoading(this)) return;
             if (IsOn) ForceOff("Toggle key changed");
             //Get last key from profile before update it in json
             Keys currentToggleKey = (Keys)Enum.Parse(typeof(Keys), this.txtStatusToggleKey.Text);

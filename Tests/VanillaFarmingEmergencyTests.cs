@@ -26,6 +26,7 @@ namespace Vanilla.Diagnostics.Tests
             Test("Unrelated stale Recovery saves retain the latest emergency limits", StaleRecoverySave);
             Test("Emergency settings save preserves runtimes, leases and existing holds", SettingsIsolation);
             Test("Failed emergency settings save leaves active limits and queued close unchanged", SettingsSaveFailure);
+            Test("Failed ordinary Recovery save preserves runtime ownership, generations and emergency holds", RecoverySettingsSaveFailure);
             Test("Changed emergency limits cancel an unissued close without clearing its history", ChangedLimitsCancelQueuedClose);
             Test("Emergency limit changes after native close retain exit confirmation", ChangedLimitsAfterIssuedClose);
             Test("Saving unchanged emergency limits does not cancel a queued close", UnchangedLimitsKeepQueuedClose);
@@ -244,6 +245,30 @@ namespace Vanilla.Diagnostics.Tests
                 AssertLimits(h.Supervisor.FarmingEmergencySettings);
                 Assert(File.ReadAllText(path) == before);
                 h.E.Work.Dequeue()(); Assert(h.HeldA && h.E.Closed.SequenceEqual(new[] { 101 }), "Failed save cancelled an already authorized close.");
+            }
+        }
+
+        private static void RecoverySettingsSaveFailure()
+        {
+            using (var h = new Harness())
+            {
+                Assert(h.Observe());
+                Set(h.B, "ProcessId", (int?)102); Set(h.B, "ScriptRunning", true); Set(h.B, "RecoveryOwned", true);
+                object settings = Get(h.Supervisor, "settings"), runtimes = Get(h.Supervisor, "runtimes");
+                int diagnostic = (int)Get(h.Supervisor, "diagnosticGeneration"), resume = (int)Get(h.Supervisor, "resumeVerificationGeneration");
+                string detail = (string)Get(h.A, "Detail");
+                string path = h.Supervisor.SettingsPath, before = File.ReadAllText(path);
+                var edited = h.Supervisor.Settings; edited.PollMs += 500; edited.Accounts[1].CharacterName = "Changed unsaved identity";
+                Directory.CreateDirectory(path + ".tmp");
+                try { h.Supervisor.Apply(edited, true); throw new Exception("Failed Recovery save was accepted."); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+                Assert(ReferenceEquals(settings, Get(h.Supervisor, "settings")) && ReferenceEquals(runtimes, Get(h.Supervisor, "runtimes")));
+                Assert((int)Get(h.Supervisor, "diagnosticGeneration") == diagnostic && (int)Get(h.Supervisor, "resumeVerificationGeneration") == resume);
+                Assert((int?)Get(h.B, "ProcessId") == 102 && (bool)Get(h.B, "ScriptRunning") && (bool)Get(h.B, "RecoveryOwned"));
+                Assert(File.ReadAllText(path) == before && h.HeldA && !h.HeldB && (string)Get(h.A, "Detail") == detail);
+                h.E.Work.Dequeue()();
+                Assert(h.E.Closed.SequenceEqual(new[] { 101 }), "Failed ordinary save cancelled an authorized emergency close.");
             }
         }
 

@@ -13,9 +13,10 @@ namespace _4RTools.Forms
 
         public AHKForm(Subject subject)
         {
-            InitializeComponent();
+            using (FormUtils.BeginLoading(this)) { InitializeComponent(); }
             InitializeCheckAsThreeState();
             subject.Attach(this);
+            FormUtils.CommitNumericEditsOnClose(this);
         }
 
         public void Update(ISubject subject)
@@ -23,6 +24,8 @@ namespace _4RTools.Forms
             switch ((subject as Subject).Message.code)
             {
                 case MessageCode.PROFILE_CHANGED:
+                    using (FormUtils.BeginLoading(this))
+                    {
                     RemoveHandlers();
                     FormUtils.ResetForm(this);
                     SetLegendDefaultValues();
@@ -41,6 +44,7 @@ namespace _4RTools.Forms
                     {
                         ToggleCheckboxByName(config.Key, config.Value.ClickActive);
                     }
+                    }
                     break;
                 case MessageCode.TURN_ON:
                     ProfileSingleton.GetCurrent().AHK.Start();
@@ -53,6 +57,7 @@ namespace _4RTools.Forms
 
         private void onCheckChange(object sender, EventArgs e)
         {
+            if (FormUtils.IsLoading(this)) return;
             CheckBox checkbox = (CheckBox)sender;
 
             Key key = (Key)new KeyConverter().ConvertFromString(checkbox.Text);
@@ -68,6 +73,7 @@ namespace _4RTools.Forms
 
         private void txtSpammerDelay_TextChanged(object sender, EventArgs e)
         {
+            if (FormUtils.IsLoading(this)) return;
             try
             {
                 ProfileSingleton.GetCurrent().AHK.AhkDelay = Convert.ToInt16(this.txtSpammerDelay.Value);
@@ -82,7 +88,6 @@ namespace _4RTools.Forms
             {
                 CheckBox checkBox = (CheckBox)this.Controls.Find(Name, true)[0];
                 checkBox.CheckState = state ? CheckState.Checked : CheckState.Indeterminate;
-                ProfileSingleton.SetConfiguration(ProfileSingleton.GetCurrent().AHK);
             }
             catch { }
         }
@@ -125,6 +130,7 @@ namespace _4RTools.Forms
 
         private void RadioButton_CheckedChanged(object sender, EventArgs e)
         {
+            if (FormUtils.IsLoading(this)) return;
             RadioButton rb = sender as RadioButton;
             if (rb.Checked)
             {
@@ -136,6 +142,7 @@ namespace _4RTools.Forms
 
         private void chkMouseFlick_CheckedChanged(object sender, EventArgs e)
         {
+            if (FormUtils.IsLoading(this)) return;
             CheckBox chk = sender as CheckBox;
             ProfileSingleton.GetCurrent().AHK.mouseFlick = chk.Checked;
             ProfileSingleton.SetConfiguration(ProfileSingleton.GetCurrent().AHK);
@@ -143,6 +150,7 @@ namespace _4RTools.Forms
 
         private void chkNoShift_CheckedChanged(object sender, EventArgs e)
         {
+            if (FormUtils.IsLoading(this)) return;
             CheckBox chk = sender as CheckBox;
             ProfileSingleton.GetCurrent().AHK.noShift = chk.Checked;
             ProfileSingleton.SetConfiguration(ProfileSingleton.GetCurrent().AHK);

@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Globalization;
@@ -16,8 +17,13 @@ namespace _4RTools.Forms
     {
         private readonly Subject subject;
         private readonly Timer timer = new Timer();
+        private readonly VanillaSettingsAutoSave autosave;
+        private readonly Label saveStatus = new Label { AutoSize = true, MaximumSize = new Size(900, 0), ForeColor = Color.DimGray };
+        private readonly Dictionary<Control, string> saveErrors = new Dictionary<Control, string>();
+        private Profile settingsProfile;
+        private bool loadingSettings, disposed;
         private readonly ComboBox processes = new ComboBox { DropDownStyle = ComboBoxStyle.DropDownList, Width = 240 };
-        private readonly NumericUpDown interval = new NumericUpDown { Minimum = 250, Maximum = 10000, Increment = 250, Width = 80 };
+        private readonly NumericUpDown interval = new VanillaSettingsNumber { Minimum = 250, Maximum = 10000, Increment = 250, Width = 80 };
         private readonly TextBox mapEditor = new TextBox { Multiline = true, AcceptsReturn = true, AcceptsTab = true, ScrollBars = ScrollBars.Both, WordWrap = false, Dock = DockStyle.Fill, Font = new Font(FontFamily.GenericMonospace, 10) };
         private readonly Label connection = new Label { AutoSize = true, MaximumSize = new Size(1050, 0) };
         private readonly Label identity = new Label { AutoSize = true, MaximumSize = new Size(1050, 0) };
@@ -45,6 +51,7 @@ namespace _4RTools.Forms
         internal VanillaDiagnosticsForm(Subject subject, bool enumerateProcesses)
         {
             this.subject = subject;
+            autosave = new VanillaSettingsAutoSave(450, SaveEditedSetting);
             subject?.Attach(this);
             Text = "Vanilla Automation — read-only diagnostics (local extension)";
             ClientSize = new Size(1100, 740);
@@ -70,7 +77,16 @@ namespace _4RTools.Forms
             });
             controls.Controls.Add(new Label { Text = "Poll (ms)", AutoSize = true, Padding = new Padding(0, 6, 0, 0) });
             controls.Controls.Add(interval);
-            interval.ValueChanged += (s, e) => timer.Interval = (int)interval.Value;
+            interval.ValueChanged += (s, e) => QueueSettings(interval);
+            interval.TextChanged += (s, e) => QueueSettings(interval);
+            interval.Leave += (s, e) => autosave.Flush(interval);
+            interval.KeyDown += (s, e) =>
+            {
+                if (e.KeyCode != Keys.Enter) return;
+                QueueSettings(interval); autosave.Flush(interval); e.SuppressKeyPress = true;
+            };
+            mapEditor.TextChanged += (s, e) => QueueSettings(mapEditor);
+            mapEditor.Leave += (s, e) => autosave.Flush(mapEditor);
             layout.Controls.Add(controls, 0, 0);
             layout.Controls.Add(connection, 0, 1);
             layout.Controls.Add(identity, 0, 2);
@@ -89,7 +105,7 @@ namespace _4RTools.Forms
             mapLayout.Controls.Add(mapEditor, 0, 1);
             var mapButtons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true };
             AddButton(mapButtons, "Load map…", LoadMap);
-            AddButton(mapButtons, "Save settings to profile", SaveSettings);
+            mapButtons.Controls.Add(saveStatus);
             mapLayout.Controls.Add(mapButtons, 0, 2);
             mapTab.Controls.Add(mapLayout);
             tabs.TabPages.Add(mapTab);
@@ -147,10 +163,12 @@ namespace _4RTools.Forms
 
         private void Connect()
         {
+            autosave.Flush();
+            if (saveErrors.Count != 0) throw new InvalidOperationException("Correct the unsaved diagnostics settings before connecting.");
             Stop("Connecting read-only.");
             var choice = processes.SelectedItem as ProcessChoice;
             if (choice == null) throw new InvalidOperationException("No Vanilla MMO process selected. Start the game and refresh the list.");
-            var configured = VanillaMemoryMap.Parse(mapEditor.Text);
+            var configured = VanillaMemoryMap.Parse(settingsProfile.VanillaDiagnostics.MemoryMapJson);
             var memory = new ReadOnlyProcessMemory(choice.Id);
             try
             {
@@ -168,7 +186,7 @@ namespace _4RTools.Forms
 
         private void BeginPolling()
         {
-            timer.Interval = (int)interval.Value;
+            timer.Interval = settingsProfile.VanillaDiagnostics.PollIntervalMilliseconds;
             Poll();
             if (source != null && !source.IsStopped) timer.Start();
         }
@@ -272,17 +290,48 @@ namespace _4RTools.Forms
 
         private void LoadSettings()
         {
-            var settings = ProfileSingleton.GetCurrent().VanillaDiagnostics;
-            settings.Validate();
-            interval.Value = settings.PollIntervalMilliseconds;
-            mapEditor.Text = JsonConvert.SerializeObject(VanillaMemoryMap.Parse(settings.MemoryMapJson), Formatting.Indented);
+            autosave.Cancel();
+            loadingSettings = true;
+            try
+            {
+                settingsProfile = ProfileSingleton.GetCurrent();
+                var settings = settingsProfile.VanillaDiagnostics;
+                settings.Validate();
+                VanillaSettingsNumber.Load(interval, settings.PollIntervalMilliseconds);
+                timer.Interval = settings.PollIntervalMilliseconds;
+                mapEditor.Text = JsonConvert.SerializeObject(VanillaMemoryMap.Parse(settings.MemoryMapJson), Formatting.Indented);
+                saveErrors.Clear(); saveStatus.Text = "Auto-save on"; saveStatus.ForeColor = Color.DimGray;
+            }
+            finally { loadingSettings = false; }
         }
 
-        private void SaveSettings()
+        private void QueueSettings(Control edited)
         {
-            var settings = new VanillaDiagnosticsSettings { PollIntervalMilliseconds = (int)interval.Value, MemoryMapJson = mapEditor.Text };
-            ProfileSingleton.SetVanillaDiagnostics(settings);
-            Log("Settings saved to profile " + ProfileSingleton.GetCurrent().Name + ".");
+            if (loadingSettings || disposed) return;
+            autosave.Schedule(edited);
+            if (saveErrors.Count == 0) { saveStatus.Text = "Saving..."; saveStatus.ForeColor = Color.DimGray; }
+        }
+
+        private void SaveEditedSetting(Control edited)
+        {
+            if (loadingSettings || disposed || settingsProfile == null) return;
+            try
+            {
+                var current = settingsProfile.VanillaDiagnostics;
+                var value = new VanillaDiagnosticsSettings { PollIntervalMilliseconds = current.PollIntervalMilliseconds,
+                    MemoryMapJson = current.MemoryMapJson };
+                if (ReferenceEquals(edited, interval)) value.PollIntervalMilliseconds = (int)VanillaSettingsNumber.Read(interval);
+                else if (ReferenceEquals(edited, mapEditor)) value.MemoryMapJson = mapEditor.Text;
+                else return;
+                value.Validate();
+                if (value.PollIntervalMilliseconds != current.PollIntervalMilliseconds || value.MemoryMapJson != current.MemoryMapJson)
+                    ProfileSingleton.SetVanillaDiagnostics(settingsProfile, value);
+                timer.Interval = value.PollIntervalMilliseconds;
+                saveErrors.Remove(edited);
+            }
+            catch (Exception ex) { saveErrors[edited] = ex.Message; }
+            saveStatus.Text = saveErrors.Count == 0 ? "Saved" : "Not saved: " + saveErrors.Values.First();
+            saveStatus.ForeColor = saveErrors.Count == 0 ? Color.DarkGreen : Color.Firebrick;
         }
 
         private void LoadMap()
@@ -292,6 +341,7 @@ namespace _4RTools.Forms
                 if (dialog.ShowDialog(this) != DialogResult.OK) return;
                 var map = VanillaMemoryMap.Load(dialog.FileName);
                 mapEditor.Text = JsonConvert.SerializeObject(map, Formatting.Indented);
+                autosave.Flush(mapEditor);
                 Log("Loaded map " + dialog.FileName + ". Reconnect to apply.");
             }
         }
@@ -318,15 +368,31 @@ namespace _4RTools.Forms
             var message = (sender as Subject)?.Message;
             if (message?.code == MessageCode.PROFILE_CHANGED)
             {
+                // Flush to the profile that owned the edit, even though the global
+                // selector has already switched to its replacement.
+                autosave.Flush();
                 Stop("Profile changed; observations cleared.");
                 LoadSettings();
             }
         }
 
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            FlushPendingSettings();
+            base.OnFormClosing(e);
+        }
+
+        private void FlushPendingSettings()
+        {
+            foreach (Control control in saveErrors.Keys.ToArray()) autosave.Schedule(control);
+            autosave.Flush();
+        }
+
         protected override void Dispose(bool disposing)
         {
-            if (disposing)
+            if (disposing && !disposed)
             {
+                FlushPendingSettings(); disposed = true; autosave.Dispose();
                 timer.Stop();
                 timer.Dispose();
                 source?.Dispose();

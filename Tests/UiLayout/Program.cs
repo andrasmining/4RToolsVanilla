@@ -5,6 +5,7 @@ using System.Drawing;
 using System.Drawing.Imaging;
 using System.IO;
 using System.Linq;
+using System.Linq.Expressions;
 using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Text;
@@ -88,7 +89,9 @@ internal static class UiLayoutHarness
                 CheckCharacterEditor(main, recovery);
                 CheckLegacyUsernameDiscovery(main, recovery);
                 CheckUsernameDiagnostics();
+                CheckRulesEditor();
                 CheckPrivateUpdateAccess();
+                CheckNoSaveButtons(main, "Integrated workspace");
                 Call(main, "AssertSmokeBackgroundServicesInactive");
                 report.AppendLine("Background services: inactive; fleet polls=0; no game input or email enabled.");
             }
@@ -120,6 +123,9 @@ internal static class UiLayoutHarness
 
     private static void CheckPrivateUpdateAccess()
     {
+        Type access = app.GetType("_4RTools.Model.Vanilla.VanillaUpdateAccess", true);
+        string path = (string)access.GetProperty("TokenPath", All).GetValue(null, null);
+        Check(!File.Exists(path), "Isolated update-token fixture unexpectedly exists before opening.");
         foreach (float scale in new[] { 1F, 1.5F })
         using (var dialog = (Form)Activator.CreateInstance(app.GetType("_4RTools.Model.Vanilla.VanillaUpdateAccessDialog", true), true))
         {
@@ -134,17 +140,39 @@ internal static class UiLayoutHarness
             var boxes = Descendants(dialog).OfType<TextBox>().ToArray();
             Check(boxes.Length == 1 && boxes[0].UseSystemPasswordChar && boxes[0].Text.Length == 0,
                 "Private update token must start empty and use password masking.");
-            foreach (string caption in new[] { "SAVE", "CLEAR SAVED", "CANCEL" })
+            Check(!File.Exists(path), "Opening update access must not write defaults.");
+            CheckNoSaveButtons(dialog, "Private update access");
+            foreach (string caption in new[] { "CLEAR ACCESS", "CLOSE" })
             {
                 var button = Descendants(dialog).OfType<Button>().SingleOrDefault(b => b.Text == caption);
                 Check(button != null && button.Visible && FullyVisible(button, dialog), "Private update action is clipped: " + caption);
             }
             Check(boxes.Length == 1 && FullyVisible(boxes[0], dialog), "Private update token entry is clipped.");
-            if (boxes.Length == 1) boxes[0].Text = "synthetic-ui-token-only";
+            if (boxes.Length == 1)
+            {
+                boxes[0].Text = "synthetic-ui-token-only";
+                Check(!File.Exists(path), "Token entry was persisted mid-keystroke.");
+                Call(boxes[0], "OnValidated", EventArgs.Empty);
+                Check(File.Exists(path) && boxes[0].Text.Length == 0
+                    && (string)access.GetMethod("ReadSavedToken", All).Invoke(null, null) == "synthetic-ui-token-only",
+                    "Completed masked token entry did not persist through DPAPI.");
+                byte[] previous = File.ReadAllBytes(path);
+                boxes[0].Text = "bad"; Call(boxes[0], "OnValidated", EventArgs.Empty);
+                Check(previous.SequenceEqual(File.ReadAllBytes(path)) && ((Label)Field(dialog, "status")).Text.StartsWith("Not saved"),
+                    "Invalid replacement must retain existing token and show a visible error.");
+                dialog.Close(); Pump();
+                Check(!dialog.IsDisposed && dialog.Visible && boxes[0].Text == "bad" && ((Button)Field(dialog, "discard")).Visible,
+                    "Failed token save on Close must keep the error and retryable entry visible.");
+                boxes[0].Clear();
+                Descendants(dialog).OfType<Button>().Single(b => b.Text == "CLEAR ACCESS").PerformClick();
+                Check(!File.Exists(path), "Clear access did not remove the test-owned token.");
+            }
             Pump();
             SaveScreenshot(dialog, Path.Combine(output, scale == 1F ? "24-private-update-access.png" : "25-private-update-access-scaled.png"));
-            report.AppendLine("CASE private update access: masked empty entry and Save/Clear/Cancel visible at scale " + scale + "; no credentials saved or network requested.");
-            dialog.Close();
+            report.AppendLine("CASE private update access: masked auto-save, malformed replacement retains token, Clear/Close visible at scale " + scale + "; synthetic token only, no network.");
+            boxes[0].Text = "bad"; Call(boxes[0], "OnValidated", EventArgs.Empty);
+            ((Button)Field(dialog, "discard")).PerformClick();
+            Check(dialog.IsDisposed && !File.Exists(path), "Explicit Discard entry failed to close without saving.");
         }
     }
 
@@ -214,6 +242,7 @@ internal static class UiLayoutHarness
             NumericUpDown sp = (NumericUpDown)Field(panel, "emergencySp");
             NumericUpDown hp = (NumericUpDown)Field(panel, "emergencyHp");
             Label saved = (Label)Field(panel, "emergencySaveStatus");
+            CheckNoSaveButtons(panel, "Weight settings");
             Check(weight.Value == 50M && sp.Value == 25M && hp.Value == 50M, "Emergency defaults must be Weight >50, SP <25, HP <50.");
             Check(weight.Minimum == 0M && weight.Maximum == 99.9M && sp.Minimum == .1M && sp.Maximum == 100M
                 && hp.Minimum == .1M && hp.Maximum == 100M
@@ -224,24 +253,24 @@ internal static class UiLayoutHarness
                 "Constructing the emergency editor must not save defaults.");
 
             NumericUpDown cart = (NumericUpDown)Field(panel, "autoThreshold");
-            TextBox smtp = (TextBox)Field(panel, "smtpHost");
+            TextBox smtp = (TextBox)Field(panel, "fromAddress");
             CheckBox mail = (CheckBox)Field(panel, "enabled");
-            cart.Value = 61M; smtp.Text = "pending-invalid-host"; mail.Checked = true;
             object originalWeightSettings = service.GetType().GetProperty("Settings").GetValue(service, null);
-            weight.Text = 60.5M.ToString(); Pump();
+            cart.Value = 61M; smtp.Text = "pending-invalid-address";
+            weight.Text = 60.5M.ToString();
             Check(EmergencyValue(service, "WeightAbovePercent") == 50M, "Partially typed emergency limits saved before validation.");
             Call(weight, "OnValidated", EventArgs.Empty);
             sp.Text = 30.2M.ToString(); Call(sp, "OnValidated", EventArgs.Empty);
             hp.Text = 45.8M.ToString(); Call(hp, "OnKeyDown", new KeyEventArgs(Keys.Enter));
             Check(EmergencyValue(service, "WeightAbovePercent") == 60.5M && EmergencyValue(service, "SpBelowPercent") == 30.2M
                 && EmergencyValue(service, "HpBelowPercent") == 45.8M && saved.Text == "Saved", "Completed emergency edits did not auto-save.");
-            Check(cart.Value == 61M && smtp.Text == "pending-invalid-host" && mail.Checked,
+            Check(cart.Value == 61M && smtp.Text == "pending-invalid-address" && !mail.Checked,
                 "Emergency auto-save overwrote pending Cart/mail edits.");
             object stillWeightSettings = service.GetType().GetProperty("Settings").GetValue(service, null);
             Check(Equals(originalWeightSettings.GetType().GetProperty("AutoCartThresholdPercent").GetValue(originalWeightSettings, null),
                     stillWeightSettings.GetType().GetProperty("AutoCartThresholdPercent").GetValue(stillWeightSettings, null))
-                && Equals(originalWeightSettings.GetType().GetProperty("SmtpHost").GetValue(originalWeightSettings, null),
-                    stillWeightSettings.GetType().GetProperty("SmtpHost").GetValue(stillWeightSettings, null)),
+                && Equals(originalWeightSettings.GetType().GetProperty("FromAddress").GetValue(originalWeightSettings, null),
+                    stillWeightSettings.GetType().GetProperty("FromAddress").GetValue(stillWeightSettings, null)),
                 "Emergency auto-save committed pending Cart/mail settings.");
 
             // Reopen the durable state with an inert supervisor, without Start or timers.
@@ -253,9 +282,14 @@ internal static class UiLayoutHarness
                     && (decimal)settings.GetType().GetProperty("HpBelowPercent").GetValue(settings, null) == 45.8M,
                     "Emergency edits were not restored from durable settings.");
             }
-            mail.Checked = false; Call(panel, "SaveSettings");
+            Call(panel, "FlushPendingSettings");
+            Check((decimal)ReadProperty(ReadProperty(service, "Settings"), "AutoCartThresholdPercent") == 61M
+                && Equals(ReadProperty(originalWeightSettings, "FromAddress"), ReadProperty(ReadProperty(service, "Settings"), "FromAddress"))
+                && ((Label)Field(panel, "saveStatus")).Text.StartsWith("Not saved:"),
+                "Weight auto-save must persist valid Cart edits independently of an invalid e-mail draft.");
+            smtp.Text = ""; Call(panel, "FlushPendingSettings");
             Check(EmergencyValue(service, "WeightAbovePercent") == 60.5M && EmergencyValue(service, "SpBelowPercent") == 30.2M
-                && EmergencyValue(service, "HpBelowPercent") == 45.8M, "Existing Weight Save reverted emergency limits.");
+                && EmergencyValue(service, "HpBelowPercent") == 45.8M, "Weight auto-save reverted emergency limits.");
 
             string blocker = Path.Combine(output, "emergency-save-blocker");
             File.WriteAllText(blocker, "test-owned file prevents creation of a child directory");
@@ -288,6 +322,49 @@ internal static class UiLayoutHarness
         report.AppendLine("CASE emergency settings: defaults, independent auto-save, durable reload, failure rollback, Cart/mail isolation, narrow and enlarged-text scrolling; no live actions.");
     }
 
+    private static void CheckNoSaveButtons(Control root, string context)
+    {
+        Check(!Descendants(root).OfType<Button>().Any(b => b.Text.Trim().StartsWith("Save", StringComparison.OrdinalIgnoreCase)),
+            context + ": a manual Save button remains.");
+    }
+
+    private static void CheckRulesEditor()
+    {
+        Type ruleType = app.GetType("_4RTools.Model.Vanilla.Automation.AutomationRuleSettings", true);
+        Type listType = typeof(List<>).MakeGenericType(ruleType);
+        foreach (float scale in new[] { 1F, 1.25F })
+        {
+            caseNumber++;
+            int writes = 0;
+            object durable = null;
+            Action<object> persist = value => { durable = value; writes++; };
+            var valueParameter = Expression.Parameter(listType, "rules");
+            Delegate callback = Expression.Lambda(typeof(Action<>).MakeGenericType(listType),
+                Expression.Invoke(Expression.Constant(persist), Expression.Convert(valueParameter, typeof(object))), valueParameter).Compile();
+            using (Form dialog = (Form)Activator.CreateInstance(app.GetType("_4RTools.Forms.VanillaRulesEditor", true),
+                new[] { Activator.CreateInstance(listType), (object)(int)Keys.F12, callback }))
+            {
+                if (scale != 1F) { dialog.Scale(new SizeF(scale, scale)); dialog.Font = new Font(dialog.Font.FontFamily, dialog.Font.Size * scale); }
+                dialog.Show(); Pump();
+                Check(writes == 0, "Opening rule editor wrote defaults.");
+                CheckNoSaveButtons(dialog, "Rules editor");
+                Call(dialog, "AddRule");
+                Check(writes == 1 && ((IList)durable).Count == 1, "Explicit Add rule did not persist its valid disabled rule.");
+                var name = (TextBox)Field(dialog, "name");
+                name.Text = "Synthetic autosaved rule"; Call(name, "OnLeave", EventArgs.Empty);
+                Check(writes == 2 && (string)ReadProperty(((IList)durable)[0], "Name") == name.Text,
+                    "Completed rule edit did not auto-save.");
+                Check(FullyVisible(name, dialog) && FullyVisible((Control)Field(dialog, "saveStatus"), dialog),
+                    "Rule editor fields/status clipped at scale " + scale);
+                var close = Descendants(dialog).OfType<Button>().SingleOrDefault(b => b.Text == "Close");
+                Check(close != null && FullyVisible(close, dialog), "Rules Close action clipped at scale " + scale);
+                SaveScreenshot(dialog, Path.Combine(output, "rules-autosave-" + (int)(scale * 100) + ".png"));
+                dialog.Close();
+            }
+        }
+        report.AppendLine("CASE rules editor: no Save; explicit creation, automatic committed edit, no initialization write, normal/enlarged layout; mock persistence only.");
+    }
+
     private static decimal EmergencyValue(object service, string property)
     {
         object value = service.GetType().GetProperty("EmergencySettings").GetValue(service, null);
@@ -311,26 +388,26 @@ internal static class UiLayoutHarness
             emergencyMail.Checked = true;
             Check(!emergencyMail.Checked && ((Label)Field(panel, "emergencySaveStatus")).Text.StartsWith("Not saved:"),
                 "Emergency mail without saved SMTP must restore its unchecked state and show the save error.");
-            Check(completedClose.Checked && !(bool)ReadProperty(ReadProperty(service, "Settings"), "CloseClientWhenFarmingComplete"),
-                "Emergency checkbox committed or discarded the pending completion-close setting.");
+            Check(completedClose.Checked && (bool)ReadProperty(ReadProperty(service, "Settings"), "CloseClientWhenFarmingComplete"),
+                "Completion-close checkbox must save immediately and survive the unrelated emergency error.");
             ((TextBox)Field(panel, "smtpHost")).Text = "smtp.example.invalid";
             ((TextBox)Field(panel, "fromAddress")).Text = "sender@example.invalid";
             ((TextBox)Field(panel, "toAddress")).Text = "recipient@example.invalid";
-            normalMail.Checked = false; Call(panel, "SaveSettings");
+            normalMail.Checked = false; Call(panel, "FlushPendingSettings");
             emergencyMail.Checked = true; Pump();
             Check(emergencyMail.Checked && (bool)ReadProperty(ReadProperty(service, "EmergencySettings"), "SendEmail")
                 && !(bool)ReadProperty(ReadProperty(service, "Settings"), "Enabled"),
                 "Emergency e-mail must save independently with normal mail off.");
             Check((bool)ReadProperty(ReadProperty(service, "Settings"), "CloseClientWhenFarmingComplete"),
-                "Completion-close checkbox was not saved by Weight Save.");
+                "Completion-close checkbox did not auto-save.");
             using (var reopened = (Control)Activator.CreateInstance(panelType, new[] { service }))
                 Check(((CheckBox)Field(reopened, "emergencySendEmail")).Checked
                     && ((CheckBox)Field(reopened, "closeWhenComplete")).Checked, "Farming checkboxes did not reload their saved values.");
             completedClose.Checked = false;
             emergencyMail.Checked = false;
-            Check((bool)ReadProperty(ReadProperty(service, "Settings"), "CloseClientWhenFarmingComplete"),
-                "Emergency mail opt-out saved pending completion-close edits.");
-            Call(panel, "SaveSettings");
+            Check(!(bool)ReadProperty(ReadProperty(service, "Settings"), "CloseClientWhenFarmingComplete"),
+                "Completion-close opt-out did not auto-save.");
+            CheckWeightSaveFailureAndPassword(panel, service);
             host.ClientSize = new Size(760, 560); panel.Scale(new SizeF(1.5F, 1.5F));
             panel.Font = new Font(panel.Font.FontFamily, panel.Font.Size * 1.5F);
             Pump(); CheckWeightControlsReachable(host, panel, "farming flags narrow/enlarged");
@@ -338,14 +415,63 @@ internal static class UiLayoutHarness
             SaveScreenshot(host, Path.Combine(output, "farming-options.png"));
         }
         Call(main, "AssertSmokeBackgroundServicesInactive");
-        report.AppendLine("CASE farming options: both defaults off; missing-SMTP rollback; independent emergency-mail auto-save; explicit completion-close save/reload; no SMTP/network call.");
+        report.AppendLine("CASE farming options: defaults off; independent checkbox auto-save, durable reload, failed-write preservation and SMTP password protection; no SMTP/network call.");
+    }
+
+    private static void CheckWeightSaveFailureAndPassword(Control panel, object service)
+    {
+        var host = (TextBox)Field(panel, "smtpHost");
+        var port = (NumericUpDown)Field(panel, "smtpPort");
+        int portBefore = (int)ReadProperty(ReadProperty(service, "Settings"), "SmtpPort");
+        port.Focus(); port.Text = "70000"; host.Focus(); Pump(); Pump(); Pump(); Pump();
+        Call(panel, "FlushPendingSettings");
+        Check((int)ReadProperty(ReadProperty(service, "Settings"), "SmtpPort") == portBefore
+            && ((Label)Field(panel, "saveStatus")).Text.StartsWith("Not saved:"),
+            "Invalid typed SMTP port must remain rejected after focus validation and debounce; type=" + port.GetType().Name
+                + "; raw=" + port.Text + "; active=" + ReadProperty(ReadProperty(service, "Settings"), "SmtpPort")
+                + "; status=" + ((Label)Field(panel, "saveStatus")).Text);
+        port.Text = portBefore.ToString(); Call(panel, "FlushPendingSettings");
+        object store = ReadProperty(service, "Store");
+        string path = (string)Field(store, "path");
+        string previous = (string)ReadProperty(ReadProperty(service, "Settings"), "SmtpHost");
+        string blocker = Path.Combine(output, "weight-autosave-blocker");
+        File.WriteAllText(blocker, "synthetic file blocker");
+        try
+        {
+            SetField(store, "path", Path.Combine(blocker, "settings.json"));
+            host.Text = "new-host.example.invalid"; Call(panel, "FlushPendingSettings");
+            Check((string)ReadProperty(ReadProperty(service, "Settings"), "SmtpHost") == previous
+                && ((Label)Field(panel, "saveStatus")).Text.StartsWith("Not saved:"),
+                "Failed Weight auto-save changed active settings or hid its error.");
+            Call(panel, "RefreshStatus");
+            Check(((Label)Field(panel, "saveStatus")).Text.StartsWith("Not saved:"), "Live polling erased auto-save error.");
+        }
+        finally { SetField(store, "path", path); File.Delete(blocker); }
+        host.Text = previous; Call(panel, "FlushPendingSettings");
+        var password = (TextBox)Field(panel, "smtpPassword");
+        Check(password.UseSystemPasswordChar && password.Text.Length == 0, "SMTP replacement must start empty and masked.");
+        password.Text = "synthetic-smtp-password"; Call(panel, "FlushPendingSettings");
+        string protectedValue = (string)ReadProperty(ReadProperty(service, "Settings"), "ProtectedSmtpPassword");
+        Check(password.Text.Length == 0 && !string.IsNullOrEmpty(protectedValue) && protectedValue != "synthetic-smtp-password",
+            "SMTP password must be encrypted and cleared from the editor after saving.");
+        Call(panel, "SaveField", password);
+        Check((string)ReadProperty(ReadProperty(service, "Settings"), "ProtectedSmtpPassword") == protectedValue,
+            "Blank SMTP replacement erased stored password.");
+        ((Button)Field(panel, "clearPassword")).PerformClick();
+        Check(string.IsNullOrEmpty((string)ReadProperty(ReadProperty(service, "Settings"), "ProtectedSmtpPassword")),
+            "Explicit Clear password action did not persist.");
     }
 
     private static void CheckWeightControlsReachable(Form host, ScrollableControl panel, string context)
     {
+        // An earlier edit must not make WinForms' focus scrolling pull the panel
+        // back while this check navigates to a different control.
+        var container = panel as ContainerControl;
+        if (container != null) container.ActiveControl = null;
+        host.ActiveControl = null;
         foreach (string field in new[] { "emergencyWeight", "emergencySp", "emergencyHp", "emergencySendEmail", "closeWhenComplete", "autoThreshold", "autoRearm",
             "autobattleStopHotkey", "inventoryHotkey", "cartHotkey", "smtpHost", "smtpPassword", "toAddress",
-            "save", "test", "clearHold", "clearEmergency" })
+            "clearPassword", "test", "clearHold", "clearEmergency" })
         {
             Control control = (Control)Field(panel, field);
             panel.ScrollControlIntoView(control); Pump();
@@ -627,6 +753,29 @@ internal static class UiLayoutHarness
             }
             Check(!((System.Windows.Forms.Timer)Field(dialog, "timer")).Enabled && Field(dialog, "source") == null,
                 "Diagnostics test opened a real reader or started polling.");
+            CheckNoSaveButtons(dialog, "Diagnostics");
+            object profile = Field(dialog, "settingsProfile");
+            object settings = ReadProperty(profile, "VanillaDiagnostics");
+            string mapBefore = (string)ReadProperty(settings, "MemoryMapJson");
+            object pending = Field(dialog, "autosave");
+            Check(!(bool)ReadProperty(pending, "HasPending"), "Loading diagnostics scheduled a save.");
+            var map = (TextBox)Field(dialog, "mapEditor");
+            var poll = (NumericUpDown)Field(dialog, "interval");
+            map.Text = "{ invalid"; Call(map, "OnLeave", EventArgs.Empty);
+            Check((string)ReadProperty(ReadProperty(profile, "VanillaDiagnostics"), "MemoryMapJson") == mapBefore
+                && ((Label)Field(dialog, "saveStatus")).Text.StartsWith("Not saved:"),
+                "Invalid memory map changed active diagnostics settings or lost its error.");
+            poll.Value = 750; Call(poll, "OnLeave", EventArgs.Empty);
+            Check((int)ReadProperty(ReadProperty(profile, "VanillaDiagnostics"), "PollIntervalMilliseconds") == 750
+                && ((Label)Field(dialog, "saveStatus")).Text.StartsWith("Not saved:"),
+                "Valid diagnostics field must save independently while another field's error remains visible.");
+            const string validMap = "{\"SchemaVersion\":1,\"ProcessName\":\"Vanilla MMO\",\"Fields\":{}}";
+            map.Text = validMap; Call(map, "OnLeave", EventArgs.Empty);
+            Check((string)ReadProperty(ReadProperty(profile, "VanillaDiagnostics"), "MemoryMapJson") == validMap
+                && ((Label)Field(dialog, "saveStatus")).Text == "Saved",
+                "Valid completed memory map did not auto-save.");
+            Check(!((System.Windows.Forms.Timer)Field(dialog, "timer")).Enabled && Field(dialog, "source") == null,
+                "Diagnostics auto-save activated polling or connected a reader.");
             SaveScreenshot(dialog, Path.Combine(output, "22-username-diagnostics.png"));
         }
         report.AppendLine("CASE 22 native diagnostics: both username values and addresses visible; no reader, process enumeration or polling.");
@@ -639,12 +788,19 @@ internal static class UiLayoutHarness
         object row = Activator.CreateInstance(rowType);
         Property(row, "Enabled", false); Property(row, "CharacterName", "Auto discovered mock");
         Property(row, "CharacterSlot", null); Property(row, "ProxyNeedsConfiguration", true);
-        Type proxyType = app.GetType("_4RTools.Model.Vanilla.VanillaProxyRoute", true);
-        Type dialogType = app.GetType("_4RTools.Model.Vanilla.VanillaMinimalAccountDialog", true);
-        using (Form dialog = (Form)Activator.CreateInstance(dialogType, BindingFlags.Instance | BindingFlags.NonPublic, null,
-            new object[] { Field(recovery, "supervisor"), row, Enum.ToObject(proxyType, 0) }, null))
+        int writes = 0;
+        bool reject = false;
+        object durable = null;
+        Action<object> persist = value =>
+        {
+            if (reject) throw new IOException("Synthetic write failure");
+            durable = value; writes++;
+        };
+        using (Form dialog = NewCharacterDialog(recovery, row, false, persist))
         {
             dialog.Show(main); Pump();
+            Check(writes == 0, "Opening character editor must not persist defaults.");
+            CheckNoSaveButtons(dialog, "Character editor");
             foreach (string name in new[] { "enabled", "label", "user", "slot", "character", "password", "proxy", "hotkey",
                 "smartTeleport", "teleportIdle", "teleportHotkey" })
                 Check(FullyVisible((Control)Field(dialog, name), dialog), "Character editor clipped field: " + name);
@@ -653,10 +809,162 @@ internal static class UiLayoutHarness
             Check(!((CheckBox)Field(dialog, "smartTeleport")).Checked, "Smart Teleport must default OFF for a newly discovered character.");
             Check(((NumericUpDown)Field(dialog, "teleportIdle")).Value == 60, "Smart Teleport default idle time must be 60 seconds.");
             Check(((TextBox)Field(dialog, "teleportHotkey")).Text.Contains("press hotkey"), "Smart Teleport live hotkey capture field is missing its unset state.");
+            TextBox description = (TextBox)Field(dialog, "label");
+            description.Text = "Edited synthetic character";
+            Check(writes == 0, "Character text saved before its edit was committed.");
+            Call(description, "OnValidated", EventArgs.Empty);
+            Check(writes == 1 && (string)ReadProperty(durable, "Label") == description.Text,
+                "Existing character edit did not auto-save.");
+            var idle = (NumericUpDown)Field(dialog, "teleportIdle");
+            Check(!(bool)Field(dialog, "dirty"), "Accepted account edit did not reset dirty state before numeric rejection test.");
+            idle.Text = "70000"; Call(idle, "OnValidated", EventArgs.Empty);
+            Check(writes == 1 && (int)ReadProperty(ReadProperty(dialog, "Account"), "SmartTeleportIdleSeconds") == 60
+                && ((Label)Field(dialog, "saveStatus")).Text.StartsWith("Not saved:"),
+                "Invalid account numeric text must not clamp into a saved value.");
+            idle.Text = "60"; Call(idle, "OnValidated", EventArgs.Empty);
+            int beforeToggle = writes;
+            ((CheckBox)Field(dialog, "weightEmail")).Checked = !((CheckBox)Field(dialog, "weightEmail")).Checked;
+            Check(writes == beforeToggle + 1, "Character checkbox did not save immediately.");
+            int beforeFailure = writes;
+            reject = true; description.Text = "Unsaved synthetic failure"; Call(description, "OnValidated", EventArgs.Empty);
+            Check(writes == beforeFailure && (string)ReadProperty(ReadProperty(dialog, "Account"), "Label") == "Edited synthetic character"
+                && ((Label)Field(dialog, "saveStatus")).Text.StartsWith("Not saved:"),
+                "Failed character save must preserve the accepted account and show its error.");
+            dialog.Close(); Pump();
+            Check(!dialog.IsDisposed && dialog.Visible && ((Button)Field(dialog, "discard")).Visible,
+                "Failed account persistence on Close must keep the editor and retryable draft visible.");
+            reject = false; description.Text = "Edited synthetic character"; Call(description, "OnValidated", EventArgs.Empty);
             SaveScreenshot(dialog, Path.Combine(output, "20-character-editor.png"));
             dialog.Close();
         }
-        report.AppendLine("CASE 20 character editor: identity/credential + per-character Smart Teleport controls visible; 60s default; unavailable slot/proxy preserved.");
+        using (Form reopened = NewCharacterDialog(recovery, durable, false, persist))
+        {
+            Check(((TextBox)Field(reopened, "label")).Text == "Edited synthetic character", "Saved character was not restored in a reopened editor.");
+            int previousWrites = writes; reopened.Show(main); Pump();
+            Check(previousWrites == writes, "Reopening saved character wrote unchanged values.");
+            reopened.Scale(new SizeF(1.5F, 1.5F)); reopened.Font = new Font(reopened.Font.FontFamily, reopened.Font.Size * 1.5F);
+            reopened.ClientSize = new Size(820, 740); Pump();
+            foreach (string name in new[] { "label", "password", "teleportHotkey", "saveStatus" })
+            {
+                var control = (Control)Field(reopened, name); reopened.ScrollControlIntoView(control); Pump();
+                Check(FullyVisible(control, reopened), "Scaled character editor clips " + name);
+            }
+            reopened.Close();
+        }
+        using (Form failure = NewCharacterDialog(recovery, durable, false, value => { throw new IOException("Synthetic close failure"); }))
+        {
+            failure.Show(main); Pump();
+            ((TextBox)Field(failure, "label")).Text = "Unsaved discard fixture";
+            failure.Close(); Pump();
+            Check(!failure.IsDisposed && failure.Visible, "First failed save on close must keep the editor open.");
+            ((Button)Field(failure, "discard")).PerformClick();
+            Check(failure.IsDisposed && (string)ReadProperty(durable, "Label") == "Edited synthetic character",
+                "Explicit Discard unsaved failed to retain earlier saved account settings.");
+        }
+        object newRow = Activator.CreateInstance(rowType);
+        Property(newRow, "Enabled", false);
+        int beforeCreate = writes;
+        using (Form added = NewCharacterDialog(recovery, newRow, true, persist))
+        {
+            added.Show(main); Pump();
+            ((TextBox)Field(added, "label")).Text = "New synthetic";
+            Call((Control)Field(added, "label"), "OnValidated", EventArgs.Empty);
+            ((Button)Field(added, "create")).PerformClick();
+            Check(writes == beforeCreate && ((Label)Field(added, "saveStatus")).Text.StartsWith("Not saved:"),
+                "An incomplete new identity must not be persisted.");
+            ((TextBox)Field(added, "user")).Text = "synthetic-user";
+            ((ComboBox)Field(added, "character")).Text = "Synthetic character";
+            ((Button)Field(added, "create")).PerformClick();
+            Check(writes == beforeCreate + 1 && !((Button)Field(added, "create")).Visible,
+                "Creating a valid disabled identity must persist once and switch to auto-save.");
+            added.Close();
+        }
+        CheckCharacterPasswordPreservation(recovery, rowType);
+        CheckCharacterDurableAutoSave(recovery);
+        report.AppendLine("CASE 20 character editor: no Save; automatic committed edits, write-failure feedback, valid-only Create, password preservation and enlarged controls; mock callbacks only.");
+    }
+
+    private static void CheckCharacterDurableAutoSave(object recovery)
+    {
+        var restart = (NumericUpDown)Field(recovery, "movementRestartSeconds");
+        object recoverySupervisor = Field(recovery, "supervisor");
+        int previousRestart = (int)ReadProperty(ReadProperty(recoverySupervisor, "Settings"), "MovementRestartSeconds");
+        restart.Text = "70000"; Call(restart, "OnLeave", EventArgs.Empty);
+        Check((int)ReadProperty(ReadProperty(recoverySupervisor, "Settings"), "MovementRestartSeconds") == previousRestart
+            && ((Label)Field(recovery, "testState")).Text.Contains("failed"),
+            "Invalid typed recovery threshold must not clamp into an active setting.");
+        Check(!((System.Windows.Forms.Timer)Field(recovery, "saveToastTimer")).Enabled,
+            "Recovery save errors must remain visible until corrected.");
+        Call(recovery, "LoadFromSupervisor");
+        Check(restart.Text == previousRestart.ToString() && !((System.Windows.Forms.Timer)Field(recovery, "autosaveTimer")).Enabled,
+            "Reloading Recovery must replace invalid raw numeric text without scheduling a save.");
+        object original = ((IList)Field(recovery, "accountCatalog")).Cast<object>()
+            .Single(value => (string)ReadProperty(value, "CharacterName") == "Auto discovered mock");
+        object supervisor = Field(recovery, "supervisor"), store = Field(supervisor, "store");
+        string path = (string)Field(store, "path");
+        object catalogStore = Field(recovery, "accountCatalogStore");
+        string catalogPath = (string)ReadProperty(catalogStore, "FilePath");
+        Type proxyType = app.GetType("_4RTools.Model.Vanilla.VanillaProxyRoute", true);
+        using (Form dialog = NewCharacterDialog(recovery, original, false,
+            value => Call(recovery, "PersistEditedCharacter", value, Enum.ToObject(proxyType, 0))))
+        {
+            var label = (TextBox)Field(dialog, "label");
+            label.Text = "Durably edited mock"; Call(label, "OnValidated", EventArgs.Empty);
+            Check(File.ReadAllText(catalogPath).Contains("Durably edited mock")
+                && (string)ReadProperty(ReadProperty(dialog, "Account"), "Label") == label.Text,
+                "Character callback did not persist the real catalog.");
+            string catalogBefore = File.ReadAllText(catalogPath);
+            object settingsBefore = Field(supervisor, "settings");
+            string blocker = Path.Combine(output, "character-autosave-blocker");
+            File.WriteAllText(blocker, "synthetic failure");
+            try
+            {
+                SetField(store, "path", Path.Combine(blocker, "settings.json"));
+                label.Text = "Rejected mock"; Call(label, "OnValidated", EventArgs.Empty);
+                Check(File.ReadAllText(catalogPath) == catalogBefore && ReferenceEquals(settingsBefore, Field(supervisor, "settings"))
+                    && (string)ReadProperty(ReadProperty(dialog, "Account"), "Label") == "Durably edited mock"
+                    && ((Label)Field(dialog, "saveStatus")).Text.StartsWith("Not saved:"),
+                    "Failed account persistence did not roll back catalog or preserve active settings.");
+            }
+            finally { SetField(store, "path", path); File.Delete(blocker); }
+        }
+    }
+
+    private static Form NewCharacterDialog(object recovery, object row, bool isNew, Action<object> persist)
+    {
+        Type proxyType = app.GetType("_4RTools.Model.Vanilla.VanillaProxyRoute", true);
+        var account = Expression.Parameter(row.GetType(), "account");
+        var route = Expression.Parameter(proxyType, "route");
+        Type callback = typeof(Action<,>).MakeGenericType(row.GetType(), proxyType);
+        Delegate save = Expression.Lambda(callback, Expression.Invoke(Expression.Constant(persist),
+            Expression.Convert(account, typeof(object))), account, route).Compile();
+        return (Form)Activator.CreateInstance(app.GetType("_4RTools.Model.Vanilla.VanillaMinimalAccountDialog", true),
+            BindingFlags.Instance | BindingFlags.NonPublic, null,
+            new object[] { Field(recovery, "supervisor"), row, Enum.ToObject(proxyType, 0), save, isNew }, null);
+    }
+
+    private static void CheckCharacterPasswordPreservation(object recovery, Type rowType)
+    {
+        object row = Activator.CreateInstance(rowType);
+        Property(row, "Enabled", false); Property(row, "UserName", "old-synthetic");
+        Property(row, "CharacterName", "Synthetic password fixture");
+        Property(row, "ProtectedPassword", "inaccessible-synthetic-protected-value");
+        object durable = row; int writes = 0;
+        using (Form dialog = NewCharacterDialog(recovery, row, false, value => { durable = value; writes++; }))
+        {
+            ((TextBox)Field(dialog, "label")).Text = "Password fixture edited";
+            Call((Control)Field(dialog, "label"), "OnValidated", EventArgs.Empty);
+            Check(writes == 1 && (string)ReadProperty(durable, "ProtectedPassword") == "inaccessible-synthetic-protected-value",
+                "Unrelated edit erased an inaccessible protected password.");
+            ((TextBox)Field(dialog, "user")).Text = "new-synthetic";
+            Call((Control)Field(dialog, "user"), "OnValidated", EventArgs.Empty);
+            Check(writes == 1 && ((Label)Field(dialog, "saveStatus")).Text.StartsWith("Not saved:"),
+                "Changing username reused the old password.");
+            ((TextBox)Field(dialog, "password")).Text = "synthetic-password";
+            Call((Control)Field(dialog, "password"), "OnValidated", EventArgs.Empty);
+            Check(writes == 2 && (string)Call(Field(recovery, "supervisor"), "GetPassword", durable) == "synthetic-password",
+                "Explicit replacement password did not persist using protected storage.");
+        }
     }
 
     private static void ResizeNativeViewport(Form main, int width, int height)

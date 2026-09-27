@@ -53,6 +53,12 @@ application-health handshake. Offline use needs only a previously obtained ZIP.
 
 ## Recovery and character identity
 
+All settings save automatically, including Weight, character editors, diagnostics,
+automation rules and the legacy tabs. Text and numeric edits save after a short
+pause or when leaving/closing the editor; credential and rename edits save when
+completed. Invalid edits retain the last saved value and show an error. Create,
+Copy, Import and Export remain explicit actions; there is no settings Save button.
+
 Set the launcher, credentials, configured character slot/name, proxy and Autobattle
 resume hotkey. Settings auto-save. Multiple rows may share a username; at most two
 characters may be enabled simultaneously. The roster uses username plus character,

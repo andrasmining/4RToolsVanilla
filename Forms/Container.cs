@@ -144,12 +144,12 @@ namespace _4RTools.Forms
         {
             this.Invoke((MethodInvoker)delegate ()
             {
+                string selected = ProfileSingleton.GetCurrent()?.Name;
                 this.profileCB.Items.Clear();
+                foreach (string p in Profile.ListAll()) this.profileCB.Items.Add(p);
+                if (selected != null && profileCB.Items.Contains(selected)) profileCB.SelectedItem = selected;
+                else if (profileCB.Items.Contains("Default")) profileCB.SelectedItem = "Default";
             });
-            foreach (string p in Profile.ListAll())
-            {
-                this.profileCB.Items.Add(p);
-            }
         }
 
         private void refreshProcessList()

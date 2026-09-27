@@ -7,6 +7,7 @@ namespace _4RTools.Model
     {
         private string ACTION_NAME = "UserPreferences";
         public string toggleStateKey { get; set; } = Keys.End.ToString();
+        public bool audioEnabled { get; set; } = true;
 
         public UserPreferences()
         {

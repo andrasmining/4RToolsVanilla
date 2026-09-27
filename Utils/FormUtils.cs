@@ -10,6 +10,72 @@ namespace _4RTools.Utils
 {
     public class FormUtils
     {
+        private static readonly System.Runtime.CompilerServices.ConditionalWeakTable<Control, LoadingState> loading =
+            new System.Runtime.CompilerServices.ConditionalWeakTable<Control, LoadingState>();
+
+        // Profile rendering must never be mistaken for a user edit by TextChanged/ValueChanged.
+        public static IDisposable BeginLoading(Control control)
+        {
+            var state = loading.GetValue(control, owner => new LoadingState());
+            state.Depth++;
+            return new LoadingScope(state);
+        }
+
+        public static bool IsLoading(Control control)
+        {
+            for (Control current = control; current != null; current = current.Parent)
+            {
+                LoadingState state;
+                if (loading.TryGetValue(current, out state) && state.Depth > 0) return true;
+            }
+            return false;
+        }
+
+        private sealed class LoadingState { public int Depth; }
+        private sealed class LoadingScope : IDisposable
+        {
+            private LoadingState state;
+            public LoadingScope(LoadingState state) { this.state = state; }
+            public void Dispose()
+            {
+                if (state == null) return;
+                state.Depth--;
+                state = null;
+            }
+        }
+
+        // Embedded stock forms are disposed directly when their host closes. WinForms
+        // does not validate the active NumericUpDown editor first in that path.
+        public static void CommitNumericEditsOnClose(Form owner)
+        {
+            Form connected = null;
+            FormClosingEventHandler flush = (sender, args) =>
+            {
+                if (owner.IsDisposed || IsLoading(owner)) return;
+                foreach (NumericUpDown number in GetAll(owner, typeof(NumericUpDown)))
+                {
+                    decimal value;
+                    if (decimal.TryParse(number.Text, System.Globalization.NumberStyles.Number,
+                            System.Globalization.CultureInfo.CurrentCulture, out value)
+                        && value >= number.Minimum && value <= number.Maximum
+                        && decimal.Round(value, number.DecimalPlaces) == value)
+                        number.Value = value;
+                }
+            };
+            EventHandler connect = (sender, args) =>
+            {
+                if (owner.IsDisposed) return;
+                Form host = owner.TopLevelControl as Form ?? owner;
+                if (ReferenceEquals(host, connected)) return;
+                if (connected != null) connected.FormClosing -= flush;
+                connected = host;
+                connected.FormClosing += flush;
+            };
+            owner.ParentChanged += connect;
+            owner.HandleCreated += connect;
+            owner.Disposed += (sender, args) => { if (connected != null) connected.FormClosing -= flush; };
+            connect(owner, EventArgs.Empty);
+        }
 
         public static void OnKeyDown(object sender, System.Windows.Forms.KeyEventArgs e)
         {

@@ -48,22 +48,24 @@ namespace _4RTools.Forms
 
         private void datagridServers_CellContentClick(object sender, DataGridViewCellEventArgs e)
         {
-            //Update
-            ClientDTO current = (ClientDTO)clientDTOBindingSource.Current;
-            current.index = e.RowIndex;
+            if (e.RowIndex < 0 || e.ColumnIndex < 0 || e.RowIndex >= datagridServers.Rows.Count) return;
+            ClientDTO current = datagridServers.Rows[e.RowIndex].DataBoundItem as ClientDTO;
+            if (current == null) return;
 
             if (this.datagridServers.Columns[e.ColumnIndex].Name == "Delete")
             {
                 //Delete
                 if(MessageBox.Show("Are you sure want to delete this Server?", "Message", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
                 {
-                    clientDTOBindingSource.RemoveCurrent();
-                    LocalServerManager.RemoveClient(current);
-                    this.subject.Notify(new Utils.Message(MessageCode.SERVER_LIST_CHANGED, "Server Deleted"));
-                    MessageBox.Show("Server " + current.name + " successfully deleted !!", "Message", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    try
+                    {
+                        LocalServerManager.RemoveClient(current);
+                        this.subject.Notify(new Utils.Message(MessageCode.SERVER_LIST_CHANGED, "Server Deleted"));
+                    }
+                    catch (Exception ex) { MessageBox.Show(this, ex.Message, "Server not deleted", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
                 }
             }
-            else
+            else if (this.datagridServers.Columns[e.ColumnIndex].Name == "Edit")
             {
                 new AddServerForm(current, this.subject).Show();
             }

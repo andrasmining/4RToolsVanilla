@@ -4,23 +4,27 @@ using System.Drawing;
 using System.Globalization;
 using System.Linq;
 using System.Windows.Forms;
+using _4RTools.Model.Vanilla;
 using _4RTools.Model.Vanilla.Automation;
 
 namespace _4RTools.Forms
 {
-    /// <summary>Edits a private copy; Cancel never changes the active profile.</summary>
+    /// <summary>Automatically persists validated edits and retains invalid drafts locally.</summary>
     public sealed class VanillaRulesEditor : Form
     {
         private readonly int emergencyKey;
         private readonly List<AutomationRuleSettings> working;
+        private readonly System.Action<List<AutomationRuleSettings>> persist;
+        private readonly VanillaSettingsAutoSave autosave;
+        private readonly Label saveStatus = new Label { AutoSize = true, ForeColor = Color.DimGray, MaximumSize = new Size(900, 0), Text = "Auto-save on" };
         private readonly ListBox rules = new ListBox { Dock = DockStyle.Fill, IntegralHeight = false };
         private readonly Panel details = new Panel { Dock = DockStyle.Fill };
         private readonly TextBox name = new TextBox { Width = 260, MaxLength = 80 };
         private readonly CheckBox enabled = new CheckBox { Text = "Enable this rule", AutoSize = true };
         private readonly ComboBox condition = DropDown(225);
         private readonly NumericUpDown period = Seconds();
-        private readonly NumericUpDown threshold = new NumericUpDown { Minimum = 0, Maximum = 100, DecimalPlaces = 2, Width = 110 };
-        private readonly NumericUpDown status = new NumericUpDown { Minimum = 0, Maximum = uint.MaxValue, Width = 130 };
+        private readonly NumericUpDown threshold = new VanillaSettingsNumber { Minimum = 0, Maximum = 100, DecimalPlaces = 2, Width = 110 };
+        private readonly NumericUpDown status = new VanillaSettingsNumber { Minimum = 0, Maximum = uint.MaxValue, Width = 130 };
         private readonly NumericUpDown cooldown = Seconds();
         private readonly CheckBox preferOutOfCombat = new CheckBox { Text = "Only when out of combat", AutoSize = true };
         private readonly Label explanation = new Label { AutoSize = true, MaximumSize = new Size(710, 0), ForeColor = Color.DimGray };
@@ -33,13 +37,16 @@ namespace _4RTools.Forms
         };
         private readonly ComboBox stepKind = DropDown(120);
         private int editing = -1;
-        private bool loading;
+        private bool loading, saving, disposed;
 
         public List<AutomationRuleSettings> Rules { get; private set; }
 
-        public VanillaRulesEditor(List<AutomationRuleSettings> rules, int emergencyKey)
+        public VanillaRulesEditor(List<AutomationRuleSettings> rules, int emergencyKey,
+            System.Action<List<AutomationRuleSettings>> persist = null)
         {
             this.emergencyKey = emergencyKey;
+            this.persist = persist;
+            autosave = new VanillaSettingsAutoSave(450, control => SaveRulesAutomatically());
             working = new VanillaAutomationSettings { EmergencyKey = emergencyKey, Rules = rules ?? new List<AutomationRuleSettings>() }.Clone().Rules;
             Rules = new VanillaAutomationSettings { EmergencyKey = emergencyKey, Rules = working }.Clone().Rules;
             Text = "Additional Automation Rules";
@@ -53,6 +60,7 @@ namespace _4RTools.Forms
             AutoScaleMode = AutoScaleMode.Dpi;
             BuildLayout();
             RefreshList(working.Count > 0 ? 0 : -1);
+            WireAutoSave();
         }
 
         private void BuildLayout()
@@ -79,12 +87,12 @@ namespace _4RTools.Forms
             layout.Controls.Add(details, 1, 1);
             var footer = Flow();
             footer.FlowDirection = FlowDirection.RightToLeft;
-            var cancel = new Button { Text = "Cancel", AutoSize = true, DialogResult = DialogResult.Cancel, MinimumSize = new Size(80, 30) };
-            footer.Controls.Add(cancel);
-            var apply = AddButton(footer, "Save rules", SaveRules);
+            var close = new Button { Text = "Close", AutoSize = true, DialogResult = DialogResult.OK, MinimumSize = new Size(80, 30) };
+            footer.Controls.Add(close);
+            footer.Controls.Add(saveStatus);
             footer.Padding = new Padding(0, 10, 0, 0);
-            CancelButton = cancel;
-            AcceptButton = apply;
+            CancelButton = close;
+            AcceptButton = close;
             layout.Controls.Add(footer, 0, 2);
             layout.SetColumnSpan(footer, 2);
             Controls.Add(layout);
@@ -92,7 +100,15 @@ namespace _4RTools.Forms
             {
                 if (loading) return;
                 int selected = rules.SelectedIndex;
-                try { ReadCurrent(); LoadRule(selected); RefreshListLabels(); }
+                try
+                {
+                    autosave.Cancel();
+                    if (SaveRulesAutomatically()) RefreshList(selected);
+                    else
+                    {
+                        loading = true; rules.SelectedIndex = editing; loading = false;
+                    }
+                }
                 catch (Exception ex)
                 {
                     loading = true;
@@ -207,8 +223,8 @@ namespace _4RTools.Forms
             {
                 Name = name.Text.Trim(), Enabled = enabled.Checked,
                 Condition = ((Choice<RuleCondition>)condition.SelectedItem).Value,
-                PeriodMs = (int)(period.Value * 1000), ThresholdPercent = threshold.Value,
-                StatusId = (uint)status.Value, CooldownMs = (int)(cooldown.Value * 1000),
+                PeriodMs = (int)(VanillaSettingsNumber.Read(period) * 1000), ThresholdPercent = VanillaSettingsNumber.Read(threshold),
+                StatusId = (uint)VanillaSettingsNumber.Read(status), CooldownMs = (int)(VanillaSettingsNumber.Read(cooldown) * 1000),
                 PreferOutOfCombat = preferOutOfCombat.Checked, Sequence = steps
             };
         }
@@ -228,10 +244,10 @@ namespace _4RTools.Forms
             name.Text = rule.Name;
             enabled.Checked = rule.Enabled;
             condition.SelectedItem = condition.Items.Cast<Choice<RuleCondition>>().First(item => item.Value == rule.Condition);
-            period.Value = rule.PeriodMs / 1000M;
-            threshold.Value = rule.ThresholdPercent;
-            status.Value = rule.StatusId;
-            cooldown.Value = rule.CooldownMs / 1000M;
+            VanillaSettingsNumber.Load(period, rule.PeriodMs / 1000M);
+            VanillaSettingsNumber.Load(threshold, rule.ThresholdPercent);
+            VanillaSettingsNumber.Load(status, rule.StatusId);
+            VanillaSettingsNumber.Load(cooldown, rule.CooldownMs / 1000M);
             preferOutOfCombat.Checked = rule.PreferOutOfCombat;
             sequence.Rows.Clear();
             foreach (var step in rule.Sequence) sequence.Rows.Add(step.Kind, step.Key, step.DelayMs, step.X, step.Y);
@@ -266,6 +282,7 @@ namespace _4RTools.Forms
             if (working.Count >= 32) throw new ArgumentException("A profile supports at most 32 additional rules.");
             working.Add(new AutomationRuleSettings { Name = "Timed action " + (working.Count + 1) });
             RefreshList(working.Count - 1);
+            SaveRulesAutomatically();
         }
 
         private void RemoveRule()
@@ -274,6 +291,7 @@ namespace _4RTools.Forms
             int next = editing;
             working.RemoveAt(editing);
             RefreshList(Math.Min(next, working.Count - 1));
+            SaveRulesAutomatically();
         }
 
         private void AddStep()
@@ -283,9 +301,14 @@ namespace _4RTools.Forms
             int index = sequence.Rows.Add(kind, 0, kind == SequenceStepKind.Wait ? 500 : 0, 0, 0);
             sequence.CurrentCell = sequence.Rows[index].Cells[kind == SequenceStepKind.Wait ? 2 : kind == SequenceStepKind.Click ? 3 : 1];
             sequence.Rows[index].Selected = true;
+            QueueSave(sequence);
         }
 
-        private void RemoveStep() { if (sequence.CurrentRow != null) sequence.Rows.RemoveAt(sequence.CurrentRow.Index); }
+        private void RemoveStep()
+        {
+            if (sequence.CurrentRow == null) return;
+            sequence.Rows.RemoveAt(sequence.CurrentRow.Index); QueueSave(sequence);
+        }
 
         private void MoveStep(int delta)
         {
@@ -297,16 +320,66 @@ namespace _4RTools.Forms
             sequence.Rows.RemoveAt(from);
             sequence.Rows.Insert(to, values);
             sequence.CurrentCell = sequence.Rows[to].Cells[0];
+            QueueSave(sequence);
         }
 
-        private void SaveRules()
+        private void WireAutoSave()
         {
-            ReadCurrent();
-            var settings = new VanillaAutomationSettings { EmergencyKey = emergencyKey, Rules = working };
-            settings.Validate();
-            Rules = settings.Clone().Rules;
-            DialogResult = DialogResult.OK;
-            Close();
+            name.TextChanged += (s, e) => QueueSave(name);
+            name.Leave += (s, e) => autosave.Flush();
+            foreach (NumericUpDown number in new[] { period, threshold, status, cooldown })
+            {
+                number.ValueChanged += (s, e) => QueueSave(number);
+                number.TextChanged += (s, e) => QueueSave(number);
+                number.Leave += (s, e) => autosave.Flush();
+            }
+            foreach (CheckBox box in new[] { enabled, preferOutOfCombat })
+                box.CheckedChanged += (s, e) => { QueueSave(box); autosave.Flush(); };
+            condition.SelectedIndexChanged += (s, e) => { QueueSave(condition); autosave.Flush(); };
+            sequence.CellValueChanged += (s, e) => { if (e.RowIndex >= 0) QueueSave(sequence); };
+            sequence.CellEndEdit += (s, e) => { QueueSave(sequence); autosave.Flush(); };
+        }
+
+        private void QueueSave(Control control)
+        {
+            if (loading || saving || disposed) return;
+            // One rule document is the validation unit, including its sequence.
+            autosave.Schedule(this);
+            saveStatus.Text = "Saving..."; saveStatus.ForeColor = Color.DimGray;
+        }
+
+        private bool SaveRulesAutomatically()
+        {
+            if (loading || saving || disposed) return true;
+            saving = true;
+            try
+            {
+                ReadCurrent();
+                var settings = new VanillaAutomationSettings { EmergencyKey = emergencyKey, Rules = working };
+                settings.Validate();
+                var saved = settings.Clone().Rules;
+                if (!Newtonsoft.Json.Linq.JToken.DeepEquals(Newtonsoft.Json.Linq.JToken.FromObject(saved),
+                    Newtonsoft.Json.Linq.JToken.FromObject(Rules))) persist?.Invoke(saved);
+                Rules = saved;
+                RefreshListLabels();
+                saveStatus.Text = "Saved"; saveStatus.ForeColor = Color.DarkGreen;
+                return true;
+            }
+            catch (Exception ex) { saveStatus.Text = "Not saved: " + ex.Message; saveStatus.ForeColor = Color.Firebrick; return false; }
+            finally { saving = false; }
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            if (sequence.IsCurrentCellInEditMode) sequence.EndEdit();
+            autosave.Cancel(); SaveRulesAutomatically();
+            base.OnFormClosing(e);
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && !disposed) { autosave.Cancel(); SaveRulesAutomatically(); disposed = true; autosave.Dispose(); }
+            base.Dispose(disposing);
         }
 
         private void ExplainCondition()
@@ -343,7 +416,7 @@ namespace _4RTools.Forms
 
         private void ShowError(string message) => MessageBox.Show(this, message, "Automation rule", MessageBoxButtons.OK, MessageBoxIcon.Information);
         private static ComboBox DropDown(int width) => new ComboBox { Width = width, DropDownStyle = ComboBoxStyle.DropDownList };
-        private static NumericUpDown Seconds() => new NumericUpDown { Minimum = 1, Maximum = 3600, DecimalPlaces = 1, Width = 110 };
+        private static NumericUpDown Seconds() => new VanillaSettingsNumber { Minimum = 1, Maximum = 3600, DecimalPlaces = 1, Width = 110 };
         private static FlowLayoutPanel Flow() => new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, WrapContents = true, Margin = new Padding(0, 5, 0, 0) };
         private static Label Caption(string text) => new Label { Text = text, AutoSize = true, Padding = new Padding(0, 5, 0, 0) };
         private static int CellNumber(DataGridViewRow row, int column)

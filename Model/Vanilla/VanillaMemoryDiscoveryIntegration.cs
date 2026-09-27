@@ -59,6 +59,7 @@ namespace _4RTools.Forms
             {
                 if (vanillaWorkspace.SelectedTab == vanillaWeightAlertsPage) EnsureWeightAlertsEmbedded();
             };
+            FormClosing += (s, e) => integratedWeightAlerts?.FlushPendingSettings();
             FormClosed += (s, e) =>
             {
                 try { integratedWeightAlerts?.Dispose(); } catch { }

@@ -11,6 +11,7 @@ namespace _4RTools.Model
 {
     public class ProfileSingleton
     {
+        internal static readonly object PersistenceGate = new object();
         public static Profile profile = new Profile("Default");
 
         public static void Load(string profileName)
@@ -68,20 +69,17 @@ namespace _4RTools.Model
 
         public static void Create(string profileName)
         {
-            string jsonFileName = AppConfig.ProfileFolder + profileName + ".json";
-
-            if (!File.Exists(jsonFileName))
+            ValidateProfileName(profileName);
+            lock (PersistenceGate)
             {
-                if (!Directory.Exists(AppConfig.ProfileFolder)) { Directory.CreateDirectory(AppConfig.ProfileFolder); }
-                FileStream fs = File.Create(jsonFileName);
-                fs.Close();
-
-                Profile profile = new Profile(profileName);
-                string output = JsonConvert.SerializeObject(profile, Formatting.Indented);
-                File.WriteAllText(jsonFileName, output);
+                string jsonFileName = Path.Combine(AppConfig.ProfileFolder, profileName + ".json");
+                if (!File.Exists(jsonFileName))
+                {
+                    Directory.CreateDirectory(AppConfig.ProfileFolder);
+                    WriteProfileDocument(jsonFileName, JObject.FromObject(new Profile(profileName)));
+                }
+                ProfileSingleton.Load(profileName);
             }
-
-            ProfileSingleton.Load(profileName);
         }
 
         public static void Delete(string profileName)
@@ -95,10 +93,32 @@ namespace _4RTools.Model
 
         public static void Rename(string oldProfileName, string newProfileName)
         {
-            string jsonFileName = AppConfig.ProfileFolder + newProfileName + ".json";
-            if (oldProfileName != "Default" && !File.Exists(jsonFileName)) {
-                File.Move(AppConfig.ProfileFolder + oldProfileName + ".json", jsonFileName);
+            ValidateProfileName(oldProfileName);
+            ValidateProfileName(newProfileName);
+            lock (PersistenceGate)
+            {
+                if (string.Equals(oldProfileName, newProfileName, StringComparison.Ordinal)) return;
+                if (string.Equals(oldProfileName, "Default", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException("The Default profile cannot be renamed.");
+                string path = Path.Combine(AppConfig.ProfileFolder, newProfileName + ".json");
+                if (File.Exists(path)) throw new IOException("A profile with this name already exists.");
+                File.Move(Path.Combine(AppConfig.ProfileFolder, oldProfileName + ".json"), path);
+                // Pending edits retain this object; its path must follow a completed rename.
+                if (profile != null && string.Equals(profile.Name, oldProfileName, StringComparison.OrdinalIgnoreCase))
+                    profile.Name = newProfileName;
             }
+        }
+
+        private static void ValidateProfileName(string name)
+        {
+            if (string.IsNullOrWhiteSpace(name) || name.Length > 64 || name != name.Trim()
+                || name.EndsWith(".", StringComparison.Ordinal) || name.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0)
+                throw new ArgumentException("Use a profile name of 1–64 characters without path characters or trailing spaces/periods.");
+            string stem = name.Split('.')[0].ToUpperInvariant();
+            if (stem == "CON" || stem == "PRN" || stem == "AUX" || stem == "NUL" || stem == "CLOCK$"
+                || (stem.Length == 4 && (stem.StartsWith("COM", StringComparison.Ordinal) || stem.StartsWith("LPT", StringComparison.Ordinal))
+                    && stem[3] >= '1' && stem[3] <= '9'))
+                throw new ArgumentException("This profile name is reserved by Windows.");
         }
 
         public static void Copy(string profileName)
@@ -115,13 +135,14 @@ namespace _4RTools.Model
 
         public static void SetConfiguration(Action action)
         {
-            if (profile != null)
+            if (action == null) throw new ArgumentNullException(nameof(action));
+            lock (PersistenceGate)
             {
-                string jsonData = File.ReadAllText(AppConfig.ProfileFolder + profile.Name + ".json");
-                dynamic jsonObj = JsonConvert.DeserializeObject(jsonData);
-                jsonObj[action.GetActionName()] = action.GetConfiguration();
-                string output = JsonConvert.SerializeObject(jsonObj, Formatting.Indented);
-                File.WriteAllText(AppConfig.ProfileFolder + profile.Name + ".json", output);
+                if (profile == null) return;
+                string path = Path.Combine(AppConfig.ProfileFolder, profile.Name + ".json");
+                JObject json = JObject.Parse(File.ReadAllText(path));
+                json[action.GetActionName()] = action.GetConfiguration();
+                WriteProfileDocument(path, json);
             }
         }
 
@@ -132,12 +153,32 @@ namespace _4RTools.Model
 
         public static void SetVanillaDiagnostics(VanillaDiagnosticsSettings settings)
         {
+            SetVanillaDiagnostics(profile, settings);
+        }
+
+        internal static void SetVanillaDiagnostics(Profile target, VanillaDiagnosticsSettings settings)
+        {
+            if (target == null) throw new ArgumentNullException(nameof(target));
+            if (settings == null) throw new ArgumentNullException(nameof(settings));
             settings.Validate();
-            string path = AppConfig.ProfileFolder + profile.Name + ".json";
-            JObject json = JObject.Parse(File.ReadAllText(path));
-            json["VanillaDiagnostics"] = JObject.FromObject(settings);
-            File.WriteAllText(path, json.ToString(Formatting.Indented));
-            profile.VanillaDiagnostics = settings;
+            var copy = new VanillaDiagnosticsSettings { PollIntervalMilliseconds = settings.PollIntervalMilliseconds,
+                MemoryMapJson = settings.MemoryMapJson };
+            lock (PersistenceGate)
+            {
+                string path = AppConfig.ProfileFolder + target.Name + ".json";
+                JObject json = JObject.Parse(File.ReadAllText(path));
+                json["VanillaDiagnostics"] = JObject.FromObject(copy);
+                WriteProfileDocument(path, json);
+                target.VanillaDiagnostics = copy;
+            }
+        }
+
+        internal static void WriteProfileDocument(string path, JObject json)
+        {
+            string temporary = path + ".tmp";
+            File.WriteAllText(temporary, json.ToString(Formatting.Indented));
+            if (File.Exists(path)) File.Replace(temporary, path, path + ".bak");
+            else File.Move(temporary, path);
         }
     }
 
@@ -194,12 +235,11 @@ namespace _4RTools.Model
             List<string> profiles = new List<string>();
             try
             {
-                string[] files = Directory.GetFiles(AppConfig.ProfileFolder);
+                string[] files = Directory.GetFiles(AppConfig.ProfileFolder, "*.json");
 
                 foreach (string fileName in files)
                 {
-                    string[] len = fileName.Split('\\');
-                    string profileName = len[len.Length - 1].Split('.')[0];
+                    string profileName = Path.GetFileNameWithoutExtension(fileName);
                     profiles.Add(profileName);
                 }
             }

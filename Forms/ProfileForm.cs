@@ -16,11 +16,14 @@ namespace _4RTools.Forms
 
         private void RefreshProfileList()
         {
+            object previous = this.lbProfilesList.SelectedItem;
+            this.lbProfilesList.Items.Clear();
             foreach (string profile in Profile.ListAll())
             {
                 int profileIndex = this.lbProfilesList.Items.IndexOf(profile);
                 if (profile != "Default" && profileIndex == -1) { this.lbProfilesList.Items.Add(profile); };
             }
+            if (previous != null && this.lbProfilesList.Items.Contains(previous)) this.lbProfilesList.SelectedItem = previous;
         }
 
         private void btnSave_Click(object sender, EventArgs e)
@@ -28,10 +31,14 @@ namespace _4RTools.Forms
             string newProfileName = this.txtProfileName.Text;
             if (string.IsNullOrEmpty(newProfileName)) { return; }
 
-            ProfileSingleton.Create(newProfileName);
-            this.RefreshProfileList();
-            this.container.refreshProfileList();
-            this.txtProfileName.Text = ""; // clear text box
+            try
+            {
+                ProfileSingleton.Create(newProfileName);
+                this.RefreshProfileList();
+                this.container.refreshProfileList();
+                this.txtProfileName.Text = "";
+            }
+            catch (Exception ex) { MessageBox.Show(this, ex.Message, "Profile not created", MessageBoxButtons.OK, MessageBoxIcon.Warning); }
         }
 
         private void btnRemoveProfile_Click(object sender, EventArgs e)
@@ -70,14 +77,17 @@ namespace _4RTools.Forms
                 MessageBox.Show("Cannot delete the Default profile!");
             }
             else {
-                EditProfileName editProfileName = new EditProfileName();
+                using (EditProfileName editProfileName = new EditProfileName())
+                {
                 editProfileName.SetProfileName(selectedProfile);
-                editProfileName.ShowDialog();
+                editProfileName.ShowDialog(this);
 
-                if (editProfileName.DialogResult == DialogResult.OK) {
+                if (editProfileName.Changed) {
                     this.RefreshProfileList();
+                    this.lbProfilesList.SelectedItem = editProfileName.ProfileName;
                     this.container.refreshProfileList();
                 };
+                }
             }
         }
 

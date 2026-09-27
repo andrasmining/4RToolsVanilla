@@ -64,6 +64,8 @@ namespace Vanilla.Diagnostics.Tests
             failed += StockBridgeTests.Run();
             failed += ProfileStoreTests.Run();
             failed += LegacyProfileTests.Run();
+            failed += VanillaEditorAutosaveTests.Run();
+            failed += LegacySettingsAutosaveTests.Run();
             failed += VanillaPatcherLauncherTests.Run();
             failed += VanillaLauncherUpdateTests.Run();
             failed += VanillaProxyPatternTests.Run();

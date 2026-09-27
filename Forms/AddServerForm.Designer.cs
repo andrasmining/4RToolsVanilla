@@ -1,4 +1,4 @@
-﻿namespace _4RTools.Forms
+namespace _4RTools.Forms
 {
     partial class AddServerForm
     {
@@ -38,7 +38,7 @@
             this.txtHP6 = new System.Windows.Forms.TextBox();
             this.txtHP5 = new System.Windows.Forms.TextBox();
             this.groupBox1 = new System.Windows.Forms.GroupBox();
-            this.btnSave = new System.Windows.Forms.Button();
+            this.btnAdd = new System.Windows.Forms.Button();
             this.label5 = new System.Windows.Forms.Label();
             this.processCB = new System.Windows.Forms.ComboBox();
             this.label3 = new System.Windows.Forms.Label();
@@ -122,7 +122,7 @@
             // 
             // groupBox1
             // 
-            this.groupBox1.Controls.Add(this.btnSave);
+            this.groupBox1.Controls.Add(this.btnAdd);
             this.groupBox1.Controls.Add(this.label5);
             this.groupBox1.Controls.Add(this.processCB);
             this.groupBox1.Controls.Add(this.label3);
@@ -152,15 +152,15 @@
             this.groupBox1.TabStop = false;
             this.groupBox1.Text = "Server Properties";
             // 
-            // btnSave
+            // btnAdd
             // 
-            this.btnSave.Location = new System.Drawing.Point(248, 118);
-            this.btnSave.Name = "btnSave";
-            this.btnSave.Size = new System.Drawing.Size(83, 39);
-            this.btnSave.TabIndex = 22;
-            this.btnSave.Text = "Save";
-            this.btnSave.UseVisualStyleBackColor = true;
-            this.btnSave.Click += new System.EventHandler(this.btnSave_Click);
+            this.btnAdd.Location = new System.Drawing.Point(248, 118);
+            this.btnAdd.Name = "btnAdd";
+            this.btnAdd.Size = new System.Drawing.Size(83, 39);
+            this.btnAdd.TabIndex = 22;
+            this.btnAdd.Text = "Add";
+            this.btnAdd.UseVisualStyleBackColor = true;
+            this.btnAdd.Click += new System.EventHandler(this.btnAdd_Click);
             // 
             // label5
             // 
@@ -314,7 +314,7 @@
         private System.Windows.Forms.GroupBox groupBox1;
         private System.Windows.Forms.Label label2;
         private System.Windows.Forms.Label label1;
-        private System.Windows.Forms.Button btnSave;
+        private System.Windows.Forms.Button btnAdd;
         private System.Windows.Forms.Label label5;
         private System.Windows.Forms.ComboBox processCB;
         private System.Windows.Forms.Label label3;

@@ -75,7 +75,7 @@ namespace _4RTools.Forms
         private readonly CheckBox stuckEnabled = new CheckBox { Text = "Recover from being stuck", AutoSize = true };
         private readonly NumericUpDown stuckTimeout = Seconds();
         private readonly CheckBox recoveryEnabled = new CheckBox { Text = "Enable SP recovery", AutoSize = true };
-        private readonly NumericUpDown spThreshold = new NumericUpDown { Minimum = 0, Maximum = 100, DecimalPlaces = 2, Width = 100 };
+        private readonly NumericUpDown spThreshold = new VanillaSettingsNumber { Minimum = 0, Maximum = 100, DecimalPlaces = 2, Width = 100 };
         private readonly NumericUpDown spCooldown = Seconds();
         private readonly CheckBox outOfCombat = new CheckBox { Text = "Only when out of combat", AutoSize = true };
         private readonly DataGridView sequence = new BufferedDataGridView
@@ -152,8 +152,7 @@ namespace _4RTools.Forms
             var profileRow = Flow();
             profileRow.Controls.Add(Caption("Profile"));
             profileRow.Controls.Add(profiles);
-            AddButton(profileRow, "Save", () => SaveCurrent(true));
-            AddButton(profileRow, "Save as…", SaveAs);
+            AddButton(profileRow, "Copy profile…", CopyProfile);
             AddButton(profileRow, "Import…", ImportProfile);
             AddButton(profileRow, "Export…", ExportProfile);
             if (!hosted) AddButton(profileRow, "Original 4RTools", () => { session.SetEnabled(false); Program.OpenStockTools(); });
@@ -224,13 +223,14 @@ namespace _4RTools.Forms
                 session.SetEnabled(false);
                 if (dirty) SaveCurrent(false);
                 var settings = session.Settings;
-                using (var editor = new VanillaRulesEditor(settings.Rules, settings.EmergencyKey))
+                string editingProfile = session.CurrentProfileName;
+                using (var editor = new VanillaRulesEditor(settings.Rules, settings.EmergencyKey, rules =>
                 {
-                    if (editor.ShowDialog(this) != DialogResult.OK) return;
-                    settings.Rules = editor.Rules;
-                    session.SaveProfile(session.CurrentProfileName, settings);
-                    LoadControls();
-                }
+                    if (session.CurrentProfileName != editingProfile) throw new InvalidOperationException("The selected profile changed; reopen its rule editor.");
+                    var current = session.Settings.Clone(); current.Rules = rules;
+                    session.SaveProfile(editingProfile, current);
+                })) editor.ShowDialog(this);
+                LoadControls();
             });
             buttons.Controls.Add(Hint("Timed, HP/SP, status, target, combat and position conditions share the guarded action scheduler."));
             layout.Controls.Add(buttons, 0, 0);
@@ -381,11 +381,15 @@ namespace _4RTools.Forms
         private void WireEvents()
         {
             foreach (CheckBox box in new[] { dryRun, teleportEnabled, stuckEnabled, recoveryEnabled, outOfCombat })
-                box.CheckedChanged += (s, e) => MarkDirty();
+                box.CheckedChanged += (s, e) => { MarkDirty(); SavePendingAutomatically(); };
             foreach (ComboBox box in new[] { teleportMode, teleportKey, emergency })
-                box.SelectedIndexChanged += (s, e) => MarkDirty();
+                box.SelectedIndexChanged += (s, e) => { MarkDirty(); SavePendingAutomatically(); };
             foreach (NumericUpDown number in new[] { noTarget, noCombat, cooldown, grace, fixedInterval, stuckTimeout, spThreshold, spCooldown })
+            {
                 number.ValueChanged += (s, e) => MarkDirty();
+                number.TextChanged += (s, e) => MarkDirty();
+                number.Leave += (s, e) => SavePendingAutomatically();
+            }
             farming.CheckedChanged += (s, e) => { if (!loading) Guard(() => session.SetFarmingEnabled(farming.Checked)); };
             profiles.SelectedIndexChanged += (s, e) => { if (!loading) Guard(SwitchProfile); };
             processes.SelectedIndexChanged += (s, e) =>
@@ -462,6 +466,13 @@ namespace _4RTools.Forms
             UpdateModeControls();
         }
 
+        private void SavePendingAutomatically()
+        {
+            if (loading || disposed || !dirty) return;
+            try { SaveCurrent(false); }
+            catch (Exception ex) { ShowValidationError(ex.Message); }
+        }
+
         private VanillaAutomationSettings ReadControls()
         {
             if (!sequence.EndEdit()) throw new ArgumentException("Finish editing the sequence before continuing.");
@@ -479,7 +490,7 @@ namespace _4RTools.Forms
             settings.Teleport.StuckEnabled = stuckEnabled.Checked;
             settings.Teleport.StuckTimeoutMs = Milliseconds(stuckTimeout);
             settings.SpRecovery.Enabled = recoveryEnabled.Checked;
-            settings.SpRecovery.ThresholdPercent = spThreshold.Value;
+            settings.SpRecovery.ThresholdPercent = VanillaSettingsNumber.Read(spThreshold);
             settings.SpRecovery.CooldownMs = Milliseconds(spCooldown);
             settings.SpRecovery.PreferOutOfCombat = outOfCombat.Checked;
             settings.SpRecovery.Sequence.Clear();
@@ -523,7 +534,7 @@ namespace _4RTools.Forms
                 stuckEnabled.Checked = settings.Teleport.StuckEnabled;
                 SetSeconds(stuckTimeout, settings.Teleport.StuckTimeoutMs);
                 recoveryEnabled.Checked = settings.SpRecovery.Enabled;
-                spThreshold.Value = settings.SpRecovery.ThresholdPercent;
+                VanillaSettingsNumber.Load(spThreshold, settings.SpRecovery.ThresholdPercent);
                 SetSeconds(spCooldown, settings.SpRecovery.CooldownMs);
                 outOfCombat.Checked = settings.SpRecovery.PreferOutOfCombat;
                 sequence.Rows.Clear();
@@ -548,10 +559,11 @@ namespace _4RTools.Forms
             saveStatus.ForeColor = Color.DimGray;
         }
 
-        private void SaveAs()
+        private void CopyProfile()
         {
+            SaveCurrent(false);
             var settings = ReadControls();
-            string name = AskProfileName("Save profile as", session.CurrentProfileName + " Copy");
+            string name = AskProfileName("Copy profile", session.CurrentProfileName + " Copy", "Create copy");
             if (name == null) return;
             if (!ConfirmOverwrite(name)) return;
             session.SetEnabled(false);
@@ -581,7 +593,7 @@ namespace _4RTools.Forms
             using (var dialog = new OpenFileDialog { Filter = "Vanilla profile (*.json)|*.json", CheckFileExists = true, Multiselect = false })
             {
                 if (dialog.ShowDialog(this) != DialogResult.OK) return;
-                string name = AskProfileName("Import profile", Path.GetFileNameWithoutExtension(dialog.FileName));
+                string name = AskProfileName("Import profile", Path.GetFileNameWithoutExtension(dialog.FileName), "Import");
                 if (name == null || !ConfirmOverwrite(name)) return;
                 if (dirty) SaveCurrent(false);
                 session.SetEnabled(false);
@@ -605,12 +617,12 @@ namespace _4RTools.Forms
                 || MessageBox.Show(this, "Replace the saved profile '" + name + "'?", "Replace profile", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
         }
 
-        private string AskProfileName(string title, string suggested)
+        private string AskProfileName(string title, string suggested, string action)
         {
             using (var dialog = new Form { Text = title, ClientSize = new Size(390, 125), FormBorderStyle = FormBorderStyle.FixedDialog, StartPosition = FormStartPosition.CenterParent, MinimizeBox = false, MaximizeBox = false, Font = Font })
             {
                 var input = new TextBox { Left = 15, Top = 32, Width = 355, Text = suggested, MaxLength = 64 };
-                var ok = new Button { Text = "Save", Left = 205, Top = 78, Width = 80, DialogResult = DialogResult.OK };
+                var ok = new Button { Text = action, Left = 185, Top = 78, Width = 100, DialogResult = DialogResult.OK };
                 var cancel = new Button { Text = "Cancel", Left = 290, Top = 78, Width = 80, DialogResult = DialogResult.Cancel };
                 dialog.Controls.AddRange(new Control[] { new Label { Left = 15, Top = 10, Text = "Profile name", AutoSize = true }, input, ok, cancel });
                 dialog.AcceptButton = ok;
@@ -843,6 +855,11 @@ namespace _4RTools.Forms
         {
             if (disposing && !disposed)
             {
+                if (dirty)
+                {
+                    try { SaveCurrent(false); }
+                    catch (Exception ex) { AppendLog("Settings were not saved: " + ex.Message); }
+                }
                 disposed = true;
                 timer.Stop();
                 timer.Dispose();
@@ -894,9 +911,9 @@ namespace _4RTools.Forms
         private static Label Caption(string text) => new Label { Text = text, AutoSize = true, Padding = new Padding(0, 6, 4, 0) };
         private static Label StatusLabel() => new BufferedLabel { AutoSize = true, MaximumSize = new Size(890, 0), Margin = new Padding(0, 3, 0, 3) };
         private static Label Hint(string text) => new Label { Text = text, AutoSize = true, ForeColor = Color.DimGray, MaximumSize = new Size(950, 0), Padding = new Padding(0, 5, 0, 0) };
-        private static NumericUpDown Seconds() => new NumericUpDown { Minimum = 0, Maximum = 3600, DecimalPlaces = 1, Increment = 1, Width = 100 };
-        private static int Milliseconds(NumericUpDown number) => checked((int)(number.Value * 1000));
-        private static void SetSeconds(NumericUpDown number, int milliseconds) { number.Value = milliseconds / 1000M; }
+        private static NumericUpDown Seconds() => new VanillaSettingsNumber { Minimum = 0, Maximum = 3600, DecimalPlaces = 1, Increment = 1, Width = 100 };
+        private static int Milliseconds(NumericUpDown number) => checked((int)(VanillaSettingsNumber.Read(number) * 1000));
+        private static void SetSeconds(NumericUpDown number, int milliseconds) { VanillaSettingsNumber.Load(number, milliseconds / 1000M); }
         private static string FormatTime(DateTimeOffset? time) => time?.ToString("HH:mm:ss.fff", CultureInfo.InvariantCulture) ?? "—";
         private static void SetTextIfChanged(Control control, string value) { if (!string.Equals(control.Text, value, StringComparison.Ordinal)) control.Text = value; }
         private void SetToolTipIfChanged(Control control, string value) { if (!string.Equals(tips.GetToolTip(control), value, StringComparison.Ordinal)) tips.SetToolTip(control, value); }

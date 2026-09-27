@@ -86,6 +86,7 @@ namespace _4RTools.Model
             {
 
                 TextBox txtBox = (TextBox)sender;
+                if (FormUtils.IsLoading(txtBox)) return;
                 if (txtBox.Text.ToString() != String.Empty)
                 {
                     Key key = (Key)Enum.Parse(typeof(Key), txtBox.Text.ToString());
@@ -109,6 +110,8 @@ namespace _4RTools.Model
 
         public static void doUpdate(Dictionary<EffectStatusIDs, Key> autobuffDict, Control control)
         {
+            using (FormUtils.BeginLoading(control))
+            {
             FormUtils.ResetForm(control);
             foreach (EffectStatusIDs effect in autobuffDict.Keys)
             {
@@ -118,6 +121,7 @@ namespace _4RTools.Model
                     TextBox textBox = (TextBox)c[0];
                     textBox.Text = autobuffDict[effect].ToString();
                 }
+            }
             }
         }
     }

@@ -6,6 +6,10 @@ namespace _4RTools.Model.Vanilla
 {
     internal sealed class VanillaUpdateAccessDialog : Form
     {
+        private readonly TextBox token = new TextBox { UseSystemPasswordChar = true, MaxLength = 4096, Dock = DockStyle.Top, Margin = new Padding(0, 0, 0, 8) };
+        private readonly Label status = new Label { AutoSize = true, MaximumSize = new Size(460, 0) };
+        private readonly Button discard = new Button { Text = "DISCARD ENTRY", AutoSize = true, Visible = false, CausesValidation = false };
+        private bool edited;
         internal VanillaUpdateAccessDialog()
         {
             Text = "Private update access";
@@ -29,33 +33,54 @@ namespace _4RTools.Model.Vanilla
                 AutoSize = true, MaximumSize = new Size(460, 0), Margin = new Padding(0, 0, 0, 9),
                 Text = "GitHub token for andrasmining/4RToolsVanilla with Contents: Read permission. Stored for this Windows user and PC."
             });
-            var token = new TextBox { UseSystemPasswordChar = true, MaxLength = 4096, Dock = DockStyle.Top, Margin = new Padding(0, 0, 0, 8) };
             panel.Controls.Add(token);
-            var status = new Label
-            {
-                AutoSize = true, MaximumSize = new Size(460, 0),
-                Text = VanillaUpdateAccess.HasSavedToken ? "A token is saved. Enter a replacement or clear it." : "No token saved. Existing GitHub CLI sign-in or GH_TOKEN can also provide access."
-            };
+            status.Text = VanillaUpdateAccess.HasSavedToken ? "A token is saved. Replacements save automatically on leaving the field or pressing Enter."
+                : "No token saved. Entry saves automatically on leaving the field or pressing Enter. Existing CLI sign-in or GH_TOKEN also works.";
             panel.Controls.Add(status);
             var buttons = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Fill, FlowDirection = FlowDirection.RightToLeft };
-            var cancel = new Button { Text = "CANCEL", AutoSize = true, DialogResult = DialogResult.Cancel };
-            var save = new Button { Text = "SAVE", AutoSize = true };
-            var clear = new Button { Text = "CLEAR SAVED", AutoSize = true };
-            buttons.Controls.Add(cancel); buttons.Controls.Add(save); buttons.Controls.Add(clear);
+            var close = new Button { Text = "CLOSE", AutoSize = true, DialogResult = DialogResult.Cancel };
+            var clear = new Button { Text = "CLEAR ACCESS", AutoSize = true, CausesValidation = false };
+            buttons.Controls.Add(close); buttons.Controls.Add(discard); buttons.Controls.Add(clear);
             panel.Controls.Add(buttons);
             Controls.Add(panel);
-            AcceptButton = save; CancelButton = cancel;
-            save.Click += (s, e) =>
+            CancelButton = close;
+            token.TextChanged += (s, e) => edited = true;
+            token.Validated += (s, e) => SaveAutomatically();
+            token.KeyDown += (s, e) =>
             {
-                try { VanillaUpdateAccess.SaveToken(token.Text); token.Clear(); DialogResult = DialogResult.OK; Close(); }
-                catch (Exception) { status.Text = "Token could not be saved. Check the token and access to the data folder."; }
+                if (e.KeyCode != Keys.Enter) return;
+                SaveAutomatically(); e.Handled = e.SuppressKeyPress = true;
             };
             clear.Click += (s, e) =>
             {
-                try { VanillaUpdateAccess.ClearToken(); token.Clear(); status.Text = "Saved token cleared. Existing GitHub CLI sign-in or GH_TOKEN may still provide access."; }
-                catch (Exception) { status.Text = "Saved token could not be cleared. Check access to the data folder."; }
+                try { VanillaUpdateAccess.ClearToken(); token.Clear(); edited = false; discard.Visible = false; status.ForeColor = Color.DarkGreen; status.Text = "Saved token cleared. Existing GitHub CLI sign-in or GH_TOKEN may still provide access."; }
+                catch (Exception) { status.ForeColor = Color.Firebrick; status.Text = "Saved token could not be cleared. Check access to the data folder."; }
             };
+            discard.Click += (s, e) => { token.Clear(); edited = false; Close(); };
+            FormClosing += (s, e) => { if (!SaveAutomatically()) e.Cancel = true; };
             FormClosed += (s, e) => token.Clear();
+        }
+
+        private bool SaveAutomatically()
+        {
+            if (!edited) return true;
+            // An empty replacement is not an instruction to erase existing access.
+            if (token.Text.Length == 0) { edited = false; return true; }
+            try
+            {
+                VanillaUpdateAccess.SaveToken(token.Text);
+                token.Clear(); edited = false;
+                discard.Visible = false;
+                status.ForeColor = Color.DarkGreen; status.Text = "Saved for this Windows user and PC.";
+                return true;
+            }
+            catch (Exception)
+            {
+                status.ForeColor = Color.Firebrick;
+                status.Text = "Not saved. Check the token and access to the data folder. Previous access is unchanged.";
+                discard.Visible = true;
+                return false;
+            }
         }
     }
 }

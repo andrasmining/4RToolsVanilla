@@ -13,8 +13,9 @@ namespace _4RTools.Forms
         public MacroSongForm(Subject subject)
         {
             subject.Attach(this);
-            InitializeComponent();
+            using (FormUtils.BeginLoading(this)) { InitializeComponent(); }
             configureMacroLanes();
+            FormUtils.CommitNumericEditsOnClose(this);
         }
 
         public void Update(ISubject subject) 
@@ -22,7 +23,7 @@ namespace _4RTools.Forms
             switch((subject as Subject).Message.code)
             {
                 case MessageCode.PROFILE_CHANGED:
-                    updateUi();
+                    using (FormUtils.BeginLoading(this)) { updateUi(); }
                     break;
                 case MessageCode.TURN_ON:
                     ProfileSingleton.GetCurrent().SongMacro.Start();
@@ -91,6 +92,7 @@ namespace _4RTools.Forms
 
         private void onTextChange(object sender, EventArgs e)
         {
+            if (FormUtils.IsLoading(this)) return;
             Macro SongMacro = ProfileSingleton.GetCurrent().SongMacro;
             TextBox textBox = (TextBox)sender;
             Key key = (Key)Enum.Parse(typeof(Key), textBox.Text.ToString());
@@ -128,6 +130,7 @@ namespace _4RTools.Forms
 
         private void onDelayChange(object sender, EventArgs e)
         {
+            if (FormUtils.IsLoading(this)) return;
             Macro SongMacro = ProfileSingleton.GetCurrent().SongMacro;
             NumericUpDown delayInput = (NumericUpDown)sender;
             int macroID = Int16.Parse(delayInput.Name.Split(new[] { "delayMac" }, StringSplitOptions.None)[1]);
@@ -148,8 +151,9 @@ namespace _4RTools.Forms
             Macro SongMacro = ProfileSingleton.GetCurrent().SongMacro;
             Button delayInput = (Button)sender;
             int btnResetID = Int16.Parse(delayInput.Name.Split(new[] { "btnResMac" }, StringSplitOptions.None)[1]);
+            SongMacro.ResetMacro(btnResetID);
             ProfileSingleton.SetConfiguration(SongMacro);
-            this.UpdatePanelData(btnResetID);
+            using (FormUtils.BeginLoading(this)) { this.UpdatePanelData(btnResetID); }
         }
 
 

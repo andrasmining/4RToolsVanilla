@@ -15,44 +15,62 @@ namespace _4RTools.Forms
 {
     public partial class EditProfileName : Form
     {
-        private string tmpProfileName;
+        private string savedName;
+        private readonly Label saveStatus = new Label { AutoSize = false, Location = new Point(16, 82), Size = new Size(312, 35) };
+        public bool Changed { get; private set; }
+        public string ProfileName { get { return savedName; } }
         public EditProfileName()
         {
             InitializeComponent();
+            Controls.Add(saveStatus);
+            ClientSize = new Size(ClientSize.Width, 124);
+            txtProfileName.Validated += (sender, args) => CommitName();
+            txtProfileName.KeyDown += (sender, args) =>
+            {
+                if (args.KeyCode != Keys.Enter) return;
+                args.Handled = true;
+                args.SuppressKeyPress = true;
+                CommitName();
+            };
+            FormClosing += (sender, args) => { if (!CommitName()) args.Cancel = true; };
         }
 
         public void SetProfileName(string name)
         {
-            this.txtProfileName.Text = name;
-            this.tmpProfileName = name;
+            using (FormUtils.BeginLoading(this))
+            {
+                savedName = name;
+                txtProfileName.Text = name;
+                Changed = false;
+                saveStatus.Text = "";
+            }
         }
 
         private void onTextChange(object sender, EventArgs e)
         {
-            TextBox textBox = (TextBox)sender;
-
-            if (string.IsNullOrWhiteSpace(textBox.Text))
-            {
-                this.btnSave.Enabled = false;
-            }
-            else
-            {
-                this.btnSave.Enabled = true;
-            }
+            if (!FormUtils.IsLoading(this)) saveStatus.Text = txtProfileName.Text == savedName ? "" : "Editing…";
         }
 
-        private void btnSave_Click(object sender, EventArgs e)
+        private bool CommitName()
         {
+            if (FormUtils.IsLoading(this) || savedName == null || txtProfileName.Text == savedName) return true;
             try
             {
-                ProfileSingleton.Rename(this.tmpProfileName, this.txtProfileName.Text);
-                this.DialogResult = DialogResult.OK;
-                this.Close();
+                ProfileSingleton.Rename(savedName, txtProfileName.Text);
+                savedName = txtProfileName.Text;
+                Changed = true;
+                saveStatus.ForeColor = Color.DarkGreen;
+                saveStatus.Text = "Saved";
+                return true;
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"[Edit Profile Name] {ex.Message}", "Warning", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                saveStatus.ForeColor = Color.Firebrick;
+                saveStatus.Text = "Not saved: " + ex.Message;
+                return false;
             }
         }
+
+        private void btnClose_Click(object sender, EventArgs e) { Close(); }
     }
 }

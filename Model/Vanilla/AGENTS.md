@@ -4,6 +4,13 @@ Applies to files in `Model/Vanilla/` in addition to the repository-root `AGENTS.
 
 The Vanilla workspace is functionally dense, so keep its visible UI deliberately minimal and responsive.
 
+All settings auto-save. Remove settings Save/Apply buttons, including from modal
+editors, and show compact saved/error feedback. Flush completed valid edits before
+closing or switching profiles; loading must not save. Invalid/incomplete edits
+and storage failures retain the last valid active/persisted values. Preserve
+independent field edits and secret masking/encryption. Create/import/export/clear
+remain explicit actions; a settings dialog closes with Close after saving edits.
+
 - Optimize first for ordinary Full-HD / RDP work areas around 1920x1080 and 1980x1020, while retaining graceful scrolling below that size. Do not design around 2K/4K space.
 - Prefer adaptive layout based on current client width/height instead of large fixed panels or fixed whitespace.
 - Spend vertical space on interactive data and controls, especially the account table and log. Keep the always-visible fleet strip compact without clipping location, activity or resource values.

@@ -13,8 +13,9 @@ namespace _4RTools.Forms
         public ATKDEFForm(Subject subject)
         {
             subject.Attach(this);
-            InitializeComponent();
+            using (FormUtils.BeginLoading(this)) { InitializeComponent(); }
             SetupInputs();
+            FormUtils.CommitNumericEditsOnClose(this);
         }
 
         public void Update(ISubject subject)
@@ -22,7 +23,7 @@ namespace _4RTools.Forms
             switch ((subject as Subject).Message.code)
             {
                 case MessageCode.PROFILE_CHANGED:
-                    UpdateUI();
+                    using (FormUtils.BeginLoading(this)) { UpdateUI(); }
                     break;
                 case MessageCode.TURN_ON:
                     ProfileSingleton.GetCurrent().AtkDefMode.Start();
@@ -70,6 +71,7 @@ namespace _4RTools.Forms
 
         private void onDelayChange(object sender, EventArgs e)
         {
+            if (FormUtils.IsLoading(this)) return;
             NumericUpDown delayInput = (NumericUpDown)sender;
             if(delayInput.Name == "spammerDelay")
             {
@@ -87,6 +89,7 @@ namespace _4RTools.Forms
 
         private void onTextChange(object sender, EventArgs e)
         {
+            if (FormUtils.IsLoading(this)) return;
 
             TextBox textBox = (TextBox)sender;
             Key key = (Key)Enum.Parse(typeof(Key), textBox.Text.ToString());
@@ -107,6 +110,7 @@ namespace _4RTools.Forms
 
         private void ChkBox_CheckedChanged(object sender, EventArgs e)
         {
+            if (FormUtils.IsLoading(this)) return;
             ProfileSingleton.GetCurrent().AtkDefMode.keySpammerWithClick = this.inSpammerClick.Checked;
             ProfileSingleton.SetConfiguration(ProfileSingleton.GetCurrent().AtkDefMode);
         }

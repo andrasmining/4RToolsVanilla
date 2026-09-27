@@ -444,6 +444,7 @@ namespace _4RTools.Model.Vanilla
         private readonly CheckBox spRest = new CheckBox { Text = "SP rest with verified move-before-sit", AutoSize = true, Checked = true };
         private readonly Label target = new Label { AutoSize = true }, ground = new Label { AutoSize = true }, status = new Label { AutoSize = true, MaximumSize = new Size(900, 0) };
         private VanillaTemporaryActionSettings saved = new VanillaTemporaryActionSettings();
+        private readonly VanillaSettingsAutoSave autoSave;
         private bool loading, capturing, groundCapture;
         private DateTime nextRefresh, captureAt;
         private int capturePid;
@@ -452,6 +453,7 @@ namespace _4RTools.Model.Vanilla
         public VanillaTemporaryActionsPanel(string baseDirectory) : this(baseDirectory, null, null) { }
         internal VanillaTemporaryActionsPanel(string baseDirectory, VanillaFleetMonitor sharedFleet, VanillaReconnectSupervisor sharedSupervisor)
         {
+            autoSave = new VanillaSettingsAutoSave(450, control => SaveChanged());
             AutoScroll = true; Dock = DockStyle.Fill;
             fleet = sharedFleet ?? new VanillaFleetMonitor(baseDirectory); ownsFleet = sharedFleet == null;
             supervisor = sharedSupervisor ?? new VanillaReconnectSupervisor(VanillaAppData.RootDirectory);
@@ -480,11 +482,31 @@ namespace _4RTools.Model.Vanilla
             Controls.Add(root);
             clients.SelectedIndexChanged += (s, e) => { if (!loading) StopRunner(); };
             actionKey.ChordChanged += Changed; sitKey.ChordChanged += Changed;
-            interval.ValueChanged += Changed; delay.ValueChanged += Changed; rest.ValueChanged += Changed; resume.ValueChanged += Changed;
+            foreach (var number in new[] { interval, delay, rest, resume })
+            {
+                number.TextChanged += (s, e) => ScheduleNumber(number);
+                number.ValueChanged += (s, e) => ScheduleNumber(number);
+                number.Leave += (s, e) => autoSave.Flush(number);
+                number.KeyDown += (s, e) =>
+                {
+                    if (e.KeyCode != Keys.Enter) return;
+                    autoSave.Flush(number); e.Handled = e.SuppressKeyPress = true;
+                };
+            }
             click.CheckedChanged += Changed; spRest.CheckedChanged += Changed;
         }
         private void Changed(object sender, EventArgs e)
-        { if (loading) return; StopRunner(); Guard(() => { Save(); status.Text = "Saved"; }); }
+        { if (loading) return; StopRunner(); SaveChanged(); }
+        private void ScheduleNumber(Control number)
+        {
+            if (loading) return;
+            StopRunner(); autoSave.Schedule(number);
+        }
+        private void SaveChanged()
+        {
+            try { Save(); status.Text = "Saved"; }
+            catch (Exception ex) { status.Text = "Not saved: " + ex.Message; }
+        }
         private void Tick()
         {
             try
@@ -581,18 +603,20 @@ namespace _4RTools.Model.Vanilla
             catch { saved = new VanillaTemporaryActionSettings(); status.Text = "Saved temporary settings could not be read; original file retained."; }
             actionKey.Set(saved.ActionKey, saved.ActionCtrl, saved.ActionAlt, saved.ActionShift);
             sitKey.Set(saved.SitStandKey, saved.SitCtrl, saved.SitAlt, saved.SitShift);
-            interval.Value = saved.IntervalMs / 1000m; delay.Value = saved.TargetClickDelayMs / 1000m;
+            VanillaSettingsNumber.Load(interval, saved.IntervalMs / 1000m); VanillaSettingsNumber.Load(delay, saved.TargetClickDelayMs / 1000m);
             click.Checked = saved.ClickTargetAfterKey; spRest.Checked = saved.SpRestEnabled;
-            rest.Value = saved.RestBelowPercent; resume.Value = saved.ResumeAbovePercent;
+            VanillaSettingsNumber.Load(rest, saved.RestBelowPercent); VanillaSettingsNumber.Load(resume, saved.ResumeAbovePercent);
             ShowPoints(); loading = false;
         }
         private void Save()
         {
+            autoSave.Cancel();
             var value = saved.Clone();
             value.ActionKey = actionKey.Key; value.ActionCtrl = actionKey.Ctrl; value.ActionAlt = actionKey.Alt; value.ActionShift = actionKey.Shift;
             value.SitStandKey = sitKey.Key; value.SitCtrl = sitKey.Ctrl; value.SitAlt = sitKey.Alt; value.SitShift = sitKey.Shift;
-            value.IntervalMs = (int)(interval.Value * 1000); value.TargetClickDelayMs = (int)(delay.Value * 1000);
-            value.ClickTargetAfterKey = click.Checked; value.SpRestEnabled = spRest.Checked; value.RestBelowPercent = rest.Value; value.ResumeAbovePercent = resume.Value;
+            value.IntervalMs = (int)(VanillaSettingsNumber.Read(interval) * 1000); value.TargetClickDelayMs = (int)(VanillaSettingsNumber.Read(delay) * 1000);
+            value.ClickTargetAfterKey = click.Checked; value.SpRestEnabled = spRest.Checked;
+            value.RestBelowPercent = VanillaSettingsNumber.Read(rest); value.ResumeAbovePercent = VanillaSettingsNumber.Read(resume);
             value.Validate(); Directory.CreateDirectory(Path.GetDirectoryName(settingsPath));
             string temp = settingsPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
             try
@@ -623,10 +647,10 @@ namespace _4RTools.Model.Vanilla
         private static FlowLayoutPanel Row(params Control[] controls)
         { var row = new FlowLayoutPanel { AutoSize = true, WrapContents = true, Dock = DockStyle.Fill }; row.Controls.AddRange(controls); return row; }
         private static NumericUpDown Number(decimal min, decimal max, decimal value, int decimals)
-        { return new NumericUpDown { Minimum = min, Maximum = max, Value = value, DecimalPlaces = decimals, Width = 100 }; }
+        { return new VanillaSettingsNumber { Minimum = min, Maximum = max, Value = value, DecimalPlaces = decimals, Width = 100 }; }
         protected override void Dispose(bool disposing)
         {
-            if (disposing) { timer.Dispose(); tips.Dispose(); supervisor.UnregisterTemporaryAction(captureOwner); captureOwner = null; runner.Dispose(); if (ownsFleet) fleet.Dispose(); }
+            if (disposing) { autoSave.Flush(); autoSave.Dispose(); timer.Dispose(); tips.Dispose(); supervisor.UnregisterTemporaryAction(captureOwner); captureOwner = null; runner.Dispose(); if (ownsFleet) fleet.Dispose(); }
             base.Dispose(disposing);
         }
         private sealed class ClientChoice

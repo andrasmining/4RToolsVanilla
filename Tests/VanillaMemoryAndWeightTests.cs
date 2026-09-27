@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Drawing;
+using System.Windows.Forms;
 using Newtonsoft.Json;
 using _4RTools.Model.Vanilla;
 using _4RTools.Utils;
@@ -23,6 +24,14 @@ namespace Vanilla.Diagnostics.Tests
             failed += Test("Known farming loot weights support capacity-safe Cart fill", CartCapacityRules);
             failed += Test("Weight alert thresholds enforce re-arm hysteresis", WeightThresholds);
             failed += Test("Enabled weight e-mail alerts require SMTP transport", WeightMailValidation);
+            failed += Test("Weight settings field patches preserve current unrelated settings and restart", WeightSettingsPatches);
+            failed += Test("Weight settings validation and failed persistence retain active values", WeightSettingsFailedEdit);
+            failed += Test("Weight settings loading and unchanged patches do not write", WeightSettingsNoWrite);
+            failed += Test("Weight settings disposal rejects pending writes", WeightSettingsDisposed);
+            failed += Test("Settings autosave coalesces fields and flushes each pending edit once", AutoSaveFlush);
+            failed += Test("Settings autosave cancellation and disposal suppress delayed callbacks", AutoSaveCancellation);
+            failed += Test("Settings autosave can dispose safely from a pending callback", AutoSaveDisposeDuringFlush);
+            failed += Test("Numeric settings reject raw invalid edits without focus-loss clamping", SettingsNumberValidation);
             failed += Test("SMTP transport validation does not authorize automatic mail", MilestoneMailPolicy);
             failed += Test("Weight cart settings validate independent UI automation", WeightCartSettings);
             failed += Test("Legacy Weight settings inherit dedicated Alt+3 Autobattle STOP", WeightCartStopHotkeyMigration);
@@ -737,6 +746,199 @@ namespace Vanilla.Diagnostics.Tests
             VanillaWeightAlertSettings clone = settings.Clone();
             if (!clone.Enabled || clone.SmtpHost != settings.SmtpHost || clone.ToAddress != settings.ToAddress)
                 throw new Exception("Weight alert settings clone lost data.");
+        }
+
+        private sealed class WeightSettingsEnvironment : IVanillaRecoveryRestartEnvironment
+        {
+            public DateTimeOffset UtcNow { get { return DateTimeOffset.UtcNow; } }
+            public TimeSpan MonotonicNow { get { return TimeSpan.Zero; } }
+            public DateTime GetStartTimeUtc(int pid) { throw new Exception("Settings tests must not inspect a process."); }
+            public void Queue(Action work) { throw new Exception("Settings tests must not queue native work."); }
+            public void CloseClient(int pid, DateTime expected, Func<bool> cancelled, Action<Action> owned, bool immediate = false)
+            { throw new Exception("Settings tests must not close a process."); }
+        }
+
+        private static void WithWeightService(Action<VanillaWeightAlertService, VanillaReconnectSupervisor> test)
+        {
+            string root = Path.Combine(Path.GetTempPath(), "4R-weight-settings-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                using (var supervisor = new VanillaReconnectSupervisor(root, new WeightSettingsEnvironment()))
+                using (var fleet = new VanillaFleetMonitor(root,
+                    () => { throw new Exception("Settings tests must not enumerate game processes."); },
+                    pid => { throw new Exception("Settings tests must not read game memory."); }, () => null))
+                using (var service = new VanillaWeightAlertService(root, fleet, supervisor,
+                    new VanillaWeightAlertStore(Path.Combine(root, "weight-alerts.json"))))
+                    test(service, supervisor);
+            }
+            finally { if (Directory.Exists(root)) Directory.Delete(root, true); }
+        }
+
+        private static void WeightSettingsPatches()
+        {
+            WithWeightService((service, supervisor) =>
+            {
+                VanillaWeightAlertSettings olderSnapshot = service.Settings;
+                service.UpdateSettings(value => { value.SmtpHost = "smtp.example.invalid"; value.FromAddress = "from@example.invalid"; value.ToAddress = "to@example.invalid"; });
+                service.UpdateSettings(value => value.Enabled = true);
+                service.UpdateSettings(value => value.CloseClientWhenFarmingComplete = true);
+                VanillaWeightAlertSettings editedSnapshot = null;
+                service.UpdateSettings(value => { editedSnapshot = value; value.PollSeconds = 9; });
+                editedSnapshot.PollSeconds = 3;
+                var current = service.Settings;
+                if (!current.Enabled || !current.CloseClientWhenFarmingComplete || current.PollSeconds != 9
+                    || current.SmtpHost != "smtp.example.invalid" || olderSnapshot.SmtpHost.Length != 0)
+                    throw new Exception("A field patch lost newer independent settings or mutated an old snapshot.");
+                var restarted = new VanillaWeightAlertStore(service.Store.FilePath).Load();
+                if (!restarted.Enabled || !restarted.CloseClientWhenFarmingComplete || restarted.PollSeconds != 9
+                    || restarted.SmtpHost != current.SmtpHost) throw new Exception("Completed field edits did not survive reload.");
+            });
+        }
+
+        private static void WeightSettingsFailedEdit()
+        {
+            WithWeightService((service, supervisor) =>
+            {
+                service.UpdateSettings(value => value.AutoCartEnabled = true);
+                string persisted = File.ReadAllText(service.Store.FilePath);
+                Throws(() => service.UpdateSettings(value => value.AutoCartRearmPercent = 90));
+                Throws(() => service.UpdateSettings(value => value.Enabled = true));
+                if (service.Settings.AutoCartRearmPercent != 40 || service.Settings.Enabled
+                    || File.ReadAllText(service.Store.FilePath) != persisted)
+                    throw new Exception("An invalid field edit changed disk/runtime settings.");
+                string blocked = service.Store.FilePath + ".tmp";
+                Directory.CreateDirectory(blocked);
+                try
+                {
+                    bool rejected = false;
+                    try { service.UpdateSettings(value => value.CloseClientWhenFarmingComplete = true); }
+                    catch (IOException) { rejected = true; }
+                    catch (UnauthorizedAccessException) { rejected = true; }
+                    if (!rejected || service.Settings.CloseClientWhenFarmingComplete
+                        || File.ReadAllText(service.Store.FilePath) != persisted)
+                        throw new Exception("A storage failure published unsaved Weight settings.");
+                    var closePolicy = typeof(VanillaReconnectSupervisor).GetField("closeFarmingCompletionClients",
+                        System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                    if ((bool)closePolicy.GetValue(supervisor))
+                        throw new Exception("A failed Weight save activated the completion-close policy.");
+                }
+                finally { Directory.Delete(blocked); }
+                service.UpdateSettings(value => value.PollSeconds = 7);
+                if (service.Settings.PollSeconds != 7 || service.Settings.AutoCartRearmPercent != 40)
+                    throw new Exception("Failed edits prevented a later independent valid field save.");
+            });
+        }
+
+        private static void WeightSettingsNoWrite()
+        {
+            WithWeightService((service, supervisor) =>
+            {
+                if (File.Exists(service.Store.FilePath)) throw new Exception("Loading default Weight settings wrote a file.");
+                if (service.UpdateSettings(value => value.PollSeconds = value.PollSeconds)
+                    || File.Exists(service.Store.FilePath)) throw new Exception("Unchanged settings wrote a file.");
+                if (service.UpdateSettings(value => value.AutoCartThresholdPercent = 50.00m)
+                    || File.Exists(service.Store.FilePath)) throw new Exception("Decimal display precision caused an unchanged settings write.");
+                service.UpdateSettings(value => value.PollSeconds = 8);
+                string blocked = service.Store.FilePath + ".tmp";
+                Directory.CreateDirectory(blocked);
+                try
+                {
+                    if (service.UpdateSettings(value => value.PollSeconds = 8))
+                        throw new Exception("An unchanged patch attempted another save.");
+                }
+                finally { Directory.Delete(blocked); }
+            });
+        }
+
+        private static void WeightSettingsDisposed()
+        {
+            WithWeightService((service, supervisor) =>
+            {
+                service.Dispose();
+                try { service.UpdateSettings(value => value.PollSeconds = 9); }
+                catch (ObjectDisposedException)
+                {
+                    if (File.Exists(service.Store.FilePath)) throw new Exception("A disposed service wrote settings.");
+                    return;
+                }
+                throw new Exception("A disposed Weight service accepted a delayed settings write.");
+            });
+        }
+
+        private static void AutoSaveFlush()
+        {
+            using (var first = new TextBox())
+            using (var second = new TextBox())
+            {
+                var saved = new List<Control>();
+                using (var autoSave = new VanillaSettingsAutoSave(500, saved.Add))
+                {
+                    autoSave.Schedule(first); autoSave.Schedule(first); autoSave.Schedule(second);
+                    if (!autoSave.HasPending || saved.Count != 0) throw new Exception("Debounce saved before edit completion.");
+                    autoSave.Flush(first); autoSave.Flush(first);
+                    if (!saved.SequenceEqual(new Control[] { first }) || !autoSave.HasPending)
+                        throw new Exception("A field flush repeated a write or discarded another pending field.");
+                    autoSave.Flush(); autoSave.Flush();
+                    if (!saved.SequenceEqual(new Control[] { first, second }) || autoSave.HasPending)
+                        throw new Exception("Pending edits did not flush exactly once before close.");
+                }
+            }
+        }
+
+        private static void AutoSaveCancellation()
+        {
+            using (var first = new TextBox())
+            using (var second = new TextBox())
+            {
+                int saved = 0;
+                var autoSave = new VanillaSettingsAutoSave(10, _ => saved++);
+                autoSave.Schedule(first); autoSave.Cancel(first); autoSave.Flush();
+                autoSave.Schedule(first); autoSave.Schedule(second); autoSave.Cancel(); autoSave.Flush();
+                autoSave.Schedule(first); first.Dispose(); autoSave.Flush();
+                autoSave.Schedule(second); autoSave.Dispose(); autoSave.Flush(); autoSave.Schedule(second);
+                if (autoSave.HasPending || saved != 0) throw new Exception("Cancelled/disposed edits invoked a save callback.");
+            }
+        }
+
+        private static void AutoSaveDisposeDuringFlush()
+        {
+            using (var first = new TextBox())
+            using (var second = new TextBox())
+            {
+                int saved = 0;
+                VanillaSettingsAutoSave autoSave = null;
+                autoSave = new VanillaSettingsAutoSave(10, _ => { saved++; autoSave.Dispose(); });
+                autoSave.Schedule(first); autoSave.Schedule(second); autoSave.Flush();
+                if (saved != 1 || autoSave.HasPending) throw new Exception("Disposal during flush allowed later callbacks.");
+            }
+        }
+
+        private static void SettingsNumberValidation()
+        {
+            using (var number = new VanillaSettingsNumber { Minimum = 1, Maximum = 65535, Value = 587 })
+            {
+                var validate = typeof(VanillaSettingsNumber).GetMethod("ValidateEditText",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                var lostFocus = typeof(VanillaSettingsNumber).GetMethod("OnLostFocus",
+                    System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+                foreach (string text in new[] { "70000", "-1", "", "unfinished", "12.5".Replace(".",
+                    System.Globalization.CultureInfo.CurrentCulture.NumberFormat.NumberDecimalSeparator) })
+                {
+                    number.Text = text; validate.Invoke(number, null);
+                    lostFocus.Invoke(number, new object[] { EventArgs.Empty });
+                    number.UpButton(); number.DownButton();
+                    Throws(() => VanillaSettingsNumber.Read(number));
+                    if (number.Text != text || number.Value != 587)
+                        throw new Exception("An invalid numeric edit was silently clamped or rounded during validation.");
+                }
+                VanillaSettingsNumber.Load(number, 587);
+                if (number.Text != "587" || VanillaSettingsNumber.Read(number) != 587)
+                    throw new Exception("Reloading the same saved value retained another profile's invalid draft.");
+                number.Text = "2525";
+                if (VanillaSettingsNumber.Read(number) != 2525) throw new Exception("Typed valid value was not read before ValueChanged.");
+                validate.Invoke(number, null);
+                if (number.Value != 2525) throw new Exception("Valid numeric edit could not complete.");
+            }
         }
 
         private static void Equal(long expected, long actual, string label)

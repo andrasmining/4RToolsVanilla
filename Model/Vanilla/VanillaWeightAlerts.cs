@@ -9,6 +9,7 @@ using System.Net.Mail;
 using System.Threading;
 using System.Windows.Forms;
 using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using _4RTools.Model.Vanilla.Automation;
 using _4RTools.Utils;
 
@@ -130,6 +131,10 @@ namespace _4RTools.Model.Vanilla
             VanillaAppData.InitializeAndMigrateLegacy(AppDomain.CurrentDomain.BaseDirectory);
             path = Path.Combine(VanillaAppData.RootDirectory, "weight-alerts.json");
         }
+        internal VanillaWeightAlertStore(string filePath)
+        {
+            path = Path.GetFullPath(filePath ?? throw new ArgumentNullException(nameof(filePath)));
+        }
         public string FilePath { get { return path; } }
 
         public VanillaWeightAlertSettings Load()
@@ -248,7 +253,7 @@ namespace _4RTools.Model.Vanilla
             {
                 try { Settings.Validate(true); }
                 catch (ArgumentException ex)
-                { throw new ArgumentException("Save valid SMTP settings before enabling emergency e-mail. " + ex.Message, ex); }
+                { throw new ArgumentException("Complete the SMTP settings before enabling emergency e-mail. " + ex.Message, ex); }
             }
             supervisor.SaveFarmingEmergencySettings(value);
         }
@@ -256,10 +261,16 @@ namespace _4RTools.Model.Vanilla
         public void ClearEmergencyHolds() { supervisor.ClearFarmingEmergencyHolds(); }
 
         public VanillaWeightAlertService(string baseDirectory, VanillaFleetMonitor fleetMonitor, VanillaReconnectSupervisor supervisor)
+            : this(baseDirectory, fleetMonitor, supervisor, new VanillaWeightAlertStore())
+        {
+        }
+
+        internal VanillaWeightAlertService(string baseDirectory, VanillaFleetMonitor fleetMonitor,
+            VanillaReconnectSupervisor supervisor, VanillaWeightAlertStore store)
         {
             if (fleetMonitor == null) throw new ArgumentNullException(nameof(fleetMonitor));
             if (supervisor == null) throw new ArgumentNullException(nameof(supervisor));
-            store = new VanillaWeightAlertStore();
+            this.store = store ?? throw new ArgumentNullException(nameof(store));
             this.fleetMonitor = fleetMonitor;
             this.supervisor = supervisor;
             cartAutomation = new VanillaWeightCartAutomation(fleetMonitor, supervisor);
@@ -287,19 +298,41 @@ namespace _4RTools.Model.Vanilla
         public void ApplySettings(VanillaWeightAlertSettings value, bool save)
         {
             if (value == null) throw new ArgumentNullException(nameof(value));
-            value.Validate(false);
-            if (value.Enabled || supervisor.FarmingEmergencySettings.SendEmail) value.Validate(true);
             lock (gate)
             {
-                var copy = value.Clone();
-                if (save) store.Save(copy);
-                settings = copy;
-                supervisor.SetFarmingCompletionPolicy(settings.AutoCartEnabled && settings.CloseClientWhenFarmingComplete,
-                    settings.AutoCartEnabled && settings.Enabled);
-                if (timer != null) timer.Change(TimeSpan.Zero, TimeSpan.FromSeconds(settings.PollSeconds));
-                SetStatusLocked(settings.AutoCartEnabled ? "Automatic cart maintenance enabled."
-                    : settings.Enabled ? "Weight e-mail alerts enabled." : "Weight actions disabled.");
+                ApplySettingsLocked(value.Clone(), save);
             }
+        }
+
+        // Patch only the completed edit against the latest settings. Another panel or
+        // queued edit must not restore a stale snapshot of unrelated fields.
+        public bool UpdateSettings(System.Action<VanillaWeightAlertSettings> edit)
+        {
+            if (edit == null) throw new ArgumentNullException(nameof(edit));
+            lock (gate)
+            {
+                if (disposed) throw new ObjectDisposedException(nameof(VanillaWeightAlertService));
+                var copy = settings.Clone();
+                edit(copy);
+                if (JToken.DeepEquals(JToken.FromObject(copy), JToken.FromObject(settings))) return false;
+                ApplySettingsLocked(copy.Clone(), true);
+                return true;
+            }
+        }
+
+        private void ApplySettingsLocked(VanillaWeightAlertSettings copy, bool save)
+        {
+            if (disposed) throw new ObjectDisposedException(nameof(VanillaWeightAlertService));
+            copy.Validate(false);
+            if (copy.Enabled || supervisor.FarmingEmergencySettings.SendEmail) copy.Validate(true);
+            // Durability precedes runtime publication, including completion-close policy.
+            if (save) store.Save(copy);
+            settings = copy;
+            supervisor.SetFarmingCompletionPolicy(settings.AutoCartEnabled && settings.CloseClientWhenFarmingComplete,
+                settings.AutoCartEnabled && settings.Enabled);
+            if (timer != null) timer.Change(TimeSpan.Zero, TimeSpan.FromSeconds(settings.PollSeconds));
+            SetStatusLocked(settings.AutoCartEnabled ? "Automatic cart maintenance enabled."
+                : settings.Enabled ? "Weight e-mail alerts enabled." : "Weight actions disabled.");
         }
 
         internal static bool MilestoneMailConfigured(VanillaWeightAlertSettings value)

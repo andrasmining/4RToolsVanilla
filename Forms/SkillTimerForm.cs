@@ -9,7 +9,7 @@ namespace _4RTools.Forms
     {
         public SkillTimerForm(Subject subject)
         {
-            InitializeComponent();
+            using (FormUtils.BeginLoading(this)) { InitializeComponent(); }
             subject.Attach(this);
 
 
@@ -30,6 +30,7 @@ namespace _4RTools.Forms
             this.txtSkillTimerKey3.KeyPress += new KeyPressEventHandler(FormUtils.OnKeyPress);
             this.txtSkillTimerKey3.TextChanged += new EventHandler(this.onSkillTimerKey3Change);
             this.txtAutoRefreshDelay3.ValueChanged += new EventHandler(this.txthDelay3TextChanged);
+            FormUtils.CommitNumericEditsOnClose(this);
         }
 
         public void Update(ISubject subject)
@@ -37,6 +38,8 @@ namespace _4RTools.Forms
             switch ((subject as Subject).Message.code)
             {
                 case MessageCode.PROFILE_CHANGED:
+                    using (FormUtils.BeginLoading(this))
+                    {
                     string skillTimerKey1 = ProfileSingleton.GetCurrent().AutoRefreshSpammer1.RefreshKey.ToString();
                     string autoRefreshDelay1 = ProfileSingleton.GetCurrent().AutoRefreshSpammer1.RefreshDelay.ToString();
 
@@ -56,6 +59,7 @@ namespace _4RTools.Forms
 
                     this.txtSkillTimerKey3.Text = skillTimerKey3;
                     this.txtAutoRefreshDelay3.Text = autoRefreshDelay3;
+                    }
                     break;
                 case MessageCode.TURN_ON:
                     ProfileSingleton.GetCurrent().AutoRefreshSpammer1.Start();
@@ -73,6 +77,7 @@ namespace _4RTools.Forms
 
         private void onSkillTimerKey1Change(object sender, EventArgs e)
         {
+            if (FormUtils.IsLoading(this)) return;
             Key key = (Key)Enum.Parse(typeof(Key), this.txtSkillTimerKey.Text.ToString());
             ProfileSingleton.GetCurrent().AutoRefreshSpammer1.RefreshKey = key;
             ProfileSingleton.SetConfiguration(ProfileSingleton.GetCurrent().AutoRefreshSpammer1);
@@ -80,6 +85,7 @@ namespace _4RTools.Forms
 
         private void onSkillTimerKey2Change(object sender, EventArgs e)
         {
+            if (FormUtils.IsLoading(this)) return;
             Key key = (Key)Enum.Parse(typeof(Key), this.txtSkillTimerKey2.Text.ToString());
             ProfileSingleton.GetCurrent().AutoRefreshSpammer2.RefreshKey = key;
             ProfileSingleton.SetConfiguration(ProfileSingleton.GetCurrent().AutoRefreshSpammer2);
@@ -87,6 +93,7 @@ namespace _4RTools.Forms
 
         private void onSkillTimerKey3Change(object sender, EventArgs e)
         {
+            if (FormUtils.IsLoading(this)) return;
             Key key = (Key)Enum.Parse(typeof(Key), this.txtSkillTimerKey3.Text.ToString());
             ProfileSingleton.GetCurrent().AutoRefreshSpammer3.RefreshKey = key;
             ProfileSingleton.SetConfiguration(ProfileSingleton.GetCurrent().AutoRefreshSpammer3);
@@ -94,11 +101,12 @@ namespace _4RTools.Forms
 
         private void txthDelay1TextChanged(object sender, EventArgs e)
         {
+            if (FormUtils.IsLoading(this)) return;
             TextBox textBox = sender as TextBox;
 
             try
             {
-                ProfileSingleton.GetCurrent().AutoRefreshSpammer1.RefreshDelay = Int16.Parse(this.txtAutoRefreshDelay.Text);
+                ProfileSingleton.GetCurrent().AutoRefreshSpammer1.RefreshDelay = decimal.ToInt32(this.txtAutoRefreshDelay.Value);
                 ProfileSingleton.SetConfiguration(ProfileSingleton.GetCurrent().AutoRefreshSpammer1);
             }
             catch(Exception ex) {
@@ -108,11 +116,12 @@ namespace _4RTools.Forms
 
         private void txthDelay2TextChanged(object sender, EventArgs e)
         {
+            if (FormUtils.IsLoading(this)) return;
             TextBox textBox = sender as TextBox;
 
             try
             {
-                ProfileSingleton.GetCurrent().AutoRefreshSpammer2.RefreshDelay = Int16.Parse(this.txtAutoRefreshDelay2.Text);
+                ProfileSingleton.GetCurrent().AutoRefreshSpammer2.RefreshDelay = decimal.ToInt32(this.txtAutoRefreshDelay2.Value);
                 ProfileSingleton.SetConfiguration(ProfileSingleton.GetCurrent().AutoRefreshSpammer2);
             }
             catch (Exception ex)
@@ -123,11 +132,12 @@ namespace _4RTools.Forms
 
         private void txthDelay3TextChanged(object sender, EventArgs e)
         {
+            if (FormUtils.IsLoading(this)) return;
             TextBox textBox = sender as TextBox;
 
             try
             {
-                ProfileSingleton.GetCurrent().AutoRefreshSpammer3.RefreshDelay = Int16.Parse(this.txtAutoRefreshDelay3.Text);
+                ProfileSingleton.GetCurrent().AutoRefreshSpammer3.RefreshDelay = decimal.ToInt32(this.txtAutoRefreshDelay3.Value);
                 ProfileSingleton.SetConfiguration(ProfileSingleton.GetCurrent().AutoRefreshSpammer3);
             }
             catch (Exception ex)

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Drawing;
 using System.Globalization;
 using System.Linq;
+using System.Net.Mail;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
@@ -38,7 +39,7 @@ namespace _4RTools.Model.Vanilla
         private readonly TextBox fromAddress = new TextBox { Width = 300 };
         private readonly TextBox toAddress = new TextBox { Width = 300 };
         private readonly TextBox subjectPrefix = new TextBox { Width = 220 };
-        private readonly Button save = new Button { Text = "SAVE WEIGHT SETTINGS", AutoSize = true };
+        private readonly Button clearPassword = new Button { Text = "CLEAR PASSWORD", AutoSize = true };
         private readonly Button test = new Button { Text = "SEND TEST E-MAIL", AutoSize = true };
         private readonly Button clearHold = new Button { Text = "CLEAR WEIGHT/CART HOLD", AutoSize = true };
         private readonly Button clearEmergency = new Button { Text = "CLEAR EMERGENCY HOLD", AutoSize = true };
@@ -50,6 +51,7 @@ namespace _4RTools.Model.Vanilla
             ForeColor = Color.DimGray, Margin = new Padding(8, 8, 3, 3) };
         private readonly Label emergencyStatus = new Label { AutoSize = true, MaximumSize = new Size(1100, 0), ForeColor = Color.Firebrick };
         private readonly Label status = new Label { AutoSize = true, MaximumSize = new Size(1150, 0), ForeColor = Color.DimGray };
+        private readonly Label saveStatus = new Label { AutoSize = true, MaximumSize = new Size(700, 0), ForeColor = Color.DimGray };
         private readonly DataGridView live = new DataGridView
         {
             Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false, AllowUserToDeleteRows = false,
@@ -57,27 +59,32 @@ namespace _4RTools.Model.Vanilla
         };
         private readonly Timer timer = new Timer { Interval = 1000 };
         private readonly ToolTip help = new ToolTip { ShowAlways = true, AutoPopDelay = 30000 };
-        private VanillaWeightAlertSettings loaded;
-        private bool disposed, loadingEmergency;
+        private readonly ErrorProvider errors = new ErrorProvider { BlinkStyle = ErrorBlinkStyle.NeverBlink };
+        private readonly Dictionary<Control, string> saveErrors = new Dictionary<Control, string>();
+        private readonly VanillaSettingsAutoSave autoSave;
+        private bool disposed, loading, loadingEmergency;
         private DateTime emergencySavedUntil;
 
         public VanillaWeightAlertsPanel(VanillaWeightAlertService service)
         {
             this.service = service ?? throw new ArgumentNullException(nameof(service));
+            autoSave = new VanillaSettingsAutoSave(500, SaveEditedField);
+            errors.ContainerControl = this;
             Dock = DockStyle.Fill; BackColor = Color.White; AutoScroll = true;
             BuildLayout(); LoadSettings(); LoadEmergencySettings();
+            BindAutoSave();
             foreach (NumericUpDown control in new[] { emergencyWeight, emergencySp, emergencyHp })
             {
                 control.Increment = 0.1M;
-                control.Validated += (s, e) => SaveEmergencySettings(control);
+                control.Validated += (s, e) => { autoSave.Cancel(control); SaveEmergencySettings(control); };
                 control.KeyDown += (s, e) =>
                 {
                     if (e.KeyCode != Keys.Enter) return;
-                    SaveEmergencySettings(control); e.SuppressKeyPress = e.Handled = true;
+                    autoSave.Cancel(control); SaveEmergencySettings(control); e.SuppressKeyPress = e.Handled = true;
                 };
             }
             emergencySendEmail.CheckedChanged += (s, e) => SaveEmergencySettings(emergencySendEmail);
-            save.Click += (s, e) => Guard(SaveSettings);
+            clearPassword.Click += (s, e) => ClearPassword();
             test.Click += async (s, e) => await SendTestAsync();
             clearHold.Click += (s, e) => Guard(service.ClearManualHolds);
             clearEmergency.Click += (s, e) => Guard(service.ClearEmergencyHolds);
@@ -118,7 +125,7 @@ namespace _4RTools.Model.Vanilla
             root.Controls.Add(BuildMailGroup(), 0, 3);
 
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Margin = new Padding(0, 8, 0, 0) };
-            buttons.Controls.Add(save); buttons.Controls.Add(test); buttons.Controls.Add(clearHold); buttons.Controls.Add(clearEmergency); buttons.Controls.Add(status);
+            buttons.Controls.Add(test); buttons.Controls.Add(clearHold); buttons.Controls.Add(clearEmergency); buttons.Controls.Add(saveStatus); buttons.Controls.Add(status);
             root.Controls.Add(buttons, 0, 4);
 
             live.Columns.Add("Client", "Client"); live.Columns.Add("Weight", "Weight"); live.Columns.Add("Percent", "%");
@@ -151,7 +158,7 @@ namespace _4RTools.Model.Vanilla
             string description = "Close only the affected client when Weight is strictly above its limit AND SP is strictly below its limit AND HP is strictly below its limit. Equality does not trigger. Saves independently when you leave a field or press Enter; pending Cart/mail edits are unchanged. Changing limits does not clear existing emergency holds.";
             help.SetToolTip(group, description);
             foreach (NumericUpDown control in new[] { emergencyWeight, emergencySp, emergencyHp }) help.SetToolTip(control, description);
-            help.SetToolTip(emergencySendEmail, "Auto-save. Send one emergency notification using the saved SMTP settings, independently of Normal e-mail and character Mail switches. Save SMTP settings first. Sending never delays emergency closure.");
+            help.SetToolTip(emergencySendEmail, "Auto-save. Send one emergency notification using the saved SMTP settings, independently of Normal e-mail and character Mail switches. Complete SMTP settings first; they save automatically. Sending never delays emergency closure.");
             return group;
         }
 
@@ -163,16 +170,16 @@ namespace _4RTools.Model.Vanilla
             field.Controls.Add(control); row.Controls.Add(field);
         }
 
-        private void LoadEmergencySettings()
+        private void LoadEmergencySettings(Control only = null)
         {
             loadingEmergency = true;
             try
             {
                 var value = service.EmergencySettings;
-                emergencyWeight.Value = value.WeightAbovePercent;
-                emergencySp.Value = value.SpBelowPercent;
-                emergencyHp.Value = value.HpBelowPercent;
-                emergencySendEmail.Checked = value.SendEmail;
+                if (only == null || ReferenceEquals(only, emergencyWeight)) VanillaSettingsNumber.Load(emergencyWeight, value.WeightAbovePercent);
+                if (only == null || ReferenceEquals(only, emergencySp)) VanillaSettingsNumber.Load(emergencySp, value.SpBelowPercent);
+                if (only == null || ReferenceEquals(only, emergencyHp)) VanillaSettingsNumber.Load(emergencyHp, value.HpBelowPercent);
+                if (only == null || ReferenceEquals(only, emergencySendEmail)) emergencySendEmail.Checked = value.SendEmail;
             }
             finally { loadingEmergency = false; }
         }
@@ -182,26 +189,24 @@ namespace _4RTools.Model.Vanilla
             if (disposed || loadingEmergency) return;
             try
             {
-                // Value commits the NumericUpDown edit only at validation/Enter.
-                // No ValueChanged handler persists partially typed numbers.
                 var active = service.EmergencySettings;
                 var value = active.Clone();
-                if (ReferenceEquals(edited, emergencyWeight)) value.WeightAbovePercent = emergencyWeight.Value;
-                else if (ReferenceEquals(edited, emergencySp)) value.SpBelowPercent = emergencySp.Value;
-                else if (ReferenceEquals(edited, emergencyHp)) value.HpBelowPercent = emergencyHp.Value;
+                if (ReferenceEquals(edited, emergencyWeight)) value.WeightAbovePercent = ReadNumber(emergencyWeight);
+                else if (ReferenceEquals(edited, emergencySp)) value.SpBelowPercent = ReadNumber(emergencySp);
+                else if (ReferenceEquals(edited, emergencyHp)) value.HpBelowPercent = ReadNumber(emergencyHp);
                 else if (ReferenceEquals(edited, emergencySendEmail)) value.SendEmail = emergencySendEmail.Checked;
                 else throw new ArgumentException("Unknown emergency field.", nameof(edited));
                 if (value.WeightAbovePercent == active.WeightAbovePercent && value.SpBelowPercent == active.SpBelowPercent
                     && value.HpBelowPercent == active.HpBelowPercent && value.SendEmail == active.SendEmail) return;
                 service.SaveEmergencySettings(value);
-                LoadEmergencySettings();
+                LoadEmergencySettings(edited);
                 emergencySaveStatus.ForeColor = Color.DarkGreen; emergencySaveStatus.Text = "Saved";
                 emergencySavedUntil = DateTime.UtcNow.AddSeconds(5);
                 RefreshStatus();
             }
             catch (Exception ex)
             {
-                LoadEmergencySettings();
+                LoadEmergencySettings(edited);
                 emergencySavedUntil = DateTime.MinValue;
                 emergencySaveStatus.ForeColor = Color.Firebrick;
                 emergencySaveStatus.Text = "Not saved: " + ex.Message;
@@ -212,7 +217,7 @@ namespace _4RTools.Model.Vanilla
         {
             help.SetToolTip(autoCart,
                 "Global Cart master. A character also needs its own Cart switch enabled in Recovery & relog.");
-            help.SetToolTip(closeWhenComplete, "Saved with Weight settings. After verified Autobattle STOP at both Cart >=99% AND carried weight >=50%, close only that character's client completely. Its completed hold prevents automatic restart until you explicitly clear the Weight/Cart hold.");
+            help.SetToolTip(closeWhenComplete, "Saves automatically. After verified Autobattle STOP at both Cart >=99% AND carried weight >=50%, close only that character's client completely. Its completed hold prevents automatic restart until you explicitly clear the Weight/Cart hold.");
             help.SetToolTip(autoThreshold,
                 "Carried-weight percentage that triggers a Cart-maintenance pass for Cart-enabled characters.");
             help.SetToolTip(autoRearm,
@@ -234,6 +239,7 @@ namespace _4RTools.Model.Vanilla
             help.SetToolTip(pollSeconds, "Shared weight polling interval.");
             help.SetToolTip(cooldownMinutes, "Cooldown for repeated carried-weight warning mail.");
             help.SetToolTip(smtpPassword, "Leave blank to keep the existing protected SMTP password.");
+            help.SetToolTip(clearPassword, "Explicitly remove the saved SMTP password. Leaving the password field blank preserves it.");
             help.SetToolTip(test, "Send a test message using the SMTP settings below.");
             help.SetToolTip(clearHold, "Clear manual/completed Weight/Cart holds after you have inspected the character.");
         }
@@ -273,7 +279,10 @@ namespace _4RTools.Model.Vanilla
             settings.Controls.Add(new Label { Text = "SMTP port", AutoSize = true, Margin = new Padding(3, 8, 6, 0) }, 2, 3);
             var smtpTransport = new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight, WrapContents = false, Margin = Padding.Empty };
             smtpTransport.Controls.Add(smtpPort); smtpTransport.Controls.Add(useSsl); settings.Controls.Add(smtpTransport, 3, 3);
-            Add(settings, 4, 0, "SMTP username", smtpUser); Add(settings, 4, 2, "SMTP password", smtpPassword);
+            Add(settings, 4, 0, "SMTP username", smtpUser);
+            var passwordRow = new FlowLayoutPanel { AutoSize = true, WrapContents = true, MaximumSize = new Size(305, 0), Margin = Padding.Empty };
+            smtpPassword.Width = 180; passwordRow.Controls.Add(smtpPassword); passwordRow.Controls.Add(clearPassword);
+            Add(settings, 4, 2, "SMTP password", passwordRow);
             Add(settings, 5, 0, "From e-mail", fromAddress); Add(settings, 5, 2, "Recipient e-mail", toAddress);
             Add(settings, 6, 0, "Subject prefix", subjectPrefix);
             var mailHelp = new Label { AutoSize = true, Text = "ⓘ", Cursor = Cursors.Help, Margin = new Padding(6, 8, 0, 0) };
@@ -286,47 +295,198 @@ namespace _4RTools.Model.Vanilla
 
         private void LoadSettings()
         {
-            loaded = service.Settings;
-            autoCart.Checked = loaded.AutoCartEnabled;
-            closeWhenComplete.Checked = loaded.CloseClientWhenFarmingComplete;
-            autoThreshold.Value = Clamp(autoThreshold, loaded.AutoCartThresholdPercent); autoRearm.Value = Clamp(autoRearm, loaded.AutoCartRearmPercent);
-            transferUse.Checked = loaded.TransferUseItems; transferEquip.Checked = loaded.TransferEquipItems; transferEtc.Checked = loaded.TransferEtcItems;
-            autobattleStopKey = loaded.AutobattleStopKey; autobattleStopCtrl = loaded.AutobattleStopCtrl;
-            autobattleStopAlt = loaded.AutobattleStopAlt; autobattleStopShift = loaded.AutobattleStopShift;
-            inventoryKey = loaded.InventoryKey; inventoryCtrl = loaded.InventoryCtrl; inventoryAlt = loaded.InventoryAlt; inventoryShift = loaded.InventoryShift;
-            cartKey = loaded.CartKey; cartCtrl = loaded.CartCtrl; cartAlt = loaded.CartAlt; cartShift = loaded.CartShift; UpdateHotkeys();
-            enabled.Checked = loaded.Enabled; threshold.Value = Clamp(threshold, loaded.ThresholdPercent); rearm.Value = Clamp(rearm, loaded.RearmPercent);
-            pollSeconds.Value = Clamp(pollSeconds, loaded.PollSeconds); cooldownMinutes.Value = Clamp(cooldownMinutes, loaded.CooldownMinutes);
-            smtpHost.Text = loaded.SmtpHost ?? ""; smtpPort.Value = Clamp(smtpPort, loaded.SmtpPort);
-            useSsl.Checked = loaded.UseSsl; smtpUser.Text = loaded.SmtpUser ?? ""; smtpPassword.Clear();
-            fromAddress.Text = loaded.FromAddress ?? ""; toAddress.Text = loaded.ToAddress ?? ""; subjectPrefix.Text = loaded.SubjectPrefix ?? "";
+            loading = true;
+            try
+            {
+                var loaded = service.Settings;
+                autoCart.Checked = loaded.AutoCartEnabled;
+                closeWhenComplete.Checked = loaded.CloseClientWhenFarmingComplete;
+                VanillaSettingsNumber.Load(autoThreshold, Clamp(autoThreshold, loaded.AutoCartThresholdPercent));
+                VanillaSettingsNumber.Load(autoRearm, Clamp(autoRearm, loaded.AutoCartRearmPercent));
+                transferUse.Checked = loaded.TransferUseItems; transferEquip.Checked = loaded.TransferEquipItems; transferEtc.Checked = loaded.TransferEtcItems;
+                autobattleStopKey = loaded.AutobattleStopKey; autobattleStopCtrl = loaded.AutobattleStopCtrl;
+                autobattleStopAlt = loaded.AutobattleStopAlt; autobattleStopShift = loaded.AutobattleStopShift;
+                inventoryKey = loaded.InventoryKey; inventoryCtrl = loaded.InventoryCtrl; inventoryAlt = loaded.InventoryAlt; inventoryShift = loaded.InventoryShift;
+                cartKey = loaded.CartKey; cartCtrl = loaded.CartCtrl; cartAlt = loaded.CartAlt; cartShift = loaded.CartShift; UpdateHotkeys();
+                enabled.Checked = loaded.Enabled;
+                VanillaSettingsNumber.Load(threshold, Clamp(threshold, loaded.ThresholdPercent));
+                VanillaSettingsNumber.Load(rearm, Clamp(rearm, loaded.RearmPercent));
+                VanillaSettingsNumber.Load(pollSeconds, Clamp(pollSeconds, loaded.PollSeconds));
+                VanillaSettingsNumber.Load(cooldownMinutes, Clamp(cooldownMinutes, loaded.CooldownMinutes));
+                smtpHost.Text = loaded.SmtpHost ?? "";
+                VanillaSettingsNumber.Load(smtpPort, Clamp(smtpPort, loaded.SmtpPort));
+                useSsl.Checked = loaded.UseSsl; smtpUser.Text = loaded.SmtpUser ?? ""; smtpPassword.Clear();
+                fromAddress.Text = loaded.FromAddress ?? ""; toAddress.Text = loaded.ToAddress ?? ""; subjectPrefix.Text = loaded.SubjectPrefix ?? "";
+            }
+            finally { loading = false; }
         }
 
-        private VanillaWeightAlertSettings ReadSettings()
+        private void BindAutoSave()
         {
-            var value = loaded == null ? new VanillaWeightAlertSettings() : loaded.Clone();
-            value.AutoCartEnabled = autoCart.Checked; value.AutoCartThresholdPercent = autoThreshold.Value; value.AutoCartRearmPercent = autoRearm.Value;
-            value.CloseClientWhenFarmingComplete = closeWhenComplete.Checked;
-            value.TransferUseItems = transferUse.Checked; value.TransferEquipItems = transferEquip.Checked; value.TransferEtcItems = transferEtc.Checked;
-            value.AutobattleStopKey = autobattleStopKey; value.AutobattleStopCtrl = autobattleStopCtrl;
-            value.AutobattleStopAlt = autobattleStopAlt; value.AutobattleStopShift = autobattleStopShift;
-            value.InventoryKey = inventoryKey; value.InventoryCtrl = inventoryCtrl; value.InventoryAlt = inventoryAlt; value.InventoryShift = inventoryShift;
-            value.CartKey = cartKey; value.CartCtrl = cartCtrl; value.CartAlt = cartAlt; value.CartShift = cartShift;
-            value.Enabled = enabled.Checked; value.ThresholdPercent = threshold.Value; value.RearmPercent = rearm.Value;
-            value.PollSeconds = (int)pollSeconds.Value; value.CooldownMinutes = (int)cooldownMinutes.Value;
-            value.SmtpHost = smtpHost.Text.Trim(); value.SmtpPort = (int)smtpPort.Value; value.UseSsl = useSsl.Checked;
-            value.SmtpUser = smtpUser.Text.Trim(); value.FromAddress = fromAddress.Text.Trim(); value.ToAddress = toAddress.Text.Trim();
-            value.SubjectPrefix = subjectPrefix.Text.Trim();
-            if (!string.IsNullOrEmpty(smtpPassword.Text)) value.ProtectedSmtpPassword = service.Store.ProtectPassword(smtpPassword.Text);
+            foreach (CheckBox control in new[] { autoCart, closeWhenComplete, transferUse, transferEquip, transferEtc, enabled, useSsl })
+                control.CheckedChanged += (s, e) => SaveField(control);
+            foreach (Control control in new Control[] { autoThreshold, autoRearm, threshold, rearm, pollSeconds,
+                cooldownMinutes, smtpHost, smtpPort, smtpUser, smtpPassword, fromAddress, toAddress, subjectPrefix,
+                emergencyWeight, emergencySp, emergencyHp })
+            {
+                var numeric = control as NumericUpDown;
+                if (numeric != null)
+                {
+                    // NumericUpDown shadows Control.TextChanged; subscribe through
+                    // its own type so raw typing schedules validation before Value changes.
+                    numeric.TextChanged += (s, e) => ScheduleField(control);
+                    numeric.ValueChanged += (s, e) => ScheduleField(control);
+                }
+                else control.TextChanged += (s, e) => ScheduleField(control);
+                control.Leave += (s, e) =>
+                {
+                    autoSave.Flush(control);
+                    if (ReferenceEquals(control, smtpPassword) && !saveErrors.ContainsKey(control)) ClearPasswordEditor();
+                };
+                control.KeyDown += (s, e) =>
+                {
+                    if (e.KeyCode != Keys.Enter) return;
+                    autoSave.Flush(control);
+                    if (ReferenceEquals(control, smtpPassword) && !saveErrors.ContainsKey(control)) ClearPasswordEditor();
+                    e.SuppressKeyPress = e.Handled = true;
+                };
+            }
+        }
+
+        private void ScheduleField(Control control)
+        {
+            if (disposed || loading || loadingEmergency) return;
+            autoSave.Schedule(control);
+        }
+
+        private void SaveEditedField(Control edited)
+        {
+            if (ReferenceEquals(edited, emergencyWeight) || ReferenceEquals(edited, emergencySp)
+                || ReferenceEquals(edited, emergencyHp)) SaveEmergencySettings(edited);
+            else SaveField(edited);
+        }
+
+        private void SaveField(Control edited)
+        {
+            if (disposed || loading) return;
+            try
+            {
+                bool changed = service.UpdateSettings(value => PatchField(value, edited));
+                saveErrors.Remove(edited); errors.SetError(edited, "");
+                if (ReferenceEquals(edited, smtpPassword) && changed)
+                { saveErrors.Remove(clearPassword); errors.SetError(clearPassword, ""); }
+                // Keep the full masked edit while typing: clearing on a debounce
+                // would turn the next typed character into a replacement password.
+                if (ReferenceEquals(edited, smtpPassword) && !smtpPassword.Focused) ClearPasswordEditor();
+                ShowSaveStatus(changed ? "Saved" : "");
+            }
+            catch (Exception ex)
+            {
+                string detail = ReferenceEquals(edited, smtpPassword)
+                    ? "SMTP password could not be saved. The previous password is unchanged."
+                    : ex.Message;
+                saveErrors[edited] = detail; errors.SetError(edited, detail);
+                ShowSaveStatus("");
+            }
+        }
+
+        private void PatchField(VanillaWeightAlertSettings value, Control edited)
+        {
+            if (ReferenceEquals(edited, autoCart)) value.AutoCartEnabled = autoCart.Checked;
+            else if (ReferenceEquals(edited, closeWhenComplete)) value.CloseClientWhenFarmingComplete = closeWhenComplete.Checked;
+            else if (ReferenceEquals(edited, autoThreshold)) value.AutoCartThresholdPercent = ReadNumber(autoThreshold);
+            else if (ReferenceEquals(edited, autoRearm)) value.AutoCartRearmPercent = ReadNumber(autoRearm);
+            else if (ReferenceEquals(edited, transferUse)) value.TransferUseItems = transferUse.Checked;
+            else if (ReferenceEquals(edited, transferEquip)) value.TransferEquipItems = transferEquip.Checked;
+            else if (ReferenceEquals(edited, transferEtc)) value.TransferEtcItems = transferEtc.Checked;
+            else if (ReferenceEquals(edited, autobattleStopHotkey))
+            {
+                value.AutobattleStopKey = autobattleStopKey; value.AutobattleStopCtrl = autobattleStopCtrl;
+                value.AutobattleStopAlt = autobattleStopAlt; value.AutobattleStopShift = autobattleStopShift;
+            }
+            else if (ReferenceEquals(edited, inventoryHotkey))
+            {
+                value.InventoryKey = inventoryKey; value.InventoryCtrl = inventoryCtrl;
+                value.InventoryAlt = inventoryAlt; value.InventoryShift = inventoryShift;
+            }
+            else if (ReferenceEquals(edited, cartHotkey))
+            {
+                value.CartKey = cartKey; value.CartCtrl = cartCtrl; value.CartAlt = cartAlt; value.CartShift = cartShift;
+            }
+            else if (ReferenceEquals(edited, enabled)) value.Enabled = enabled.Checked;
+            else if (ReferenceEquals(edited, threshold)) value.ThresholdPercent = ReadNumber(threshold);
+            else if (ReferenceEquals(edited, rearm)) value.RearmPercent = ReadNumber(rearm);
+            else if (ReferenceEquals(edited, pollSeconds)) value.PollSeconds = (int)ReadNumber(pollSeconds);
+            else if (ReferenceEquals(edited, cooldownMinutes)) value.CooldownMinutes = (int)ReadNumber(cooldownMinutes);
+            else if (ReferenceEquals(edited, smtpHost)) value.SmtpHost = smtpHost.Text.Trim();
+            else if (ReferenceEquals(edited, smtpPort)) value.SmtpPort = (int)ReadNumber(smtpPort);
+            else if (ReferenceEquals(edited, useSsl)) value.UseSsl = useSsl.Checked;
+            else if (ReferenceEquals(edited, smtpUser)) value.SmtpUser = smtpUser.Text.Trim();
+            else if (ReferenceEquals(edited, fromAddress)) value.FromAddress = ReadAddress(fromAddress);
+            else if (ReferenceEquals(edited, toAddress)) value.ToAddress = ReadAddress(toAddress);
+            else if (ReferenceEquals(edited, subjectPrefix)) value.SubjectPrefix = subjectPrefix.Text.Trim();
+            else if (ReferenceEquals(edited, smtpPassword))
+            {
+                if (!string.IsNullOrEmpty(smtpPassword.Text))
+                    value.ProtectedSmtpPassword = service.Store.ProtectPassword(smtpPassword.Text);
+            }
+            else throw new ArgumentException("Unknown Weight settings field.", nameof(edited));
+        }
+
+        private static decimal ReadNumber(NumericUpDown control)
+        {
+            return VanillaSettingsNumber.Read(control);
+        }
+
+        private static string ReadAddress(TextBox control)
+        {
+            string value = control.Text.Trim();
+            if (value.Length != 0)
+            {
+                try { new MailAddress(value); }
+                catch (FormatException) { throw new ArgumentException("Enter a valid e-mail address."); }
+            }
             return value;
         }
 
-        private void SaveSettings()
+        private void ShowSaveStatus(string success)
         {
-            VanillaWeightAlertSettings value = ReadSettings(); value.Validate(false); if (value.Enabled) value.Validate(true);
-            service.ApplySettings(value, true); loaded = service.Settings; smtpPassword.Clear();
-            bool milestoneMail = VanillaWeightAlertService.MilestoneMailConfigured(value);
-            status.Text = milestoneMail ? "Saved. SMTP ready." : "Saved. SMTP not configured.";
+            saveStatus.ForeColor = saveErrors.Count == 0 ? Color.DarkGreen : Color.Firebrick;
+            saveStatus.Text = saveErrors.Count == 0 ? success : "Not saved: " + saveErrors.Values.First();
+        }
+
+        private void ClearPassword()
+        {
+            if (disposed) return;
+            autoSave.Cancel(smtpPassword);
+            try
+            {
+                service.UpdateSettings(value => value.ProtectedSmtpPassword = "");
+                ClearPasswordEditor();
+                saveErrors.Remove(smtpPassword); errors.SetError(smtpPassword, "");
+                saveErrors.Remove(clearPassword); errors.SetError(clearPassword, "");
+                ShowSaveStatus("Password cleared");
+            }
+            catch
+            {
+                const string detail = "SMTP password could not be cleared. The previous password is unchanged.";
+                saveErrors[clearPassword] = detail; errors.SetError(clearPassword, detail); ShowSaveStatus("");
+            }
+        }
+
+        private void ClearPasswordEditor()
+        {
+            loading = true;
+            try { smtpPassword.Clear(); }
+            finally { loading = false; }
+        }
+
+        internal void FlushPendingSettings()
+        {
+            autoSave.Flush();
+            // A valid edit whose earlier write failed can be retried on close, without
+            // including any unrelated incomplete controls in the settings snapshot.
+            foreach (Control control in saveErrors.Keys.Where(control => !(control is Button)).ToArray()) SaveEditedField(control);
         }
 
         private enum HotkeyTarget { AutobattleStop, Inventory, Cart }
@@ -348,6 +508,8 @@ namespace _4RTools.Model.Vanilla
                 cartKey = (int)e.KeyCode; cartCtrl = e.Control; cartAlt = e.Alt; cartShift = e.Shift;
             }
             UpdateHotkeys(); e.SuppressKeyPress = e.Handled = true;
+            SaveField(target == HotkeyTarget.AutobattleStop ? autobattleStopHotkey
+                : target == HotkeyTarget.Inventory ? inventoryHotkey : cartHotkey);
         }
         private void UpdateHotkeys()
         {
@@ -370,7 +532,14 @@ namespace _4RTools.Model.Vanilla
         private async Task SendTestAsync()
         {
             if (disposed) return; test.Enabled = false; status.Text = "Sending SMTP test…";
-            try { VanillaWeightAlertSettings value = ReadSettings(); value.Validate(true); await Task.Run(() => service.SendTest(value)); if (!disposed) status.Text = "Test e-mail sent successfully."; }
+            try
+            {
+                FlushPendingSettings();
+                if (saveErrors.Count != 0) throw new InvalidOperationException("Complete the highlighted settings before sending a test.");
+                VanillaWeightAlertSettings value = service.Settings; value.Validate(true);
+                await Task.Run(() => service.SendTest(value));
+                if (!disposed) status.Text = "Test e-mail sent successfully.";
+            }
             catch (Exception ex) { if (!disposed) status.Text = "Test e-mail failed: " + ex.Message; }
             finally { if (!disposed) test.Enabled = true; }
         }
@@ -401,9 +570,17 @@ namespace _4RTools.Model.Vanilla
         private static void Add(TableLayoutPanel panel, int row, int column, string caption, Control control)
         { panel.Controls.Add(new Label { Text = caption, AutoSize = true, Margin = new Padding(3, 8, 6, 0) }, column, row); panel.Controls.Add(control, column + 1, row); }
         private static NumericUpDown Number(decimal min, decimal max, decimal value, int decimals)
-        { return new NumericUpDown { Minimum = min, Maximum = max, Value = value, DecimalPlaces = decimals, Width = 120 }; }
+        { return new VanillaSettingsNumber { Minimum = min, Maximum = max, Value = value, DecimalPlaces = decimals, Width = 120 }; }
         private static decimal Clamp(NumericUpDown control, decimal value) { return Math.Max(control.Minimum, Math.Min(control.Maximum, value)); }
         private void Guard(System.Action action) { try { action(); } catch (Exception ex) { status.Text = ex.Message; } }
-        protected override void Dispose(bool disposing) { if (disposing) { disposed = true; timer.Stop(); timer.Dispose(); help.Dispose(); } base.Dispose(disposing); }
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing && !disposed)
+            {
+                FlushPendingSettings();
+                disposed = true; autoSave.Dispose(); timer.Stop(); timer.Dispose(); errors.Dispose(); help.Dispose();
+            }
+            base.Dispose(disposing);
+        }
     }
 }

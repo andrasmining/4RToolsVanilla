@@ -685,11 +685,13 @@ namespace _4RTools.Model.Vanilla
                 // Recovery panels can hold older snapshots. Only the dedicated
                 // emergency setter edits these limits; unrelated saves retain them.
                 copy.FarmingEmergency = settings.FarmingEmergency.Clone();
+                // Persist before cancelling input or publishing runtime settings.
+                // A failed automatic save must leave the active configuration intact.
+                if (save) store.Save(copy);
                 if (IsMailOnlySettingsChange(settings, copy))
                 {
                     settings = copy;
                     foreach (Runtime runtime in runtimes.Values) runtime.Account = copy.Accounts.Single(account => account.Id == runtime.Account.Id);
-                    if (save) store.Save(settings);
                 }
                 else
                 {
@@ -714,7 +716,6 @@ namespace _4RTools.Model.Vanilla
                         runtime.MovementWatchdog.Reset(); ResetTerminalEvidence(runtime);
                     }
                     settings = copy; RebuildRuntimes();
-                    if (save) store.Save(settings);
                     RecreateTimer();
                 }
             }
@@ -1465,7 +1466,7 @@ namespace _4RTools.Model.Vanilla
         private readonly CheckBox startWithApp = new CheckBox { Text = "Start supervisor with 4RTools", AutoSize = true };
         private readonly CheckBox autoRecover = new CheckBox { Text = "Auto relaunch/relogin", AutoSize = true };
         private readonly CheckBox visualWatchdog = new CheckBox { Text = "Detect login screens/popups visually", AutoSize = true };
-        private readonly NumericUpDown movementRestartSeconds = new NumericUpDown { Minimum = 60, Maximum = 3600, Value = 180, Increment = 30, Width = 70 };
+        private readonly NumericUpDown movementRestartSeconds = new VanillaSettingsNumber { Minimum = 60, Maximum = 3600, Value = 180, Increment = 30, Width = 70 };
         private readonly DataGridView accounts = new DataGridView
         {
             Dock = DockStyle.Fill, ReadOnly = true, AllowUserToAddRows = false, AllowUserToDeleteRows = false,
@@ -1507,7 +1508,7 @@ namespace _4RTools.Model.Vanilla
             var switches = Flow(); switches.Controls.Add(startWithApp); switches.Controls.Add(autoRecover); switches.Controls.Add(visualWatchdog);
             switches.Controls.Add(new Label { Text = "Restart after no movement (sec)", AutoSize = true, Margin = new Padding(12, 8, 4, 0) }); switches.Controls.Add(movementRestartSeconds); top.Controls.Add(switches);
             var commands = Flow();
-            AddButton(commands, "Save", Save); AddButton(commands, "START SUPERVISOR", StartSupervisor); AddButton(commands, "STOP", () => supervisor.Stop());
+            AddButton(commands, "START SUPERVISOR", StartSupervisor); AddButton(commands, "STOP", () => supervisor.Stop());
             AddButton(commands, "DETECT RUNNING CLIENTS", DetectRunningClients); AddButton(commands, "OPEN LOG", OpenLog); AddButton(commands, "COPY LOG", CopyLog);
             runState.Font = new Font(Font, FontStyle.Bold); runState.Margin = new Padding(16, 8, 0, 0); commands.Controls.Add(runState); top.Controls.Add(commands);
             var tests = Flow(); AddButton(tests, "TEST STARTUP (SEQUENTIAL)", TestStartup); AddButton(tests, "ARM MANUAL NETWORK-DROP TEST", ArmManualNetworkDropTest);
@@ -1551,7 +1552,6 @@ namespace _4RTools.Model.Vanilla
             help.SetToolTip(accounts, "Your one or two configured account profiles. Select a row before using selected-account actions.");
             help.SetToolTip(status, "Runtime state only: account -> assigned PID -> recovery stage -> detected screen -> detail. These are not additional accounts.");
             help.SetToolTip(log, "Reconnect/test log. Secret contents are never written here.");
-            TipByText(this, "Save", "Save exactly the settings and account rows currently shown.");
             TipByText(this, "START SUPERVISOR", "Start continuous recovery monitoring now. Existing clients are adopted; missing clients can be relaunched.");
             TipByText(this, "STOP", "Stop automatic recovery. Running Vanilla clients stay open.");
             TipByText(this, "DETECT RUNNING CLIENTS", "Find currently running Vanilla MMO.exe processes and assign them to configured account rows.");
@@ -1586,22 +1586,25 @@ namespace _4RTools.Model.Vanilla
         }
         private void LoadFromSupervisor()
         {
-            settings = supervisor.Settings; launchPath.Text = settings.LaunchExecutable ?? ""; launchArgs.Text = settings.LaunchArguments ?? "";
-            proxy.SelectedItem = settings.Proxy; maxClients.Value = settings.MaxClients; startWithApp.Checked = settings.StartWith4RTools;
-            autoRecover.Checked = settings.AutoRecover; visualWatchdog.Checked = settings.VisualWatchdog;
-            movementRestartSeconds.Value = Math.Max(movementRestartSeconds.Minimum, Math.Min(movementRestartSeconds.Maximum, settings.MovementRestartSeconds)); RefreshAccounts();
+            bool previouslySuppressed = autosaveSuppress;
+            autosaveSuppress = true;
+            try
+            {
+                settings = supervisor.Settings; launchPath.Text = settings.LaunchExecutable ?? ""; launchArgs.Text = settings.LaunchArguments ?? "";
+                proxy.SelectedItem = settings.Proxy; maxClients.Value = settings.MaxClients; startWithApp.Checked = settings.StartWith4RTools;
+                autoRecover.Checked = settings.AutoRecover; visualWatchdog.Checked = settings.VisualWatchdog;
+                VanillaSettingsNumber.Load(movementRestartSeconds, Math.Max(movementRestartSeconds.Minimum, Math.Min(movementRestartSeconds.Maximum, settings.MovementRestartSeconds)));
+                RefreshAccounts();
+            }
+            finally { autosaveSuppress = previouslySuppressed; }
         }
         private void ReadTop()
         {
+            int restartSeconds = (int)VanillaSettingsNumber.Read(movementRestartSeconds);
             settings.LaunchExecutable = launchPath.Text.Trim(); settings.LaunchArguments = launchArgs.Text;
             settings.Proxy = proxy.SelectedItem is VanillaProxyRoute ? (VanillaProxyRoute)proxy.SelectedItem : VanillaProxyRoute.Tokyo;
             settings.MaxClients = (int)maxClients.Value; settings.StartWith4RTools = startWithApp.Checked; settings.AutoRecover = autoRecover.Checked;
-            settings.VisualWatchdog = visualWatchdog.Checked; settings.MovementRestartSeconds = (int)movementRestartSeconds.Value;
-        }
-        private void Save()
-        {
-            try { ReadTop(); supervisor.Apply(settings, true); LoadFromSupervisor(); MessageBox.Show(this, "Reconnect settings saved.", "4RTools Vanilla"); }
-            catch (Exception ex) { MessageBox.Show(this, ex.Message, "Cannot save reconnect settings", MessageBoxButtons.OK, MessageBoxIcon.Error); }
+            settings.VisualWatchdog = visualWatchdog.Checked; settings.MovementRestartSeconds = restartSeconds;
         }
         private void StartSupervisor()
         {
@@ -1635,28 +1638,9 @@ namespace _4RTools.Model.Vanilla
             string id = accounts.SelectedRows[0].Tag as string;
             return settings.Accounts.FirstOrDefault(a => string.Equals(a.Id, id, StringComparison.OrdinalIgnoreCase));
         }
-        private void AddAccount()
-        {
-            if (settings.Accounts.Count >= 2) { MessageBox.Show(this, "Vanilla allows two managed account profiles on this PC. Edit or remove an existing row first."); return; }
-            var account = new VanillaReconnectAccount { Label = "Client " + (settings.Accounts.Count + 1) };
-            using (var dialog = new VanillaReconnectAccountDialog(supervisor, account))
-            { if (dialog.ShowDialog(this) != DialogResult.OK) return; settings.Accounts.Add(dialog.Account); RefreshAccounts(); }
-        }
-        private void EditAccount()
-        {
-            var selected = SelectedAccount(); if (selected == null) return;
-            using (var dialog = new VanillaReconnectAccountDialog(supervisor, selected.Clone()))
-            {
-                if (dialog.ShowDialog(this) != DialogResult.OK) return;
-                int index = settings.Accounts.FindIndex(a => a.Id == selected.Id); settings.Accounts[index] = dialog.Account; RefreshAccounts();
-            }
-        }
-        private void RemoveAccount()
-        {
-            var selected = SelectedAccount(); if (selected == null) return;
-            if (settings.Accounts.Count <= 1) { MessageBox.Show(this, "Keep at least one account profile."); return; }
-            settings.Accounts.RemoveAll(a => a.Id == selected.Id); RefreshAccounts();
-        }
+        private void AddAccount() { AddAccountMinimal(); }
+        private void EditAccount() { EditAccountMinimal(); }
+        private void RemoveAccount() { RemoveAccountMinimal(); }
         private void ManualLogin()
         {
             var selected = SelectedAccount(); if (selected == null) return;
@@ -1786,71 +1770,4 @@ namespace _4RTools.Model.Vanilla
         }
     }
 
-    internal sealed class VanillaReconnectAccountDialog : Form
-    {
-        private readonly VanillaReconnectSupervisor supervisor;
-        private readonly CheckBox enabled = new CheckBox { Text = "Enabled on this PC", AutoSize = true };
-        private readonly TextBox label = new TextBox { Width = 260 };
-        private readonly TextBox user = new TextBox { Width = 260 };
-        private readonly TextBox password = new TextBox { Width = 260, UseSystemPasswordChar = true };
-        private readonly NumericUpDown slot = new NumericUpDown { Minimum = 1, Maximum = 15, Width = 80 };
-        private readonly TextBox hotkey = new TextBox { Width = 160, ReadOnly = true };
-        private int key;
-        private bool ctrl, alt, shift;
-        public VanillaReconnectAccount Account { get; private set; }
-        public VanillaReconnectAccountDialog(VanillaReconnectSupervisor supervisor, VanillaReconnectAccount account)
-        {
-            this.supervisor = supervisor; Account = account; Text = "Vanilla account"; Font = new Font("Segoe UI", 9F);
-            StartPosition = FormStartPosition.CenterParent; FormBorderStyle = FormBorderStyle.FixedDialog;
-            MaximizeBox = MinimizeBox = false; ClientSize = new Size(470, 360); KeyPreview = true; Build();
-            enabled.Checked = account.Enabled; label.Text = account.Label; user.Text = account.UserName; slot.Value = account.CharacterSlot ?? 1;
-            key = account.ResumeKey; ctrl = account.ResumeCtrl; alt = account.ResumeAlt; shift = account.ResumeShift; UpdateHotkey();
-            try { password.Text = supervisor.GetPassword(account); } catch { password.Text = ""; }
-            hotkey.KeyDown += CaptureHotkey;
-        }
-        private void Build()
-        {
-            var table = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(16), ColumnCount = 2, RowCount = 8 };
-            table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 140)); table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-            AddRow(table, 0, "", enabled); AddRow(table, 1, "Label", label); AddRow(table, 2, "Username", user); AddRow(table, 3, "Password", password);
-            AddRow(table, 4, "Character slot (1â€“15)", slot); AddRow(table, 5, "Resume hotkey", hotkey);
-            var hint = new Label { AutoSize = true, MaximumSize = new Size(290, 0), Text = "Click the hotkey box and press the combination (default Ctrl+2).", ForeColor = Color.DimGray };
-            table.Controls.Add(hint, 1, 6); var buttons = NewFlow();
-            var ok = new Button { Text = "Save", DialogResult = DialogResult.None, AutoSize = true };
-            var cancel = new Button { Text = "Cancel", DialogResult = DialogResult.Cancel, AutoSize = true };
-            ok.Click += Save; buttons.Controls.Add(ok); buttons.Controls.Add(cancel); table.Controls.Add(buttons, 1, 7);
-            Controls.Add(table); AcceptButton = ok; CancelButton = cancel;
-        }
-        private static FlowLayoutPanel NewFlow() { return new FlowLayoutPanel { AutoSize = true, FlowDirection = FlowDirection.LeftToRight }; }
-        private static void AddRow(TableLayoutPanel table, int row, string caption, Control control)
-        {
-            if (!string.IsNullOrEmpty(caption)) table.Controls.Add(new Label { Text = caption, AutoSize = true, Margin = new Padding(0, 7, 8, 0) }, 0, row);
-            table.Controls.Add(control, 1, row);
-        }
-        private void CaptureHotkey(object sender, KeyEventArgs e)
-        {
-            Keys candidate = e.KeyCode;
-            if (candidate == Keys.ControlKey || candidate == Keys.ShiftKey || candidate == Keys.Menu) return;
-            key = (int)candidate; ctrl = e.Control; alt = e.Alt; shift = e.Shift; UpdateHotkey(); e.SuppressKeyPress = true; e.Handled = true;
-        }
-        private void UpdateHotkey()
-        {
-            var parts = new List<string>(); if (ctrl) parts.Add("Ctrl"); if (alt) parts.Add("Alt"); if (shift) parts.Add("Shift");
-            parts.Add(((Keys)key).ToString()); hotkey.Text = string.Join("+", parts);
-        }
-        private void Save(object sender, EventArgs e)
-        {
-            try
-            {
-                if (string.IsNullOrWhiteSpace(label.Text)) throw new ArgumentException("Enter an account label.");
-                if (string.IsNullOrWhiteSpace(user.Text)) throw new ArgumentException("Enter the Vanilla username.");
-                if (string.IsNullOrEmpty(password.Text)) throw new ArgumentException("Enter the password.");
-                Account.Enabled = enabled.Checked; Account.Label = label.Text.Trim(); Account.UserName = user.Text.Trim();
-                Account.ProtectedPassword = supervisor.ProtectPassword(password.Text); Account.CharacterSlot = (int)slot.Value;
-                Account.ResumeKey = key; Account.ResumeCtrl = ctrl; Account.ResumeAlt = alt; Account.ResumeShift = shift;
-                DialogResult = DialogResult.OK; Close();
-            }
-            catch (Exception ex) { MessageBox.Show(this, ex.Message, "Account settings", MessageBoxButtons.OK, MessageBoxIcon.Error); }
-        }
-    }
 }
