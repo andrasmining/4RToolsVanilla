@@ -7,11 +7,52 @@ using Newtonsoft.Json;
 
 namespace _4RTools.Model.Vanilla
 {
+    public sealed class VanillaFarmingEmergencySettings
+    {
+        public decimal WeightAbovePercent { get; set; } = 50m;
+        public decimal SpBelowPercent { get; set; } = 25m;
+        public decimal HpBelowPercent { get; set; } = 50m;
+
+        public VanillaFarmingEmergencySettings Clone()
+        {
+            return new VanillaFarmingEmergencySettings
+            { WeightAbovePercent = WeightAbovePercent, SpBelowPercent = SpBelowPercent, HpBelowPercent = HpBelowPercent };
+        }
+
+        public void Validate()
+        {
+            if (WeightAbovePercent < 0 || WeightAbovePercent >= 100)
+                throw new ArgumentException("Emergency weight threshold must be at least 0% and below 100%.");
+            if (SpBelowPercent <= 0 || SpBelowPercent > 100)
+                throw new ArgumentException("Emergency SP threshold must be above 0% and at most 100%.");
+            if (HpBelowPercent <= 0 || HpBelowPercent > 100)
+                throw new ArgumentException("Emergency HP threshold must be above 0% and at most 100%.");
+            if (decimal.Round(WeightAbovePercent, 1) != WeightAbovePercent
+                || decimal.Round(SpBelowPercent, 1) != SpBelowPercent
+                || decimal.Round(HpBelowPercent, 1) != HpBelowPercent)
+                throw new ArgumentException("Emergency thresholds support increments of 0.1%.");
+        }
+
+        [JsonIgnore]
+        public string Conditions
+        {
+            get
+            {
+                return "Weight >" + Format(WeightAbovePercent) + "%, SP <" + Format(SpBelowPercent)
+                    + "% and HP <" + Format(HpBelowPercent) + "%";
+            }
+        }
+
+        private static string Format(decimal percent)
+        { return percent.ToString("0.############################", CultureInfo.InvariantCulture); }
+    }
+
     internal sealed class VanillaFarmingEmergencyEvidence
     {
         internal VanillaCharacterIdentity Identity;
         internal DateTimeOffset At;
         internal uint Weight, MaxWeight, Sp, MaxSp, Hp, MaxHp;
+        internal string Conditions;
         internal string Ratios
         {
             get
@@ -31,7 +72,13 @@ namespace _4RTools.Model.Vanilla
 
         internal static bool TryEvaluate(VanillaClientState state, int pid, DateTimeOffset now,
             out VanillaFarmingEmergencyEvidence evidence)
+        { return TryEvaluate(state, pid, now, new VanillaFarmingEmergencySettings(), out evidence); }
+
+        internal static bool TryEvaluate(VanillaClientState state, int pid, DateTimeOffset now,
+            VanillaFarmingEmergencySettings settings, out VanillaFarmingEmergencyEvidence evidence)
         {
+            if (settings == null) throw new ArgumentNullException(nameof(settings));
+            settings.Validate();
             evidence = null;
             if (state == null || state.IsDemo || state.Error != null || state.Fields == null
                 || pid <= 0 || state.ProcessId != pid || state.SessionId == Guid.Empty
@@ -51,11 +98,14 @@ namespace _4RTools.Model.Vanilla
             if (maxHp == 0 || hp > maxHp || maxSp == 0 || sp > maxSp
                 || VanillaWeightValidation.PairError(weight, maxWeight) != null) return false;
             // Decimal arithmetic preserves the strict boundaries without rounding or overflow.
-            if (weight * 100m <= maxWeight * 50m || sp * 100m >= maxSp * 25m || hp * 100m >= maxHp * 50m) return false;
+            if (weight * 100m <= maxWeight * settings.WeightAbovePercent
+                || sp * 100m >= maxSp * settings.SpBelowPercent
+                || hp * 100m >= maxHp * settings.HpBelowPercent) return false;
             evidence = new VanillaFarmingEmergencyEvidence
             {
                 Identity = identity, At = state.SampledAtUtc,
-                Weight = weight, MaxWeight = maxWeight, Sp = sp, MaxSp = maxSp, Hp = hp, MaxHp = maxHp
+                Weight = weight, MaxWeight = maxWeight, Sp = sp, MaxSp = maxSp, Hp = hp, MaxHp = maxHp,
+                Conditions = settings.Conditions
             };
             return true;
         }
@@ -77,6 +127,7 @@ namespace _4RTools.Model.Vanilla
             public string CharacterName { get; set; }
             public DateTimeOffset ObservedAt { get; set; }
             public string Ratios { get; set; }
+            public string Conditions { get; set; }
             public string Detail { get; set; }
             public string CloseState { get; set; } = "pending";
             [JsonIgnore] internal bool ClosePending;
@@ -94,6 +145,33 @@ namespace _4RTools.Model.Vanilla
             = new Dictionary<string, FarmingEmergencyHold>(StringComparer.Ordinal);
         private string farmingEmergencyPath;
         private string farmingEmergencyStoreFailure;
+        private int farmingEmergencySettingsGeneration;
+
+        public VanillaFarmingEmergencySettings FarmingEmergencySettings
+        { get { lock (gate) return settings.FarmingEmergency.Clone(); } }
+
+        public void SaveFarmingEmergencySettings(VanillaFarmingEmergencySettings value)
+        {
+            if (value == null) throw new ArgumentNullException(nameof(value));
+            VanillaFarmingEmergencySettings copy = value.Clone();
+            copy.Validate();
+            lock (gate)
+            {
+                if (disposed) throw new ObjectDisposedException(nameof(VanillaReconnectSupervisor));
+                VanillaReconnectSettings durable = settings.Clone();
+                durable.FarmingEmergency = copy;
+                // Publish only after the atomic store write succeeds. Preserve the
+                // current settings/runtime objects used by unrelated input leases.
+                store.Save(durable);
+                bool changed = settings.FarmingEmergency.WeightAbovePercent != copy.WeightAbovePercent
+                    || settings.FarmingEmergency.SpBelowPercent != copy.SpBelowPercent
+                    || settings.FarmingEmergency.HpBelowPercent != copy.HpBelowPercent;
+                settings.FarmingEmergency = copy;
+                if (changed) farmingEmergencySettingsGeneration++;
+            }
+            Log("Emergency farming limits saved: " + copy.Conditions + ". Existing emergency holds remain unchanged.");
+            RaiseUpdated();
+        }
 
         public bool HasFarmingEmergencyHolds
         { get { lock (gate) return farmingEmergencyStoreFailure != null || farmingEmergencyHolds.Count != 0; } }
@@ -104,10 +182,10 @@ namespace _4RTools.Model.Vanilla
             {
                 lock (gate)
                 {
-                    if (farmingEmergencyStoreFailure != null) return farmingEmergencyStoreFailure;
-                    return farmingEmergencyHolds.Count == 0
-                        ? "Emergency protection active: Weight >50%, SP <25% and HP <50% closes the affected client."
-                        : string.Join(" | ", farmingEmergencyHolds.Values.Select(hold => hold.CharacterName + ": " + hold.Detail));
+                    string active = "Emergency protection active: " + settings.FarmingEmergency.Conditions + " closes the affected client.";
+                    if (farmingEmergencyStoreFailure != null) return active + " " + farmingEmergencyStoreFailure;
+                    return farmingEmergencyHolds.Count == 0 ? active
+                        : active + " " + string.Join(" | ", farmingEmergencyHolds.Values.Select(hold => hold.CharacterName + ": " + hold.Detail));
                 }
             }
         }
@@ -184,7 +262,8 @@ namespace _4RTools.Model.Vanilla
                 bool alreadyHeld = key != null && farmingEmergencyHolds.TryGetValue(key, out hold);
                 if (alreadyHeld && !hold.PendingRestored) return true;
                 VanillaFarmingEmergencyEvidence evidence;
-                if (!VanillaFarmingEmergency.TryEvaluate(client.Snapshot, client.ProcessId, restartEnvironment.UtcNow, out evidence))
+                if (!VanillaFarmingEmergency.TryEvaluate(client.Snapshot, client.ProcessId, restartEnvironment.UtcNow,
+                    settings.FarmingEmergency, out evidence))
                     return alreadyHeld;
                 VanillaReconnectAccount[] accounts = settings.Accounts.Where(account => account.Enabled
                     && VanillaCharacterRoster.Matches(account, evidence.Identity, restartEnvironment.UtcNow)).ToArray();
@@ -205,7 +284,9 @@ namespace _4RTools.Model.Vanilla
                 hold.PendingRestored = false;
                 hold.CloseState = "pending";
                 hold.ObservedAt = evidence.At; hold.Ratios = evidence.Ratios;
-                hold.Detail = "EMERGENCY STOP: " + evidence.Ratios + ". Closing affected client; explicit emergency hold clear required.";
+                hold.Conditions = evidence.Conditions;
+                hold.Detail = "EMERGENCY STOP: " + evidence.Ratios + ". Limits: " + hold.Conditions
+                    + ". Closing affected client; explicit emergency hold clear required.";
                 runtime.MovementWatchdog.Reset(); runtime.MovementRecoveryPending = false;
                 runtime.NextRecoveryAt = null;
                 if (!runtime.ScriptRunning) runtime.RecoveryOwned = runtime.ClosingForRecovery = false;
@@ -222,7 +303,8 @@ namespace _4RTools.Model.Vanilla
                 Log(runtime.Account.Label + ": " + hold.Detail);
                 VanillaDebugLog.Write("EMERGENCY", "event=farming-emergency-triggered accountId=" + runtime.Account.Id
                     + " pid=" + client.ProcessId + " session=" + evidence.Identity.Session
-                    + " observed=" + evidence.At.ToString("O", CultureInfo.InvariantCulture) + " " + evidence.Ratios + ".");
+                    + " observed=" + evidence.At.ToString("O", CultureInfo.InvariantCulture) + " " + evidence.Ratios
+                    + "; limits=" + hold.Conditions + ".");
                 QueueFarmingEmergencyCloseLocked(runtime, client.ProcessId, evidence.Identity.Session, hold);
                 RaiseUpdated();
                 return true;
@@ -235,6 +317,7 @@ namespace _4RTools.Model.Vanilla
             VanillaReconnectSettings configuration = settings;
             int operation = runtime.ResumeOperationGeneration;
             int diagnosticOperation = diagnosticGeneration;
+            int emergencySettingsOperation = farmingEmergencySettingsGeneration;
             int? assignedPid = runtime.ProcessId;
             DateTime started;
             try { started = restartEnvironment.GetStartTimeUtc(pid); }
@@ -255,7 +338,9 @@ namespace _4RTools.Model.Vanilla
                         || !farmingEmergencyHolds.TryGetValue(key, out currentHold) || !ReferenceEquals(currentHold, hold)
                         || !runtimes.TryGetValue(runtime.Account.Id, out currentRuntime) || !ReferenceEquals(currentRuntime, runtime)
                         || !runtime.Account.Enabled || VanillaCharacterRoster.Key(runtime.Account) != key
-                        || (!closeIssued && runtime.ProcessId != assignedPid) || runtime.ResumeOperationGeneration != operation) return true;
+                        || (!closeIssued && (runtime.ProcessId != assignedPid
+                            || emergencySettingsOperation != farmingEmergencySettingsGeneration))
+                        || runtime.ResumeOperationGeneration != operation) return true;
                     // Once the pinned close was issued, only the owned handle can prove
                     // exit. The fleet removing an exited PID must not cancel that proof.
                     if (closeIssued) return false;
@@ -309,6 +394,7 @@ namespace _4RTools.Model.Vanilla
         {
             hold.CloseState = exited ? "closed" : error != null && error.StartsWith("Close cancelled", StringComparison.Ordinal) ? "cancelled" : "failed";
             hold.Detail = "EMERGENCY STOP: " + hold.Ratios + ". "
+                + (string.IsNullOrEmpty(hold.Conditions) ? "" : "Limits: " + hold.Conditions + ". ")
                 + (exited ? "Affected client exit confirmed; automatic relaunch blocked." : error)
                 + " Explicit emergency hold clear is required before resuming.";
             if (exited) hold.ConfirmedExitedPid = pid;

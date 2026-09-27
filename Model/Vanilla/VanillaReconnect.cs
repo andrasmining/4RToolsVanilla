@@ -126,6 +126,7 @@ namespace _4RTools.Model.Vanilla
         public int MaxRetryBackoffMs { get; set; } = 3600000;
         public int PopupCooldownMs { get; set; } = 5000;
         public int MovementRestartSeconds { get; set; } = 180;
+        public VanillaFarmingEmergencySettings FarmingEmergency { get; set; } = new VanillaFarmingEmergencySettings();
         public VanillaUiAnchors Anchors { get; set; } = new VanillaUiAnchors();
         [JsonProperty(ObjectCreationHandling = ObjectCreationHandling.Replace)]
         public List<VanillaReconnectAccount> Accounts { get; set; } = new List<VanillaReconnectAccount>();
@@ -189,6 +190,8 @@ namespace _4RTools.Model.Vanilla
             if (PopupCooldownMs < 1000 || PopupCooldownMs > 60000) throw new ArgumentException("Popup cooldown must be between 1 and 60 seconds.");
             if (MovementRestartSeconds < 60 || MovementRestartSeconds > 3600)
                 throw new ArgumentException("No-movement restart threshold must be between 60 and 3600 seconds.");
+            if (FarmingEmergency == null) throw new ArgumentException("Emergency farming settings are missing.");
+            FarmingEmergency.Validate();
             if (Anchors == null) throw new ArgumentException("UI anchors are missing.");
             Check01(Anchors.ServiceListX); Check01(Anchors.ServiceListY);
             Check01(Anchors.UserNameX); Check01(Anchors.UserNameY);
@@ -676,6 +679,9 @@ namespace _4RTools.Model.Vanilla
             var copy = value.Clone(); copy.Validate();
             lock (gate)
             {
+                // Recovery panels can hold older snapshots. Only the dedicated
+                // emergency setter edits these limits; unrelated saves retain them.
+                copy.FarmingEmergency = settings.FarmingEmergency.Clone();
                 if (IsMailOnlySettingsChange(settings, copy))
                 {
                     settings = copy;

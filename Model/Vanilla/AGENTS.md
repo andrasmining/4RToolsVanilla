@@ -112,14 +112,18 @@ not only the reconnect session log.
   its blue selection. Never treat missing captures as successful dismissal.
 
 - Critical farming emergency overrides every Cart resume/retry and recovery path:
-  a single fresh verified same-client snapshot with carried weight >50%, SP <25%
-  and HP <50% closes that exact creation-time-pinned client immediately, without
+  a single fresh verified same-client snapshot meeting all three editable limits
+  (defaults: carried weight >50%, SP <25% and HP <50%) closes that exact
+  creation-time-pinned client immediately, without
   a graceful-close delay or input-lease wait. Protect enabled saved identities
   even with supervision/Cart/Mail OFF. Retain affected input ownership until
   mouse/key cleanup finishes, preserve healthy siblings, log exact resource
   ratios and close evidence, and durably hold automatic relaunch/resume until
   the separate explicit emergency-clear action. Missing/stale/ambiguous evidence
   must never authorize closing a process; native denial has no alternate path.
+  Keep these thresholds on the Weight tab with independent auto-save, preserve
+  them through unrelated settings edits, and retain the original trigger limits
+  in each hold. Threshold edits must not clear holds or reset healthy recovery.
 
 - Weight-triggered Cart maintenance remains ordinary UI input driven by verified read-only state. Use the shared fleet reader for carried weight, Cart current/max weight and movement; never read inventory item identity/count from memory and never write game memory. For the current verified Vanilla fingerprint, Cart Current/Max are module offsets 0xD34B3C/0xD34B40 as UInt32. Accept Cart maximum only when it equals the fixed capacity 10000 and require 0 <= current <= maximum.
 - Autobattle STOP, Inventory and Cart hotkeys and the Use/Equip/Etc category selection are configuration, not hard-coded assumptions. The Weight Autobattle STOP hotkey defaults to Alt+3 and is persisted independently from the character ResumeHotkey. Detect the actual opened panel, slot geometry and four-tab category rail from the current client image. Do not interpret the permanently blue Fav styling as selection; identify the active category structurally from the tab whose right border is open into the Inventory body while inactive tabs retain that border. Category clicks must target visually detected tab bounds and positively verify the resulting selected-tab state; never derive category clicks from fixed/percentage panel coordinates. If a detected category click is not verified, re-detect the rail and retry only through a small bounded deterministic set of safe interior points; do not add stochastic click/timing behavior for anti-detection. Timing waits should poll observed UI state with bounded intervals rather than rely on long blind sleeps. Vanilla compacts category contents to the first slot, so classify only that first slot against a fresh detected empty-slot reference. Require two consecutive Occupied observations before a drag and two consecutive Empty observations before advancing; ambiguous state fails closed.

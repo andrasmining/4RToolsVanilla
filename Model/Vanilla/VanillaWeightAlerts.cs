@@ -237,6 +237,8 @@ namespace _4RTools.Model.Vanilla
         public IReadOnlyList<VanillaWeightObservation> Latest { get { lock (gate) return latest.ToArray(); } }
         public VanillaWeightAlertSettings Settings { get { lock (gate) return settings.Clone(); } }
         public string EmergencyStatus { get { return supervisor.FarmingEmergencyStatus; } }
+        public VanillaFarmingEmergencySettings EmergencySettings { get { return supervisor.FarmingEmergencySettings; } }
+        public void SaveEmergencySettings(VanillaFarmingEmergencySettings value) { supervisor.SaveFarmingEmergencySettings(value); }
         public bool HasEmergencyHolds { get { return supervisor.HasFarmingEmergencyHolds; } }
         public void ClearEmergencyHolds() { supervisor.ClearFarmingEmergencyHolds(); }
 

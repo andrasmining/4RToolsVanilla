@@ -41,6 +41,11 @@ namespace _4RTools.Model.Vanilla
         private readonly Button test = new Button { Text = "SEND TEST E-MAIL", AutoSize = true };
         private readonly Button clearHold = new Button { Text = "CLEAR WEIGHT/CART HOLD", AutoSize = true };
         private readonly Button clearEmergency = new Button { Text = "CLEAR EMERGENCY HOLD", AutoSize = true };
+        private readonly NumericUpDown emergencyWeight = Number(0, 99.9M, 50, 1);
+        private readonly NumericUpDown emergencySp = Number(0.1M, 100, 25, 1);
+        private readonly NumericUpDown emergencyHp = Number(0.1M, 100, 50, 1);
+        private readonly Label emergencySaveStatus = new Label { AutoSize = true, MaximumSize = new Size(500, 0),
+            ForeColor = Color.DimGray, Margin = new Padding(8, 8, 3, 3) };
         private readonly Label emergencyStatus = new Label { AutoSize = true, MaximumSize = new Size(1100, 0), ForeColor = Color.Firebrick };
         private readonly Label status = new Label { AutoSize = true, MaximumSize = new Size(1150, 0), ForeColor = Color.DimGray };
         private readonly DataGridView live = new DataGridView
@@ -51,13 +56,24 @@ namespace _4RTools.Model.Vanilla
         private readonly Timer timer = new Timer { Interval = 1000 };
         private readonly ToolTip help = new ToolTip { ShowAlways = true, AutoPopDelay = 30000 };
         private VanillaWeightAlertSettings loaded;
-        private bool disposed;
+        private bool disposed, loadingEmergency;
+        private DateTime emergencySavedUntil;
 
         public VanillaWeightAlertsPanel(VanillaWeightAlertService service)
         {
             this.service = service ?? throw new ArgumentNullException(nameof(service));
             Dock = DockStyle.Fill; BackColor = Color.White; AutoScroll = true;
-            BuildLayout(); LoadSettings();
+            BuildLayout(); LoadSettings(); LoadEmergencySettings();
+            foreach (NumericUpDown control in new[] { emergencyWeight, emergencySp, emergencyHp })
+            {
+                control.Increment = 0.1M;
+                control.Validated += (s, e) => SaveEmergencySettings(control);
+                control.KeyDown += (s, e) =>
+                {
+                    if (e.KeyCode != Keys.Enter) return;
+                    SaveEmergencySettings(control); e.SuppressKeyPress = e.Handled = true;
+                };
+            }
             save.Click += (s, e) => Guard(SaveSettings);
             test.Click += async (s, e) => await SendTestAsync();
             clearHold.Click += (s, e) => service.ClearManualHolds();
@@ -71,12 +87,16 @@ namespace _4RTools.Model.Vanilla
 
         private void BuildLayout()
         {
-            var root = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(14), ColumnCount = 1, RowCount = 5 };
+            // Top-docked content grows to its preferred height so AutoScroll can expose
+            // every action on shorter desktops instead of squeezing the final rows.
+            var root = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                MinimumSize = new Size(1050, 0), Padding = new Padding(14), ColumnCount = 1, RowCount = 6 };
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-            root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
             var title = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = Padding.Empty };
             title.Controls.Add(new Label { AutoSize = true, Font = new Font("Segoe UI", 10F, FontStyle.Bold), Text = "Weight / Cart management" });
@@ -90,24 +110,95 @@ namespace _4RTools.Model.Vanilla
             help.SetToolTip(clearEmergency, "Explicitly clear emergency holds after inspecting the affected characters. Recovery may then restart them. Weight/Cart hold-clear does not clear emergency holds.");
             root.Controls.Add(title, 0, 0);
 
-            root.Controls.Add(BuildCartGroup(), 0, 1);
-            root.Controls.Add(BuildMailGroup(), 0, 2);
+            root.Controls.Add(BuildEmergencyGroup(), 0, 1);
+            root.Controls.Add(BuildCartGroup(), 0, 2);
+            root.Controls.Add(BuildMailGroup(), 0, 3);
 
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Margin = new Padding(0, 8, 0, 0) };
             buttons.Controls.Add(save); buttons.Controls.Add(test); buttons.Controls.Add(clearHold); buttons.Controls.Add(clearEmergency); buttons.Controls.Add(status);
-            root.Controls.Add(buttons, 0, 3);
+            root.Controls.Add(buttons, 0, 4);
 
             live.Columns.Add("Client", "Client"); live.Columns.Add("Weight", "Weight"); live.Columns.Add("Percent", "%");
             live.Columns.Add("Cart", "Cart"); live.Columns.Add("CartPercent", "Cart %"); live.Columns.Add("Verification", "State");
-            var liveHost = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2 };
-            liveHost.RowStyles.Add(new RowStyle(SizeType.AutoSize)); liveHost.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            var liveHost = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 1, RowCount = 2 };
+            liveHost.RowStyles.Add(new RowStyle(SizeType.AutoSize)); liveHost.RowStyles.Add(new RowStyle(SizeType.Absolute, 100));
             emergencyStatus.Margin = new Padding(0, 10, 0, 4);
-            help.SetToolTip(emergencyStatus, "Always active for enabled character rows while 4RTools runs, including with Recovery and Cart OFF. Fresh verified weight >50%, SP <25%, and HP <50% together immediately close only the affected client. No automatic restart until explicitly cleared.");
+            help.SetToolTip(emergencyStatus, "Always active for enabled character rows while 4RTools runs, including with Recovery and Cart OFF. All three configured emergency limits must be crossed in the same fresh verified observation. Only that client closes; no automatic restart until its emergency hold is explicitly cleared.");
             liveHost.Controls.Add(emergencyStatus, 0, 0);
-            liveHost.Controls.Add(live, 0, 1); root.Controls.Add(liveHost, 0, 4);
+            liveHost.Controls.Add(live, 0, 1); root.Controls.Add(liveHost, 0, 5);
             Controls.Add(root);
+            // Docked children do not contribute their minimum width to WinForms'
+            // automatic scroll extent; make the two-column settings width explicit.
+            AutoScrollMinSize = new Size(root.MinimumSize.Width, 0);
+            root.SizeChanged += (s, e) => AutoScrollMinSize = new Size(root.MinimumSize.Width, 0);
 
             ConfigureHelp();
+        }
+
+        private Control BuildEmergencyGroup()
+        {
+            var group = new GroupBox { Text = "Emergency stop — all three required (AND) • auto-save",
+                Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(10) };
+            var row = new FlowLayoutPanel { Dock = DockStyle.Top, AutoSize = true, WrapContents = true, Margin = Padding.Empty };
+            AddEmergencyField(row, "Weight above %", emergencyWeight);
+            AddEmergencyField(row, "SP below %", emergencySp);
+            AddEmergencyField(row, "HP below %", emergencyHp);
+            row.Controls.Add(emergencySaveStatus); group.Controls.Add(row);
+            string description = "Close only the affected client when Weight is strictly above its limit AND SP is strictly below its limit AND HP is strictly below its limit. Equality does not trigger. Saves independently when you leave a field or press Enter; pending Cart/mail edits are unchanged. Changing limits does not clear existing emergency holds.";
+            help.SetToolTip(group, description);
+            foreach (NumericUpDown control in new[] { emergencyWeight, emergencySp, emergencyHp }) help.SetToolTip(control, description);
+            return group;
+        }
+
+        private static void AddEmergencyField(FlowLayoutPanel row, string caption, NumericUpDown control)
+        {
+            control.Width = 90;
+            var field = new FlowLayoutPanel { AutoSize = true, WrapContents = false, Margin = new Padding(0, 0, 12, 0) };
+            field.Controls.Add(new Label { Text = caption, AutoSize = true, Margin = new Padding(3, 8, 6, 0) });
+            field.Controls.Add(control); row.Controls.Add(field);
+        }
+
+        private void LoadEmergencySettings()
+        {
+            loadingEmergency = true;
+            try
+            {
+                var value = service.EmergencySettings;
+                emergencyWeight.Value = value.WeightAbovePercent;
+                emergencySp.Value = value.SpBelowPercent;
+                emergencyHp.Value = value.HpBelowPercent;
+            }
+            finally { loadingEmergency = false; }
+        }
+
+        private void SaveEmergencySettings(NumericUpDown edited)
+        {
+            if (disposed || loadingEmergency) return;
+            try
+            {
+                // Value commits the NumericUpDown edit only at validation/Enter.
+                // No ValueChanged handler persists partially typed numbers.
+                var active = service.EmergencySettings;
+                var value = active.Clone();
+                if (ReferenceEquals(edited, emergencyWeight)) value.WeightAbovePercent = edited.Value;
+                else if (ReferenceEquals(edited, emergencySp)) value.SpBelowPercent = edited.Value;
+                else if (ReferenceEquals(edited, emergencyHp)) value.HpBelowPercent = edited.Value;
+                else throw new ArgumentException("Unknown emergency field.", nameof(edited));
+                if (value.WeightAbovePercent == active.WeightAbovePercent && value.SpBelowPercent == active.SpBelowPercent
+                    && value.HpBelowPercent == active.HpBelowPercent) return;
+                service.SaveEmergencySettings(value);
+                LoadEmergencySettings();
+                emergencySaveStatus.ForeColor = Color.DarkGreen; emergencySaveStatus.Text = "Saved";
+                emergencySavedUntil = DateTime.UtcNow.AddSeconds(5);
+                RefreshStatus();
+            }
+            catch (Exception ex)
+            {
+                LoadEmergencySettings();
+                emergencySavedUntil = DateTime.MinValue;
+                emergencySaveStatus.ForeColor = Color.Firebrick;
+                emergencySaveStatus.Text = "Not saved: " + ex.Message;
+            }
         }
 
         private void ConfigureHelp()
@@ -275,6 +366,8 @@ namespace _4RTools.Model.Vanilla
 
         private void RefreshStatus()
         {
+            if (emergencySavedUntil != DateTime.MinValue && DateTime.UtcNow >= emergencySavedUntil)
+            { emergencySaveStatus.Text = ""; emergencySavedUntil = DateTime.MinValue; }
             emergencyStatus.Text = service.EmergencyStatus;
             emergencyStatus.ForeColor = service.HasEmergencyHolds ? Color.Firebrick : Color.DimGray;
             clearEmergency.Enabled = service.HasEmergencyHolds;

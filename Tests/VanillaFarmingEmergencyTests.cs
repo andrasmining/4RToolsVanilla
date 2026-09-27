@@ -4,6 +4,8 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using Newtonsoft.Json;
+using Newtonsoft.Json.Linq;
 using _4RTools.Model.Vanilla;
 
 namespace Vanilla.Diagnostics.Tests
@@ -17,6 +19,17 @@ namespace Vanilla.Diagnostics.Tests
         {
             passed = failed = 0;
             Test("Emergency requires all three strict thresholds", Thresholds);
+            Test("Emergency defaults and legacy settings retain original limits", SettingsDefaults);
+            Test("Emergency settings reject null and out-of-range limits", SettingsValidation);
+            Test("Custom decimal emergency limits preserve strict AND boundaries", CustomThresholds);
+            Test("Emergency limits persist across restart and return isolated snapshots", SettingsPersistence);
+            Test("Unrelated stale Recovery saves retain the latest emergency limits", StaleRecoverySave);
+            Test("Emergency settings save preserves runtimes, leases and existing holds", SettingsIsolation);
+            Test("Failed emergency settings save leaves active limits and queued close unchanged", SettingsSaveFailure);
+            Test("Changed emergency limits cancel an unissued close without clearing its history", ChangedLimitsCancelQueuedClose);
+            Test("Emergency limit changes after native close retain exit confirmation", ChangedLimitsAfterIssuedClose);
+            Test("Saving unchanged emergency limits does not cancel a queued close", UnchangedLimitsKeepQueuedClose);
+            Test("Legacy holds without configured-limit history remain compatible", LegacyHold);
             Test("Emergency accepts verified zero HP and SP", ZeroVitals);
             Test("Emergency rejects stale, future, demo and errored samples", InvalidSamples);
             Test("Emergency rejects every unavailable, unverified or mixed-time field", InvalidFields);
@@ -78,6 +91,191 @@ namespace Vanilla.Diagnostics.Tests
             foreach (uint sp in new[] { 250U, 251U, 1000U }) Assert(!Danger(State(sp: sp)), "SP boundary was inclusive.");
             foreach (uint hp in new[] { 500U, 501U, 1000U }) Assert(!Danger(State(hp: hp)), "HP boundary was inclusive.");
             Assert(Danger(State(weight: 501, sp: 249, hp: 499)), "Strict values just inside thresholds were rejected.");
+        }
+
+        private static VanillaFarmingEmergencySettings CustomLimits()
+        { return new VanillaFarmingEmergencySettings { WeightAbovePercent = 63.3m, SpBelowPercent = 17.5m, HpBelowPercent = 42.7m }; }
+
+        private static void AssertLimits(VanillaFarmingEmergencySettings value, decimal weight = 50m, decimal sp = 25m, decimal hp = 50m)
+        { Assert(value != null && value.WeightAbovePercent == weight && value.SpBelowPercent == sp && value.HpBelowPercent == hp); }
+
+        private static void RejectSettings(Action action)
+        { try { action(); } catch (ArgumentException) { return; } throw new Exception("Invalid emergency settings were accepted."); }
+
+        private static void SettingsDefaults()
+        {
+            var settings = VanillaReconnectSettings.CreateDefault();
+            AssertLimits(settings.FarmingEmergency);
+            Assert(settings.FarmingEmergency.Conditions == "Weight >50%, SP <25% and HP <50%");
+            var serialized = JObject.FromObject(settings);
+            serialized.Remove("FarmingEmergency");
+            var legacy = JsonConvert.DeserializeObject<VanillaReconnectSettings>(serialized.ToString());
+            legacy.Validate(); AssertLimits(legacy.FarmingEmergency);
+            settings.FarmingEmergency = CustomLimits();
+            var clone = settings.Clone();
+            AssertLimits(clone.FarmingEmergency, 63.3m, 17.5m, 42.7m);
+            clone.FarmingEmergency.WeightAbovePercent = 1;
+            Assert(settings.FarmingEmergency.WeightAbovePercent == 63.3m, "Reconnect clone shared mutable emergency settings.");
+            Assert(JObject.FromObject(settings.FarmingEmergency)["Conditions"] == null, "Computed conditions were persisted as a second setting.");
+        }
+
+        private static void SettingsValidation()
+        {
+            foreach (decimal weight in new[] { -0.1m, 100m, 101m })
+                RejectSettings(() => new VanillaFarmingEmergencySettings { WeightAbovePercent = weight }.Validate());
+            foreach (decimal vital in new[] { -0.1m, 0m, 100.1m })
+            {
+                RejectSettings(() => new VanillaFarmingEmergencySettings { SpBelowPercent = vital }.Validate());
+                RejectSettings(() => new VanillaFarmingEmergencySettings { HpBelowPercent = vital }.Validate());
+            }
+            new VanillaFarmingEmergencySettings { WeightAbovePercent = 0, SpBelowPercent = 100, HpBelowPercent = 100 }.Validate();
+            new VanillaFarmingEmergencySettings { WeightAbovePercent = 99.9m, SpBelowPercent = 0.1m, HpBelowPercent = 0.1m }.Validate();
+            RejectSettings(() => new VanillaFarmingEmergencySettings { WeightAbovePercent = 99.99m }.Validate());
+            RejectSettings(() => new VanillaFarmingEmergencySettings { SpBelowPercent = 0.05m }.Validate());
+            RejectSettings(() => new VanillaFarmingEmergencySettings { HpBelowPercent = 42.75m }.Validate());
+            var settings = VanillaReconnectSettings.CreateDefault(); settings.FarmingEmergency = null;
+            RejectSettings(settings.Validate);
+            var serialized = JObject.FromObject(VanillaReconnectSettings.CreateDefault()); serialized["FarmingEmergency"] = JValue.CreateNull();
+            RejectSettings(() => JsonConvert.DeserializeObject<VanillaReconnectSettings>(serialized.ToString()).Validate());
+            using (var h = new Harness())
+            {
+                RejectSettings(() => h.Supervisor.SaveFarmingEmergencySettings(null));
+                RejectSettings(() => h.Supervisor.SaveFarmingEmergencySettings(new VanillaFarmingEmergencySettings { SpBelowPercent = 0 }));
+                AssertLimits(h.Supervisor.FarmingEmergencySettings);
+                File.WriteAllText(Path.Combine(h.Root, "VanillaReconnect", "reconnect.json"), serialized.ToString());
+                RejectSettings(() => new VanillaReconnectStore(h.Root).Load());
+            }
+        }
+
+        private static void CustomThresholds()
+        {
+            var limits = CustomLimits();
+            foreach (var sample in new[] { State(weight: 633, sp: 174, hp: 426), State(weight: 634, sp: 175, hp: 426),
+                State(weight: 634, sp: 174, hp: 427) })
+            {
+                VanillaFarmingEmergencyEvidence ignored;
+                Assert(!VanillaFarmingEmergency.TryEvaluate(sample, 101, sample.SampledAtUtc, limits, out ignored),
+                    "A custom threshold boundary was inclusive or AND conditions were weakened.");
+            }
+            var state = State(weight: 634, sp: 174, hp: 426);
+            VanillaFarmingEmergencyEvidence evidence;
+            Assert(VanillaFarmingEmergency.TryEvaluate(state, 101, state.SampledAtUtc, limits, out evidence));
+            Assert(evidence.Conditions == "Weight >63.3%, SP <17.5% and HP <42.7%");
+            limits.WeightAbovePercent = 90;
+            Assert(evidence.Conditions.Contains("63.3"), "Evidence history changed with a mutable settings object.");
+            using (var h = new Harness())
+            {
+                h.Supervisor.SaveFarmingEmergencySettings(CustomLimits());
+                Assert(!h.Observe(State()), "Production evaluation ignored configured limits.");
+                Assert(h.Observe(State(weight: 634, sp: 174, hp: 426)) && h.E.Work.Count == 1);
+            }
+        }
+
+        private static void SettingsPersistence()
+        {
+            using (var h = new Harness())
+            {
+                var value = CustomLimits(); h.Supervisor.SaveFarmingEmergencySettings(value);
+                value.WeightAbovePercent = 1;
+                var snapshot = h.Supervisor.FarmingEmergencySettings; snapshot.SpBelowPercent = 1;
+                AssertLimits(h.Supervisor.FarmingEmergencySettings, 63.3m, 17.5m, 42.7m);
+                h.Restart(); AssertLimits(h.Supervisor.FarmingEmergencySettings, 63.3m, 17.5m, 42.7m);
+                Assert(h.Supervisor.FarmingEmergencyStatus.Contains(CustomLimits().Conditions));
+            }
+        }
+
+        private static void StaleRecoverySave()
+        {
+            using (var h = new Harness())
+            {
+                var cached = h.Supervisor.Settings;
+                h.Supervisor.SaveFarmingEmergencySettings(CustomLimits());
+                cached.PollMs += 500; h.Supervisor.Apply(cached, true);
+                AssertLimits(h.Supervisor.FarmingEmergencySettings, 63.3m, 17.5m, 42.7m);
+                h.Restart(); AssertLimits(h.Supervisor.FarmingEmergencySettings, 63.3m, 17.5m, 42.7m);
+                Assert(h.Supervisor.Settings.PollMs == cached.PollMs, "Unrelated Recovery setting did not save.");
+            }
+        }
+
+        private static void SettingsIsolation()
+        {
+            using (var h = new Harness())
+            {
+                Assert(h.Observe()); h.E.Work.Dequeue()();
+                Set(h.B, "ProcessId", (int?)102); Set(h.B, "ScriptRunning", true); Set(h.B, "RecoveryOwned", true);
+                object settings = Get(h.Supervisor, "settings"), runtimes = Get(h.Supervisor, "runtimes");
+                int diagnostic = (int)Get(h.Supervisor, "diagnosticGeneration"), resume = (int)Get(h.Supervisor, "resumeVerificationGeneration");
+                string historic = (string)Get(h.A, "Detail");
+                h.Supervisor.SaveFarmingEmergencySettings(CustomLimits());
+                Assert(ReferenceEquals(settings, Get(h.Supervisor, "settings")) && ReferenceEquals(runtimes, Get(h.Supervisor, "runtimes")));
+                Assert((int)Get(h.Supervisor, "diagnosticGeneration") == diagnostic && (int)Get(h.Supervisor, "resumeVerificationGeneration") == resume);
+                Assert((int?)Get(h.B, "ProcessId") == 102 && (bool)Get(h.B, "ScriptRunning") && (bool)Get(h.B, "RecoveryOwned"));
+                Assert(h.HeldA && !h.HeldB && (string)Get(h.A, "Detail") == historic, "Settings save cleared or rewrote an existing hold.");
+                h.Restart(); Assert(h.HeldA && h.Supervisor.FarmingEmergencyStatus.Contains("Limits: Weight >50%, SP <25% and HP <50%"));
+                Assert(h.Supervisor.FarmingEmergencyStatus.Contains(CustomLimits().Conditions));
+            }
+        }
+
+        private static void SettingsSaveFailure()
+        {
+            using (var h = new Harness())
+            {
+                Assert(h.Observe());
+                string path = Path.Combine(h.Root, "VanillaReconnect", "reconnect.json");
+                string before = File.ReadAllText(path);
+                Directory.CreateDirectory(path + ".tmp");
+                try { h.Supervisor.SaveFarmingEmergencySettings(CustomLimits()); throw new Exception("Undurable limits became active."); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+                AssertLimits(h.Supervisor.FarmingEmergencySettings);
+                Assert(File.ReadAllText(path) == before);
+                h.E.Work.Dequeue()(); Assert(h.HeldA && h.E.Closed.SequenceEqual(new[] { 101 }), "Failed save cancelled an already authorized close.");
+            }
+        }
+
+        private static void ChangedLimitsCancelQueuedClose()
+        {
+            using (var h = new Harness())
+            {
+                Assert(h.Observe()); h.Supervisor.SaveFarmingEmergencySettings(CustomLimits()); h.E.Work.Dequeue()();
+                Assert(h.HeldA && h.E.Closed.Count == 0 && h.Supervisor.FarmingEmergencyStatus.Contains("Close cancelled"));
+                h.Restart(); Assert(h.HeldA && h.E.Work.Count == 0);
+                Assert(h.Supervisor.FarmingEmergencyStatus.Contains("Limits: Weight >50%, SP <25% and HP <50%"));
+            }
+        }
+
+        private static void ChangedLimitsAfterIssuedClose()
+        {
+            using (var h = new Harness())
+            {
+                h.E.AfterOwned = () => h.Supervisor.SaveFarmingEmergencySettings(CustomLimits());
+                Assert(h.Observe()); h.E.Work.Dequeue()();
+                Assert(h.HeldA && h.E.Closed.SequenceEqual(new[] { 101 }) && h.Forgotten.SequenceEqual(new[] { 101 }));
+                Assert(h.Supervisor.FarmingEmergencyStatus.Contains("exit confirmed"), "Threshold edit cancelled issued native-close exit confirmation.");
+            }
+        }
+
+        private static void UnchangedLimitsKeepQueuedClose()
+        {
+            using (var h = new Harness())
+            {
+                Assert(h.Observe()); h.Supervisor.SaveFarmingEmergencySettings(h.Supervisor.FarmingEmergencySettings); h.E.Work.Dequeue()();
+                Assert(h.E.Closed.SequenceEqual(new[] { 101 }) && h.HeldA);
+            }
+        }
+
+        private static void LegacyHold()
+        {
+            using (var h = new Harness())
+            {
+                Assert(h.Observe()); h.E.Work.Dequeue()();
+                string path = Path.Combine(h.Root, "VanillaReconnect", "farming-emergency-holds.json");
+                var document = JObject.Parse(File.ReadAllText(path));
+                foreach (JObject hold in document["Holds"])
+                { hold.Remove("Conditions"); hold["Detail"] = "EMERGENCY STOP: legacy evidence; explicit clear required."; }
+                File.WriteAllText(path, document.ToString()); h.Restart();
+                Assert(h.HeldA && !h.HeldB && h.Supervisor.FarmingEmergencyStatus.Contains("legacy evidence"));
+            }
         }
         private static void ZeroVitals() { Assert(Danger(State(sp: 0, hp: 0)), "Verified zero values must not become unknown."); }
         private static void InvalidSamples()

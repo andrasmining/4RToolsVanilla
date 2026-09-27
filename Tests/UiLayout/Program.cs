@@ -57,6 +57,7 @@ internal static class UiLayoutHarness
                 Check(recovery != null, "Production Recovery form was not embedded by Container startup.");
                 CheckWorkspacePolicy(main, recovery);
                 CheckWeightCartHotkeys(main);
+                CheckEmergencySettings(main);
                 SeedFleet(main);
                 RunCase(main, recovery, 1920, 1020, 2, 1F, false);
                 CheckRecoverySplitter(main, recovery);
@@ -192,6 +193,116 @@ internal static class UiLayoutHarness
             host.Close();
         }
         report.AppendLine("CASE 23 Weight/Cart hotkeys: dedicated Autobattle STOP visible as Alt+3; Inventory Alt+E; Cart Alt+W.");
+    }
+
+    private static void CheckEmergencySettings(Form main)
+    {
+        caseNumber++;
+        object service = Field(main, "integratedWeightAlertService");
+        object supervisor = Field(service, "supervisor");
+        Type panelType = app.GetType("_4RTools.Model.Vanilla.VanillaWeightAlertsPanel", true);
+        object reconnectStore = Field(supervisor, "store");
+        string settingsPath = (string)Field(reconnectStore, "path");
+        string before = File.Exists(settingsPath) ? File.ReadAllText(settingsPath) : null;
+        using (var host = new Form { ClientSize = new Size(1180, 720), StartPosition = FormStartPosition.Manual, Location = Point.Empty })
+        using (var panel = (ScrollableControl)Activator.CreateInstance(panelType, new[] { service }))
+        {
+            panel.Dock = DockStyle.Fill; host.Controls.Add(panel); host.Show(); Pump();
+            NumericUpDown weight = (NumericUpDown)Field(panel, "emergencyWeight");
+            NumericUpDown sp = (NumericUpDown)Field(panel, "emergencySp");
+            NumericUpDown hp = (NumericUpDown)Field(panel, "emergencyHp");
+            Label saved = (Label)Field(panel, "emergencySaveStatus");
+            Check(weight.Value == 50M && sp.Value == 25M && hp.Value == 50M, "Emergency defaults must be Weight >50, SP <25, HP <50.");
+            Check(weight.Minimum == 0M && weight.Maximum == 99.9M && sp.Minimum == .1M && sp.Maximum == 100M
+                && hp.Minimum == .1M && hp.Maximum == 100M
+                && new[] { weight, sp, hp }.All(c => c.DecimalPlaces == 1 && c.Increment == .1M), "Emergency editor limits/precision are wrong.");
+            Check(Descendants(panel).OfType<GroupBox>().Any(g => g.Text.Contains("AND") && g.Text.Contains("auto-save")),
+                "Emergency editor must show all-three AND and auto-save.");
+            Check(before == (File.Exists(settingsPath) ? File.ReadAllText(settingsPath) : null),
+                "Constructing the emergency editor must not save defaults.");
+
+            NumericUpDown cart = (NumericUpDown)Field(panel, "autoThreshold");
+            TextBox smtp = (TextBox)Field(panel, "smtpHost");
+            CheckBox mail = (CheckBox)Field(panel, "enabled");
+            cart.Value = 61M; smtp.Text = "pending-invalid-host"; mail.Checked = true;
+            object originalWeightSettings = service.GetType().GetProperty("Settings").GetValue(service, null);
+            weight.Text = 60.5M.ToString(); Pump();
+            Check(EmergencyValue(service, "WeightAbovePercent") == 50M, "Partially typed emergency limits saved before validation.");
+            Call(weight, "OnValidated", EventArgs.Empty);
+            sp.Text = 30.2M.ToString(); Call(sp, "OnValidated", EventArgs.Empty);
+            hp.Text = 45.8M.ToString(); Call(hp, "OnKeyDown", new KeyEventArgs(Keys.Enter));
+            Check(EmergencyValue(service, "WeightAbovePercent") == 60.5M && EmergencyValue(service, "SpBelowPercent") == 30.2M
+                && EmergencyValue(service, "HpBelowPercent") == 45.8M && saved.Text == "Saved", "Completed emergency edits did not auto-save.");
+            Check(cart.Value == 61M && smtp.Text == "pending-invalid-host" && mail.Checked,
+                "Emergency auto-save overwrote pending Cart/mail edits.");
+            object stillWeightSettings = service.GetType().GetProperty("Settings").GetValue(service, null);
+            Check(Equals(originalWeightSettings.GetType().GetProperty("AutoCartThresholdPercent").GetValue(originalWeightSettings, null),
+                    stillWeightSettings.GetType().GetProperty("AutoCartThresholdPercent").GetValue(stillWeightSettings, null))
+                && Equals(originalWeightSettings.GetType().GetProperty("SmtpHost").GetValue(originalWeightSettings, null),
+                    stillWeightSettings.GetType().GetProperty("SmtpHost").GetValue(stillWeightSettings, null)),
+                "Emergency auto-save committed pending Cart/mail settings.");
+
+            // Reopen the durable state with an inert supervisor, without Start or timers.
+            using (var reloaded = (IDisposable)Activator.CreateInstance(supervisor.GetType(), new[] { Field(supervisor, "baseDirectory") }))
+            {
+                object settings = reloaded.GetType().GetProperty("FarmingEmergencySettings").GetValue(reloaded, null);
+                Check((decimal)settings.GetType().GetProperty("WeightAbovePercent").GetValue(settings, null) == 60.5M
+                    && (decimal)settings.GetType().GetProperty("SpBelowPercent").GetValue(settings, null) == 30.2M
+                    && (decimal)settings.GetType().GetProperty("HpBelowPercent").GetValue(settings, null) == 45.8M,
+                    "Emergency edits were not restored from durable settings.");
+            }
+            mail.Checked = false; Call(panel, "SaveSettings");
+            Check(EmergencyValue(service, "WeightAbovePercent") == 60.5M && EmergencyValue(service, "SpBelowPercent") == 30.2M
+                && EmergencyValue(service, "HpBelowPercent") == 45.8M, "Existing Weight Save reverted emergency limits.");
+
+            string blocker = Path.Combine(output, "emergency-save-blocker");
+            File.WriteAllText(blocker, "test-owned file prevents creation of a child directory");
+            try
+            {
+                SetField(reconnectStore, "path", Path.Combine(blocker, "reconnect.json"));
+                weight.Text = 70M.ToString(); Call(weight, "OnValidated", EventArgs.Empty);
+                Check(weight.Value == 60.5M && EmergencyValue(service, "WeightAbovePercent") == 60.5M
+                    && saved.Text.StartsWith("Not saved:") && saved.ForeColor == Color.Firebrick,
+                    "Failed emergency save must restore active limits and display an error.");
+                Call(panel, "RefreshStatus");
+                Check(saved.Text.StartsWith("Not saved:"), "Polling erased the emergency save error.");
+            }
+            finally { SetField(reconnectStore, "path", settingsPath); File.Delete(blocker); }
+
+            foreach (var viewport in new[] { new Size(1904, 850), new Size(1180, 650), new Size(760, 560) })
+            {
+                host.ClientSize = viewport; Pump();
+                CheckWeightControlsReachable(host, panel, viewport.ToString());
+                panel.AutoScrollPosition = Point.Empty; Pump();
+                SaveScreenshot(host, Path.Combine(output, "emergency-" + viewport.Width + ".png"));
+            }
+            panel.Scale(new SizeF(1.5F, 1.5F)); panel.Font = new Font(panel.Font.FontFamily, panel.Font.Size * 1.5F);
+            Pump(); CheckWeightControlsReachable(host, panel, "760x560 enlarged text");
+            panel.AutoScrollPosition = Point.Empty; Pump();
+            SaveScreenshot(host, Path.Combine(output, "emergency-scaled.png"));
+            host.Close();
+        }
+        Call(main, "AssertSmokeBackgroundServicesInactive");
+        report.AppendLine("CASE emergency settings: defaults, independent auto-save, durable reload, failure rollback, Cart/mail isolation, narrow and enlarged-text scrolling; no live actions.");
+    }
+
+    private static decimal EmergencyValue(object service, string property)
+    {
+        object value = service.GetType().GetProperty("EmergencySettings").GetValue(service, null);
+        return (decimal)value.GetType().GetProperty(property).GetValue(value, null);
+    }
+
+    private static void CheckWeightControlsReachable(Form host, ScrollableControl panel, string context)
+    {
+        foreach (string field in new[] { "emergencyWeight", "emergencySp", "emergencyHp", "autoThreshold", "autoRearm",
+            "autobattleStopHotkey", "inventoryHotkey", "cartHotkey", "smtpHost", "smtpPassword", "toAddress",
+            "save", "test", "clearHold", "clearEmergency" })
+        {
+            Control control = (Control)Field(panel, field);
+            panel.ScrollControlIntoView(control); Pump();
+            Check(FullyVisible(control, host), context + ": Weight control is not reachable by scrolling: " + field
+                + "; bounds=" + BoundsIn(control, host) + "; scroll=" + panel.AutoScrollPosition + "; extent=" + panel.AutoScrollMinSize);
+        }
     }
 
     private static void CheckCharacterDiscovery(Form main, object recovery)
