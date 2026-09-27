@@ -55,13 +55,14 @@ namespace _4RTools.Model.Vanilla
         private DateTimeOffset? observedAt;
         internal readonly VanillaMovementDiagnosticRate Diagnostics = new VanillaMovementDiagnosticRate();
         internal bool IsArmed { get { return armed; } }
+        internal long ProgressVersion { get; private set; }
         internal double StalledSeconds(TimeSpan now)
         {
             if (!armed || now < progressAt) return 0;
             return Math.Max(0, (now - progressAt).TotalSeconds);
         }
 
-        internal void Reset() { armed = baseline = false; observedAt = null; }
+        internal void Reset() { armed = baseline = false; observedAt = null; ProgressVersion++; }
 
         internal string Observe(int processId, VanillaPositionSample sample, TimeSpan now, DateTimeOffset utc)
         {
@@ -80,11 +81,12 @@ namespace _4RTools.Model.Vanilla
                 if (baseline && (sample.Session != session || (sample.Map != null && map != null && !string.Equals(sample.Map, map, StringComparison.Ordinal))))
                 {
                     // A new session/map starts a new baseline; it is not inferred movement.
-                    baseline = false; progressAt = now;
+                    baseline = false; progressAt = now; ProgressVersion++;
                 }
                 bool intermediateMovement = sample.MovementAt.HasValue && observedAt.HasValue
                     && sample.MovementAt.Value > observedAt.Value && sample.MovementAt.Value <= sample.At;
-                if (baseline && (sample.X.Value != x || sample.Y.Value != y || intermediateMovement)) progressAt = now;
+                if (baseline && (sample.X.Value != x || sample.Y.Value != y || intermediateMovement))
+                { progressAt = now; ProgressVersion++; }
                 x = sample.X.Value; y = sample.Y.Value;
                 session = sample.Session; map = sample.Map ?? map;
                 baseline = true; observedAt = sample.At;
@@ -178,11 +180,8 @@ namespace _4RTools.Model.Vanilla
         }
 
         private bool CheckMovementWatchdog(Runtime runtime, DateTimeOffset now, Func<DateTime> startTimeUtc)
-        { return CheckMovementWatchdogWithVisual(runtime, now, startTimeUtc, false); }
-
-        private bool CheckMovementWatchdogWithVisual(Runtime runtime, DateTimeOffset now, Func<DateTime> startTimeUtc, bool visualObserved)
         {
-            if (!running || disposed || !settings.AutoRecover || !runtime.Account.Enabled || !runtime.ProcessId.HasValue
+            if (!running || disposed || (!settings.AutoRecover && !runtime.Account.SmartTeleportEnabled) || !runtime.Account.Enabled || !runtime.ProcessId.HasValue
                 || runtime.ScriptRunning || runtime.RecoveryOwned || positionSource == null
                 || (!runtime.ResumeSent && !runtime.HasBeenOnline))
             {
@@ -202,28 +201,17 @@ namespace _4RTools.Model.Vanilla
             now = restartEnvironment.UtcNow;
             string reason = runtime.MovementWatchdog.Observe(runtime.ProcessId.Value, sample, restartEnvironment.MonotonicNow, now);
             double stalled = runtime.MovementWatchdog.StalledSeconds(restartEnvironment.MonotonicNow);
-            bool unavailable = sample == null || sample.Pid != runtime.ProcessId.Value || !sample.Verified
-                || sample.Error != null || sample.Session == Guid.Empty || !sample.X.HasValue || !sample.Y.HasValue
-                || sample.At > now || (now - sample.At).TotalSeconds > 3;
-            if ((unavailable || stalled >= VanillaMovementWatchdog.TimeoutSeconds || runtime.TerminalSamples > 0)
-                && !visualObserved)
-            {
-                // Diagnose this client even when continuous visual monitoring is off.
-                // A failed screenshot must not skip or reset the monotonic deadline.
-                ObserveRecoveryVisual(runtime);
-                now = restartEnvironment.UtcNow;
-                if (HandleTerminalVisual(runtime, runtime.Visual, now, startTimeUtc))
-                { LogMovementWatchdogDiagnostic(runtime, now, sample); return true; }
-            }
             LogMovementWatchdogDiagnostic(runtime, now, sample);
             if (TryQueueRecoveryScreenDiagnosis(runtime, now, startTimeUtc,
                 runtime.MovementWatchdog.StalledSeconds(restartEnvironment.MonotonicNow))) return true;
+            if (runtime.Visual == VanillaVisualState.ModalDialog) return true;
+            if (TryQueueStalledAutobattleRecovery(runtime)) return true;
             int restartAfter = Math.Max(60, settings.MovementRestartSeconds);
-            if (stalled < restartAfter) return false;
+            if (!settings.AutoRecover || stalled < restartAfter) return false;
             string detail = (reason ?? ("No verified X/Y movement for " + (int)stalled + "s"))
                 + ". Configured no-movement restart threshold " + restartAfter
                 + "s reached after Smart Teleport had time to self-heal; screen diagnosis=" + runtime.Visual
-                + "; restarting only this client. No steady-state Autobattle hotkey is sent.";
+                + "; restarting only this client after the bounded stationary recovery opportunity.";
             Log(runtime.Account.Label + ": " + detail);
             QueueClientRestart(runtime, now, detail, false, startTimeUtc);
             return true;
@@ -243,7 +231,7 @@ namespace _4RTools.Model.Vanilla
             var capture = runtime.LastVisualObservation;
             VanillaDebugLog.Write("RECOVERY-HEALTH", runtime.Account.Label + ": PID=" + (runtime.ProcessId?.ToString() ?? "none")
                 + "; stage=" + runtime.Stage + "; monitoring=" + (suppressed == null ? "active" : "suppressed") + "; reason=" + mode
-                + "; autoRecover=" + settings.AutoRecover + "; continuousVisual=" + settings.VisualWatchdog
+                + "; autoRecover=" + settings.AutoRecover + "; screenshots=foreground-only-after-stall"
                 + "; sample=" + sampleState + "; sampleAt=" + (sample == null ? "unknown" : sample.At.ToString("O", CultureInfo.InvariantCulture))
                 + "; sampleAgeMs=" + (sample == null ? "unknown" : (now - sample.At).TotalMilliseconds.ToString("0", CultureInfo.InvariantCulture))
                 + "; xy=" + (sample?.X?.ToString() ?? "unknown") + "," + (sample?.Y?.ToString() ?? "unknown")

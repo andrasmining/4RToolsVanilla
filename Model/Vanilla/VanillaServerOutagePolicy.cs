@@ -1,5 +1,6 @@
 using System;
 using System.Diagnostics;
+using System.Drawing;
 using System.Threading;
 
 namespace _4RTools.Model.Vanilla
@@ -68,17 +69,43 @@ namespace _4RTools.Model.Vanilla
             using (var process = Process.GetProcessById(pid))
             {
                 process.Refresh();
-                IntPtr window = process.MainWindowHandle;
-                if (window == IntPtr.Zero || VanillaVisualProbe.Classify(window) != VanillaVisualState.ServerClosed) return;
                 DateTime identity = process.StartTime.ToUniversalTime();
-                Thread.Sleep(150);
-                if (cancelled()) throw new OperationCanceledException();
-                process.Refresh();
-                if (!process.HasExited && process.MainWindowHandle == window && process.StartTime.ToUniversalTime() == identity
-                    && VanillaVisualProbe.Classify(window) == VanillaVisualState.ServerClosed)
-                    throw new VanillaServerClosedException();
-                throw new InvalidOperationException("Server unavailable dialog changed during confirmation; no input sent.");
+                using (var input = new VanillaForegroundInput(pid, IntPtr.Zero, cancelled))
+                {
+                    IntPtr window = input.Window;
+                    ConfirmServerClosedInForeground(input.Activate, () =>
+                    {
+                        process.Refresh();
+                        if (process.HasExited || process.StartTime.ToUniversalTime() != identity || input.Window != window)
+                            throw new OperationCanceledException("Outage diagnosis client/window was replaced.");
+                        using (Bitmap image = input.CaptureClientBitmapForObservation())
+                        {
+                            if (input.LastCaptureProof.Window != window)
+                                throw new OperationCanceledException("Outage diagnosis window changed during capture.");
+                            return VanillaVisualProbe.Classify(image);
+                        }
+                    }, cancelled, Thread.Sleep);
+                }
             }
+        }
+
+        internal static void ConfirmServerClosedInForeground(System.Action activate, Func<VanillaVisualState> capture,
+            Func<bool> cancelled, System.Action<int> pause)
+        {
+            if (cancelled()) throw new OperationCanceledException();
+            activate();
+            if (cancelled()) throw new OperationCanceledException();
+            VanillaVisualState first = capture();
+            if (cancelled()) throw new OperationCanceledException();
+            if (first != VanillaVisualState.ServerClosed) return;
+            pause(150);
+            if (cancelled()) throw new OperationCanceledException();
+            activate();
+            if (cancelled()) throw new OperationCanceledException();
+            VanillaVisualState second = capture();
+            if (cancelled()) throw new OperationCanceledException();
+            if (second == VanillaVisualState.ServerClosed) throw new VanillaServerClosedException();
+            throw new InvalidOperationException("Server unavailable dialog changed during confirmation; no input sent.");
         }
 
         private void ConfirmServerOutageLocked(Runtime runtime)

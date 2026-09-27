@@ -1048,6 +1048,8 @@ internal static class UiLayoutHarness
                 && grid.Columns["SmartTeleportHotkey"].HeaderText == "TP hotkey",
                 name + ": Smart Teleport seconds/hotkey columns are missing.");
             Check(grid.Columns["Label"].HeaderText == "Description" && grid.Columns["CharacterName"].HeaderText == "Character name", name + ": character headers missing.");
+            Check(!Descendants(view).OfType<CheckBox>().Any(c => c.Text == "Visual watchdog"
+                || c.Text == "Detect login screens/popups visually"), name + ": obsolete background visual monitoring switch remains.");
             Check(grid.Rows.Cast<DataGridViewRow>().All(r =>
                     !string.IsNullOrWhiteSpace(Convert.ToString(r.Cells["CartMaintenanceEnabled"].Value))
                     && !string.IsNullOrWhiteSpace(Convert.ToString(r.Cells["WeightEmailEnabled"].Value))),

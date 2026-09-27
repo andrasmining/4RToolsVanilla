@@ -144,36 +144,22 @@ namespace _4RTools.Model.Vanilla
 
         private static string Capture(int processId, string path, bool restoreWindow)
         {
-            using (var process = Process.GetProcessById(processId))
+            IntPtr foreground = GetForegroundWindow();
+            uint owner;
+            bool ownsForeground = foreground != IntPtr.Zero
+                && GetWindowThreadProcessId(foreground, out owner) != 0 && owner == (uint)processId;
+            if (!restoreWindow && !ownsForeground)
+                return "Screenshot skipped: selected Vanilla client is in the background. Memory discovery continues.";
+            Func<bool> cancelled = () => !restoreWindow && GetForegroundWindow() != foreground;
+            using (var input = new VanillaForegroundInput(processId, ownsForeground ? foreground : IntPtr.Zero, cancelled))
+            using (var bitmap = input.CaptureClientBitmapForObservation())
             {
-                IntPtr window = process.MainWindowHandle;
-                if (restoreWindow && window != IntPtr.Zero && IsIconic(window))
-                {
-                    ShowWindow(window, 9); // Ordinary restore of a minimized window, no gameplay input.
-                    System.Threading.Thread.Sleep(250);
-                }
-                WindowRect rect;
-                if (window == IntPtr.Zero || !GetWindowRect(window, out rect)) return "Normal window bounds unavailable; no capture retry.";
-                int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;
-                if (width < 1 || height < 1 || width > 8192 || height > 8192) return "Window size is outside capture bounds.";
-                using (var bitmap = new Bitmap(width, height))
-                using (var graphics = Graphics.FromImage(bitmap))
-                {
-                    IntPtr dc = graphics.GetHdc();
-                    bool success;
-                    try { success = PrintWindow(window, dc, 0); }
-                    finally { graphics.ReleaseHdc(dc); }
-                    if (!success) return "Normal PrintWindow failed; no alternate capture attempted.";
-                    bitmap.Save(path, ImageFormat.Png);
-                    return "Captured using ordinary PrintWindow.";
-                }
+                bitmap.Save(path, ImageFormat.Png);
+                return "Captured the verified foreground Vanilla client.";
             }
         }
 
-        [StructLayout(LayoutKind.Sequential)] private struct WindowRect { public int Left, Top, Right, Bottom; }
-        [DllImport("user32.dll", SetLastError = true)] private static extern bool GetWindowRect(IntPtr window, out WindowRect rect);
-        [DllImport("user32.dll", SetLastError = true)] private static extern bool PrintWindow(IntPtr window, IntPtr dc, uint flags);
-        [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr window);
-        [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr window, int command);
+        [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
     }
 }

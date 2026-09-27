@@ -118,8 +118,7 @@ namespace _4RTools.Model.Vanilla
             }
             runtime.GameplaySince = runtime.LoginLikeSince = null;
             string reason = outage ? "Server Closed.(1)" : visual == VanillaVisualState.LoggingOut ? "Now Logging Out." : "Disconnected from Server.";
-            // VisualWatchdog controls continuous captures, not a fresh terminal
-            // diagnosis requested by the unavailable/stalled-health watchdog.
+            // Exact terminal evidence comes from a serialized foreground observation.
             if (!running || disposed || !settings.AutoRecover || !runtime.Account.Enabled)
             {
                 ResetTerminalEvidence(runtime);

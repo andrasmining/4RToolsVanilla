@@ -46,6 +46,12 @@ namespace Vanilla.Diagnostics.Tests
             Test("An adopted sibling awaiting its first gameplay sample remains untouched", AdoptedSibling);
             Test("Only known parked client IDs unblock a scheduled replacement launch", ParkedClientLaunchGate);
             Test("Capacity or unknown-client obstruction releases the reserved probe for fifteen minutes", ObstructedProbe);
+            Test("Healthy existing-client adoption never activates or captures a window", HealthyAdoptionMemoryOnly);
+            Test("Failed existing-client readiness diagnoses only before confirmed replacement", FailedAdoptionDiagnosis);
+            Test("Startup cancellation prevents or invalidates foreground diagnosis", AdoptionDiagnosisCancellation);
+            Test("Outage confirmation activates before each fresh foreground capture", ForegroundOutageOrder);
+            Test("Unknown or changing foreground outage evidence cannot confirm downtime", ForegroundOutageUnknown);
+            Test("Focus failure and cancellation withhold foreground outage captures", ForegroundOutageCancellation);
             Console.WriteLine("Server outage regressions: {0} passed; {1} failed. Fake clocks, processes and queued workers only.", passed, failed);
             return failed;
         }
@@ -546,6 +552,105 @@ namespace Vanilla.Diagnostics.Tests
             try { action(); }
             catch (T) { return; }
             throw new Exception("Expected " + typeof(T).Name);
+        }
+
+        private static void HealthyAdoptionMemoryOnly()
+        {
+            int memoryReads = 0, visualReads = 0;
+            bool replacement = VanillaReconnectSupervisor.ExistingClientRequiresReplacement(
+                () => memoryReads++, () => { visualReads++; throw new Exception("Healthy window was inspected."); }, () => false);
+            Assert(!replacement && memoryReads == 1 && visualReads == 0,
+                "Successful memory readiness triggered visual diagnosis or replacement.");
+        }
+
+        private static void FailedAdoptionDiagnosis()
+        {
+            var events = new List<string>();
+            var failure = new InvalidOperationException("Memory readiness unavailable");
+            bool replacement = VanillaReconnectSupervisor.ExistingClientRequiresReplacement(
+                () => { events.Add("memory"); throw failure; },
+                () => { events.Add("foreground-terminal-confirmed-and-closed"); return true; }, () => false);
+            Assert(replacement && events.SequenceEqual(new[] { "memory", "foreground-terminal-confirmed-and-closed" }));
+            Exception observed = null;
+            try
+            {
+                VanillaReconnectSupervisor.ExistingClientRequiresReplacement(() => { throw failure; }, () => false, () => false);
+            }
+            catch (Exception ex) { observed = ex; }
+            Assert(ReferenceEquals(failure, observed), "Unknown visual state discarded the original readiness failure.");
+            var closeFailure = new InvalidOperationException("Client exit not confirmed");
+            observed = null;
+            try
+            {
+                VanillaReconnectSupervisor.ExistingClientRequiresReplacement(() => { throw failure; },
+                    () => { throw closeFailure; }, () => false);
+            }
+            catch (Exception ex) { observed = ex; }
+            Assert(ReferenceEquals(closeFailure, observed), "Failed close authorized replacement or was hidden.");
+        }
+
+        private static void AdoptionDiagnosisCancellation()
+        {
+            foreach (int phase in new[] { 0, 1, 2, 3 })
+            {
+                int reads = 0, diagnoses = 0;
+                bool cancelled = phase == 0;
+                Expect<OperationCanceledException>(() => VanillaReconnectSupervisor.ExistingClientRequiresReplacement(() =>
+                {
+                    reads++;
+                    if (phase == 1 || phase == 2) cancelled = true;
+                    if (phase != 1) throw new InvalidOperationException("No fresh memory state");
+                }, () => { diagnoses++; cancelled = true; return true; }, () => cancelled));
+                Assert(reads == (phase == 0 ? 0 : 1) && diagnoses == (phase == 3 ? 1 : 0),
+                    "Cancellation crossed the memory/diagnosis boundary.");
+            }
+        }
+
+        private static void ForegroundOutageOrder()
+        {
+            var events = new List<string>();
+            Expect<VanillaServerClosedException>(() => VanillaReconnectSupervisor.ConfirmServerClosedInForeground(
+                () => events.Add("activate"), () => { events.Add("capture"); return VanillaVisualState.ServerClosed; },
+                () => false, ms => { Assert(ms == 150); events.Add("settle"); }));
+            Assert(events.SequenceEqual(new[] { "activate", "capture", "settle", "activate", "capture" }),
+                "Outage detection captured before foreground ownership or reused its first frame.");
+        }
+
+        private static void ForegroundOutageUnknown()
+        {
+            foreach (VanillaVisualState unknown in new[] { VanillaVisualState.Unknown, VanillaVisualState.ModalDialog,
+                VanillaVisualState.Gameplay, VanillaVisualState.Disconnected })
+            {
+                int captures = 0, activations = 0, pauses = 0;
+                VanillaReconnectSupervisor.ConfirmServerClosedInForeground(() => activations++, () => { captures++; return unknown; },
+                    () => false, ms => pauses++);
+                Assert(captures == 1 && activations == 1 && pauses == 0, "A non-outage frame entered outage confirmation.");
+                captures = activations = pauses = 0;
+                Expect<InvalidOperationException>(() => VanillaReconnectSupervisor.ConfirmServerClosedInForeground(
+                    () => activations++, () => ++captures == 1 ? VanillaVisualState.ServerClosed : unknown,
+                    () => false, ms => pauses++));
+                Assert(captures == 2 && activations == 2 && pauses == 1, "Changed outage evidence skipped fresh confirmation.");
+            }
+        }
+
+        private static void ForegroundOutageCancellation()
+        {
+            int captures = 0;
+            Expect<InvalidOperationException>(() => VanillaReconnectSupervisor.ConfirmServerClosedInForeground(
+                () => { throw new InvalidOperationException("Foreground denied"); },
+                () => { captures++; return VanillaVisualState.ServerClosed; }, () => false, ms => { }));
+            Assert(captures == 0, "Failed foreground activation still captured a window.");
+            foreach (int phase in new[] { 0, 1, 2, 3, 4, 5 })
+            {
+                int eventIndex = 0;
+                captures = 0;
+                bool cancelled = phase == 0;
+                Action advance = () => { if (++eventIndex == phase) cancelled = true; };
+                Expect<OperationCanceledException>(() => VanillaReconnectSupervisor.ConfirmServerClosedInForeground(advance,
+                    () => { captures++; advance(); return VanillaVisualState.ServerClosed; }, () => cancelled, ms => advance()));
+                Assert(captures == (phase <= 1 ? 0 : phase <= 4 ? 1 : 2),
+                    "STOP sent a later capture or confirmed stale outage evidence.");
+            }
         }
 
         private const BindingFlags Fields = BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance;

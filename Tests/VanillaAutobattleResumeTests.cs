@@ -34,6 +34,13 @@ namespace Vanilla.Diagnostics.Tests
             Test("Second attempt succeeds without a third key", () => Success(2, false));
             Test("Third attempt succeeds without a fourth key", () => Success(3, true));
             Test("No movement runs three autoattack/teleport cycles then waits to 180 seconds", BoundedFailure);
+            Test("Stationary recovery tries teleport before any resume hotkey", TeleportFirstSuccess);
+            Test("Failed stationary teleport permits bounded resume recovery", TeleportFirstFallback);
+            Test("Stationary recovery retains only the original remaining deadline", RemainingDeadline);
+            Test("Movement during initial focus suppresses both teleport and resume", InitialFocusMovement);
+            Test("Move-return history before a hotkey suppresses the toggle", ReportMovement);
+            Test("Teleport-only mode never sends a resume hotkey", TeleportOnly);
+            Test("An expired focus budget sends no recovery input", FocusDeadline);
             Test("Movement after autoattack suppresses teleport", TeleportSuppressedByMovement);
             Test("Movement caused by teleport stops the recovery cycle immediately", MovementAfterTeleport);
             Test("Restart-only settle, recovery cycles and 180-second deadline stay bounded", RecoveryConstants);
@@ -453,7 +460,10 @@ namespace Vanilla.Diagnostics.Tests
         {
             internal int Pid = 42, Sends, Teleports, Focuses;
             internal long Ms;
-            internal bool Cancelled;
+            internal bool Cancelled, TeleportFirst;
+            internal bool AllowResume = true;
+            internal int Limit = VanillaAutobattleResumeVerifier.RecoveryDeadlineMs;
+            internal Action<string> OnReport;
             internal readonly Guid Session = Guid.NewGuid();
             internal readonly VanillaAutobattleResumeVerifier Verifier = new VanillaAutobattleResumeVerifier();
             internal readonly List<long> SentAt = new List<long>();
@@ -487,7 +497,8 @@ namespace Vanilla.Diagnostics.Tests
                         return TeleportOverride == null || TeleportOverride(attempt);
                     },
                     () => Cancelled, () => TimeSpan.FromMilliseconds(Ms), () => Now,
-                    milliseconds => { Ms += milliseconds; OnDelay?.Invoke(); return Task.FromResult(0); }, Progress.Add);
+                    milliseconds => { Ms += milliseconds; OnDelay?.Invoke(); return Task.FromResult(0); },
+                    text => { Progress.Add(text); OnReport?.Invoke(text); }, TeleportFirst, Limit, AllowResume);
             }
             internal void Run() { RunAsync().GetAwaiter().GetResult(); }
         }
@@ -504,7 +515,7 @@ namespace Vanilla.Diagnostics.Tests
         private static void BoundedFailure()
         {
             var h = new Harness();
-            Expect<InvalidOperationException>(h.Run, "3 autobattle + teleport recovery cycles within 180 seconds");
+            Expect<InvalidOperationException>(h.Run, "bounded autobattle/teleport recovery deadline");
             Assert(h.Sends == 3 && h.Teleports == 3 && h.Ms == 180000 && !h.Verifier.MovementVerified,
                 "Recovery did not preserve the three-cycle input budget and 180-second restart deadline.");
             Assert(h.SentAt.SequenceEqual(new long[] { 0, 20000, 40000 }), "Unexpected autobattle timing.");
@@ -514,8 +525,60 @@ namespace Vanilla.Diagnostics.Tests
             Assert(h.Progress.Contains("Sending autobattle hotkey attempt 1/3")
                 && h.Progress.Contains("Sending autobattle hotkey attempt 2/3")
                 && h.Progress.Contains("Sending autobattle hotkey attempt 3/3"), "Hotkey sends were not explicitly logged.");
-            Assert(h.Progress.Contains("Three recovery cycles exhausted; monitoring X/Y until the 180s restart deadline"),
+            Assert(h.Progress.Contains("Recovery cycles exhausted; passively monitoring X/Y until the remaining restart deadline"),
                 "Passive watch to the restart deadline was not reported.");
+        }
+        private static void TeleportFirstSuccess()
+        {
+            var h = new Harness { TeleportFirst = true };
+            h.ReadOverride = () => h.Sample(h.Teleports > 0 ? 11 : 10);
+            h.Run(); Assert(h.Sends == 0 && h.Teleports == 1 && h.Ms == 0, "Initial teleport did not suppress resume after movement.");
+        }
+        private static void TeleportFirstFallback()
+        {
+            var h = new Harness { TeleportFirst = true, TeleportOverride = n => false };
+            h.ReadOverride = () => h.Sample(h.Sends > 0 ? 11 : 10);
+            h.Run(); Assert(h.Sends == 1 && h.Teleports == 1 && h.SentAt[0] == 10000,
+                "Resume did not follow the unsuccessful initial teleport's movement watch.");
+        }
+        private static void RemainingDeadline()
+        {
+            var h = new Harness { TeleportFirst = true, Limit = 25000 };
+            Expect<InvalidOperationException>(h.Run, "bounded");
+            Assert(h.Ms == 25000 && h.Sends == 1 && h.Teleports == 2, "Recovery renewed the original restart deadline.");
+        }
+        private static void InitialFocusMovement()
+        {
+            var h = new Harness { TeleportFirst = true };
+            h.ReadOverride = () => h.Sample(h.Focuses > 0 ? 11 : 10);
+            h.Run(); Assert(h.Sends == 0 && h.Teleports == 0 && h.Verifier.MovementVerified,
+                "First focus discarded the original stationary baseline.");
+        }
+        private static void ReportMovement()
+        {
+            var h = new Harness();
+            h.OnReport = text => { if (text.StartsWith("Sending autobattle")) h.Ms = 1; };
+            h.ReadOverride = () =>
+            {
+                var state = h.Sample();
+                if (h.Ms > 0) state.LastMovementAtUtc = h.Now;
+                return state;
+            };
+            h.Run(); Assert(h.Sends == 0 && h.Teleports == 0 && h.Verifier.MovementVerified,
+                "Move-return evidence just before the hotkey was ignored.");
+        }
+        private static void TeleportOnly()
+        {
+            var h = new Harness { TeleportFirst = true, AllowResume = false, Limit = 30000 };
+            Expect<InvalidOperationException>(h.Run, "bounded");
+            Assert(h.Teleports == 1 && h.Sends == 0 && h.Ms == 30000, "Teleport-only mode sent a toggle or lost its bound.");
+        }
+        private static void FocusDeadline()
+        {
+            var h = new Harness { TeleportFirst = true, Limit = 500 };
+            h.OnFocus = () => h.Ms = 500;
+            Expect<InvalidOperationException>(h.Run, "bounded");
+            Assert(h.Sends == 0 && h.Teleports == 0, "Expired initial focus sent input.");
         }
         private static void TeleportSuppressedByMovement()
         {
@@ -756,8 +819,10 @@ namespace Vanilla.Diagnostics.Tests
         }
         private static void CachedSnapshot()
         {
-            var h = new Harness(); var cached = h.Sample(); h.ReadOverride = () => cached;
-            Expect<InvalidOperationException>(h.Run, "stale"); Assert(h.Sends == 1, "Cached snapshot allowed retries.");
+            var h = new Harness(); var cached = h.Sample(); int reads = 0;
+            h.ReadOverride = () => { reads++; return cached; };
+            Expect<InvalidOperationException>(h.Run, "stale"); Assert(h.Sends == 0 && reads == 2,
+                "Cached snapshot authorized input/retries: sends=" + h.Sends + ", reads=" + reads);
         }
         private static void SlowRead()
         {
@@ -776,9 +841,10 @@ namespace Vanilla.Diagnostics.Tests
         }
         private static void ReadFailure()
         {
-            var h = new Harness(); int reads = 0;
-            h.ReadOverride = () => { reads++; if (h.Ms >= 100) throw new InvalidOperationException("read denied"); return h.Sample(); };
-            Expect<InvalidOperationException>(h.Run, "read denied"); Assert(h.Sends == 1 && reads == 3, "Read failure was retried.");
+            var h = new Harness(); int reads = 0, deniedReads = 0;
+            h.ReadOverride = () => { reads++; if (h.Ms >= 100) { deniedReads++; throw new InvalidOperationException("read denied"); } return h.Sample(); };
+            Expect<InvalidOperationException>(h.Run, "read denied"); Assert(h.Sends == 1 && reads == 4 && deniedReads == 1,
+                "Read failure was retried: sends=" + h.Sends + ", reads=" + reads + ", denied=" + deniedReads);
         }
         private static void WallClockChange()
         {

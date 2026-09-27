@@ -222,8 +222,9 @@ or retired projects and must not receive Vanilla development changes.
 
 ## Post-login Autobattle verification and steady-state recovery
 
-Automatic Autobattle/slave hotkeys are authorized only for a client that 4RTools
-itself has freshly launched/restarted/relogged. Adopting, restoring, maximizing,
+Automatic Autobattle/slave hotkeys are authorized for a client that 4RTools
+itself has freshly launched/restarted/relogged, or for bounded movement-stall
+recovery after foreground diagnosis under the policy below. Adopting, restoring, maximizing,
 focusing or observing an already-running healthy client must NEVER arm or send an
 automatic resume hotkey. Manual TESTS -> Resume hotkey remains an explicit diagnostic.
 
@@ -244,7 +245,9 @@ stationarity. Missing/unverified/stale state is not zero and is not movement; tr
 Loading after a verified warp authorizes no new input until fresh gameplay state returns.
 
 During normal Online supervision, Smart Teleport is the first stationary self-heal.
-Do not send steady-state Autobattle wakeup hotkeys. Track fresh verified X/Y only.
+Track fresh verified X/Y only in the background. After a sustained stall, activate
+only that client, diagnose its foreground screen and attempt bounded Smart Teleport
+then configured Autobattle resume if movement has not returned.
 The persisted no-movement restart threshold defaults to 180 seconds and is configurable
 from 60 to 3600 seconds. Smart Teleport defaults to 60 seconds per character, so the
 default restart threshold leaves room for repeated teleport attempts before escalation.
@@ -656,14 +659,15 @@ steady-state health signal. Missing, unreadable, unverified and stale coordinate
 invalid, not zero, and do not reset the elapsed stall. Use monotonic elapsed time,
 fingerprinted read-only observations and per-client/session baselines. Credit verified
 intermediate movement even when the latest coordinates return to the previous values.
-Do not accrue the watchdog during startup/recovery ownership.
+Do not accrue the watchdog during startup/replacement ownership. Bounded foreground
+stall recovery retains the original no-movement deadline while holding its input lease.
 
 Smart Teleport is the first-line stationary recovery for characters that enable it.
-Its default per-character timeout is 60 seconds. Steady-state supervision itself sends
-no Autobattle hotkey. When the persisted no-movement restart threshold is reached
+Its default per-character timeout is 60 seconds. A still-stalled client may then receive
+bounded configured Autobattle resume through the shared movement verifier. When the persisted no-movement restart threshold is reached
 (default 180 seconds; allowed 60-3600), restart only the affected client under the
 global recovery lease. The restart timer must not be reset merely because Smart
-Teleport briefly owned its serialized background-input lease; only verified movement,
+Teleport briefly owned its serialized foreground-input lease; only verified movement,
 session/map replacement, STOP/configuration/client replacement, or actual recovery
 lifecycle resets/re-baselines it.
 
@@ -787,28 +791,28 @@ Allow bounded dismissal time; require fresh same-window captures proving that bo
 the selected field and known modal surface disappeared. Lost selection, missing
 captures, a changed window or an ambiguous prompt do not prove dismissal.
 
-Unavailable or stalled verified movement must trigger fresh diagnosis of the
-affected client even when continuous visual monitoring is disabled. Observe
-minimized clients through the existing ordinary background window-capture path;
-never restore healthy siblings for diagnosis. Bound capture waits and pending
-workers, discard late captures, and do not let native window/capture errors skip
-or reset the movement-restart deadline. Two fresh exact disconnect/logout
-observations use the existing serialized replacement flow. Unknown modals receive
-no blind dismissal; unavailable captures alone do not prove disconnection.
+Background supervision is memory-only. Never take background screenshots or use
+PrintWindow for the game, launcher, diagnostics or Smart Teleport. Fresh verified
+X/Y movement keeps a healthy client untouched. After sustained missing/stalled
+movement, acquire the shared input lease, recheck coordinates, activate only that
+affected client and capture its verified foreground screen. Two fresh exact
+disconnect/logout observations use immediate serialized replacement. Unknown modals
+receive no blind dismissal; missing captures alone do not prove disconnection.
 Preserve emergency/completion/manual holds, process identity checks, cancellation
 and the special confirmed server-outage retry policy.
 
 For slower PCs, wait for the real interactive game window through the full bounded
 startup wait; a Gepard splash or helper HWND does not finish that wait. A failed
 client close must retain its PID and prevent another launch until exit is confirmed.
-Failed minimized captures do not demote an established client into startup or grant
-login/resume ownership. Keep bounded per-client health diagnostics that distinguish
-stale/missing movement, capture failure, disabled recovery and intentional holds.
-After sustained movement failure and unavailable minimized capture, a bounded,
-serialized foreground screen diagnosis may restore only that affected client.
-It sends no keys/clicks, preserves the original movement deadline, and retains
-two fresh exact terminal observations before early replacement. Never use this
-as a workaround for access denial or as a Smart Teleport input fallback.
+Keep bounded per-client health diagnostics that distinguish stale/missing movement,
+foreground capture failure, disabled recovery and intentional holds. Diagnosis and
+recovery preserve the original movement deadline. For verified stationary gameplay,
+use the configured foreground Smart Teleport first, then bounded Autobattle resume
+if still stationary; stop all further inputs immediately when fresh movement returns.
+Healthy adoption never sends a resume toggle. Denied memory/native operations have
+no alternate access path. The legacy continuous-visual setting cannot enable any
+background capture. Explicit startup/login and manual diagnostics also capture only
+an owned foreground window.
 
 ### Critical farming emergency stop (2026-09-23)
 
@@ -861,7 +865,7 @@ Weight-triggered Cart maintenance must remain read-only-memory + ordinary UI inp
 
 Integrated Smart Teleport is configured per saved username + character row, never by manually selecting a process. Store an independent enable flag, live-captured hotkey and stationary timeout (default 60 seconds) on the character profile and automatically bind it to the fresh verified running identity/PID. Trigger only from fresh verified read-only X/Y remaining unchanged; do not require target/combat/casting evidence. Unknown/stale/unverified coordinates, movement, map/session replacement or ownership changes reset/defer the timer.
 
-Teleport input may use ordinary targeted Windows background messages to the verified owned Vanilla window; do not foreground/restore it as a fallback. After the configured hotkey, send Enter only after positively recognizing the expected Select an Area to Warp popup with the first option selected, and verify the modal clears. No popup means no Enter. Keep this work serialized with recovery and Weight/Cart input and cancellable on STOP/settings/client/character replacement.
+Smart Teleport activates the affected stalled client under the shared serialized input lease and uses ordinary foreground input and foreground screenshots only. Recheck fresh same-session coordinates before activation and every further input; renewed movement cancels the action. After the configured hotkey, send Enter only after positively recognizing the expected Select an Area to Warp popup with the first option selected, and verify the modal clears. No popup means no Enter. Keep this work serialized with recovery and Weight/Cart input and cancellable on STOP/settings/client/character replacement.
 
 ## Combined-capacity notification completion (2026-09-20)
 

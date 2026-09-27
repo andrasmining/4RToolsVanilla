@@ -1,30 +1,24 @@
-# 4RTools Vanilla 0.6.85
+# 4RTools Vanilla 0.6.86
 
-## Settings save automatically
+## Memory monitoring and foreground recovery
 
-- Remove manual settings Save buttons from Weight, character editing, diagnostics,
-  automation rules, update access, and legacy profile/server editors. Existing
-  recovery, temporary-action and stock settings continue saving automatically.
-- Save completed edits automatically and flush pending valid changes when an
-  editor closes. Show saved/error feedback, preserving the last valid settings
-  when a draft is invalid or storage fails.
-- Keep diagnostic edits bound to their original profile when switching profiles.
-  Loading legacy forms no longer rewrites settings or duplicates event handlers.
-  The legacy sound switch now persists with the profile.
-- Keep passwords masked and protected. A blank SMTP password retains the saved
-  password; an explicit Clear action removes it. Existing account credentials
-  remain protected when editing unrelated fields.
-- Preserve explicit Create, Copy, Import, Export and Delete actions for profiles
-  and records. New characters and servers are created only with valid details;
-  subsequent edits save automatically.
-- Persist recovery settings before changing active supervision, so a failed
-  settings write cannot cancel recovery work or change running-client policy.
+- Remove background screenshots from recovery, Smart Teleport, launcher checks
+  and discovery. Background clients are monitored through fresh read-only memory
+  coordinates. Remove the obsolete continuous visual-monitoring switch.
+- Diagnose a stalled client only after acquiring the shared input lock and
+  activating that client. Confirmed logout/disconnect screens can restart it
+  immediately; healthy siblings remain untouched.
+- Recover stationary gameplay with foreground Smart Teleport and the configured
+  Autobattle resume hotkey when needed. Recheck movement before inputs and stop
+  the sequence immediately when fresh coordinates show movement.
+- Keep bounded recovery attempts, verified warp-popup confirmation, the configured
+  no-movement restart deadline, intentional farming holds, and cancellation on
+  STOP or ownership changes. Healthy existing-client adoption stays memory-only.
 
 ## Validation
 
-Regression coverage includes reload, pending edits on close, profile ownership,
-invalid drafts, failed writes, encrypted credentials, account creation and
-catalog rollback. Windows release gates run full Debug/Release tests, isolated
-native UI/layout checks, test-owned process checks, portable packaging, and
-public updater discovery/download/staging. These checks do not operate live
-game clients or send real e-mail.
+Windows release gates exercise movement-only supervision, foreground ownership,
+terminal-screen recovery, cancellation, popup verification and existing regressions.
+They also run Debug/Release builds, isolated mock UI and test-owned process checks,
+portable packaging and public/legacy updater discovery, download and staging.
+These checks do not operate live game clients or send real e-mail.

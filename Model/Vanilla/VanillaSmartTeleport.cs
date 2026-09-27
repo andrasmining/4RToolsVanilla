@@ -1,9 +1,7 @@
 using System;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
-using System.Drawing.Imaging;
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Threading;
@@ -56,7 +54,7 @@ namespace _4RTools.Model.Vanilla
                     Generation = generation,
                     Account = runtime.Account.Clone()
                 };
-                SetStage(runtime, VanillaReconnectStage.Online, "Smart Teleport owns the serialized background-input lease");
+                SetStage(runtime, VanillaReconnectStage.Online, "Smart Teleport owns the serialized foreground-input lease");
                 return true;
             }
         }
@@ -87,6 +85,14 @@ namespace _4RTools.Model.Vanilla
                 SetStage(runtime, VanillaReconnectStage.Online, detail ?? "Smart Teleport completed");
             }
             RaiseUpdated();
+        }
+
+        internal void SmartTeleportCleanup(VanillaSmartTeleportToken token, System.Action action)
+        {
+            lock (gate)
+            {
+                if (!SmartTeleportCancelled(token)) action();
+            }
         }
     }
 
@@ -144,115 +150,295 @@ namespace _4RTools.Model.Vanilla
         }
     }
 
+    internal sealed class VanillaTeleportMovementGuard
+    {
+        private readonly VanillaClientState baseline;
+        private readonly Func<VanillaClientState> read;
+        private readonly Func<DateTimeOffset> utcNow;
+        internal bool MovementObserved { get; private set; }
+
+        internal VanillaTeleportMovementGuard(VanillaClientState baseline, Func<VanillaClientState> read,
+            Func<DateTimeOffset> utcNow = null)
+        {
+            this.baseline = baseline ?? throw new ArgumentNullException(nameof(baseline));
+            this.read = read ?? throw new ArgumentNullException(nameof(read));
+            this.utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
+            VanillaAutobattleResumeVerifier.ValidateSample(baseline, null, baseline.ProcessId ?? 0, this.utcNow());
+        }
+
+        internal bool MovementResumed()
+        {
+            if (MovementObserved) return true;
+            VanillaClientState current = read();
+            VanillaAutobattleResumeVerifier.ValidateSample(current, baseline, baseline.ProcessId ?? 0, utcNow());
+            MovementObserved = current.X.Value != baseline.X.Value || current.Y.Value != baseline.Y.Value
+                || (current.LastMovementAtUtc.HasValue && current.LastMovementAtUtc > baseline.SampledAtUtc)
+                || (current.X.LastChangedAtUtc.HasValue && current.X.LastChangedAtUtc > baseline.SampledAtUtc)
+                || (current.Y.LastChangedAtUtc.HasValue && current.Y.LastChangedAtUtc > baseline.SampledAtUtc);
+            return MovementObserved;
+        }
+    }
+
+    // Tests replace this entire native boundary; the production implementation only
+    // captures and sends input through the shared verified foreground transport.
+    internal interface IVanillaTeleportInput : IDisposable
+    {
+        void Activate();
+        Bitmap Capture();
+        void Chord(VanillaReconnectAccount account);
+        void ConfirmWarp();
+        void Minimize(System.Action<System.Action> ownedStep);
+    }
+
+    internal sealed class VanillaForegroundTeleportInput : IVanillaTeleportInput
+    {
+        private readonly Process process;
+        private readonly DateTime created;
+        private readonly Func<bool> cancelled;
+        private readonly VanillaForegroundInput input;
+        private IntPtr window;
+        private VanillaVisualInputProof firstProof;
+        [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+        [DllImport("user32.dll")] private static extern bool ShowWindow(IntPtr hwnd, int command);
+        [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr hwnd);
+
+        internal VanillaForegroundTeleportInput(int pid, Func<bool> cancelled)
+        {
+            this.cancelled = cancelled;
+            process = Process.GetProcessById(pid);
+            try
+            {
+                created = process.StartTime.ToUniversalTime();
+                input = new VanillaForegroundInput(pid, IntPtr.Zero, Cancelled);
+            }
+            catch { process.Dispose(); throw; }
+        }
+
+        private bool Cancelled()
+        {
+            if (cancelled()) return true;
+            process.Refresh();
+            return process.HasExited || process.StartTime.ToUniversalTime() != created;
+        }
+
+        public void Activate() { window = input.Window; input.Activate(); }
+        public Bitmap Capture()
+        {
+            Bitmap frame = input.CaptureClientBitmap();
+            try
+            {
+                var proof = input.LastCaptureProof;
+                if (proof == null || proof.Window != window || proof.ProcessId != process.Id
+                    || (firstProof != null && (firstProof.ClientSize != proof.ClientSize || firstProof.ClientOrigin != proof.ClientOrigin)))
+                    throw new InvalidOperationException("The teleport window/geometry changed; no further input sent.");
+                if (!VanillaTeleportVision.FrameLooksUsable(frame))
+                    throw new InvalidOperationException("The owned foreground teleport capture is unusable; no input sent.");
+                firstProof = firstProof ?? proof;
+                return frame;
+            }
+            catch { frame.Dispose(); throw; }
+        }
+        public void Chord(VanillaReconnectAccount account)
+        { input.ChordInVerifiedForeground(account.SmartTeleportCtrl, account.SmartTeleportAlt,
+            account.SmartTeleportShift, (Keys)account.SmartTeleportKey); }
+        public void ConfirmWarp() { input.PressFromProof(Keys.Enter, input.LastCaptureProof); }
+        public void Minimize(System.Action<System.Action> ownedStep)
+        {
+            if (window == IntPtr.Zero) return;
+            ownedStep(() =>
+            {
+                process.Refresh();
+                uint owner;
+                if (process.HasExited || process.StartTime.ToUniversalTime() != created
+                    || GetWindowThreadProcessId(window, out owner) == 0 || owner != (uint)process.Id) return;
+                if (!IsIconic(window)) ShowWindow(window, 6);
+                if (!IsIconic(window)) throw new InvalidOperationException("Could not confirm teleport client minimization.");
+            });
+        }
+        public void Dispose() { try { input.Dispose(); } finally { process.Dispose(); } }
+    }
+
     internal static class VanillaVerifiedTeleportAction
     {
-        internal static bool TryExecute(int pid, VanillaReconnectAccount account, Func<bool> cancelled, string mode, out string detail)
+        internal static bool TryExecute(int pid, VanillaReconnectAccount account, Func<bool> cancelled, string mode,
+            out string detail, Func<bool> movementResumed, System.Action<System.Action> ownedCleanup = null)
+        {
+            var clock = Stopwatch.StartNew();
+            return TryExecute(pid, account, cancelled, mode, out detail, movementResumed,
+                (processId, cancel) => new VanillaForegroundTeleportInput(processId, cancel),
+                () => clock.Elapsed, Thread.Sleep, ownedCleanup);
+        }
+
+        internal static bool TryExecute(int pid, VanillaReconnectAccount account, Func<bool> cancelled, string mode,
+            out string detail, Func<bool> movementResumed,
+            Func<int, Func<bool>, IVanillaTeleportInput> factory, Func<TimeSpan> clock, System.Action<int> pause,
+            System.Action<System.Action> ownedCleanup = null)
+        {
+            string context = " mode=" + (string.IsNullOrWhiteSpace(mode) ? "verified" : mode)
+                + " accountId=" + account?.Id + " pid=" + pid;
+            VanillaDebugLog.Write("TELEPORT", "event=teleport-start" + context + "; foreground-only=true.");
+            try
+            {
+                bool completed = TryExecuteCore(pid, account, cancelled, mode, out detail, movementResumed,
+                    factory, clock, pause, ownedCleanup);
+                string result = completed ? "teleport-complete"
+                    : detail.StartsWith("Smart Teleport stopped:", StringComparison.Ordinal) ? "teleport-failed" : "teleport-deferred";
+                VanillaDebugLog.Write("TELEPORT", "event=" + result + context + "; " + detail);
+                return completed;
+            }
+            catch (OperationCanceledException)
+            {
+                VanillaDebugLog.Write("TELEPORT", "event=teleport-cancelled" + context + "; ownership changed; no further input sent.");
+                throw;
+            }
+            catch (Exception ex)
+            {
+                VanillaDebugLog.Write("TELEPORT", "event=teleport-failed" + context + "; " + ex.Message);
+                throw;
+            }
+        }
+
+        private static bool TryExecuteCore(int pid, VanillaReconnectAccount account, Func<bool> cancelled, string mode,
+            out string detail, Func<bool> movementResumed,
+            Func<int, Func<bool>, IVanillaTeleportInput> factory, Func<TimeSpan> clock, System.Action<int> pause,
+            System.Action<System.Action> ownedCleanup)
         {
             if (pid <= 0) throw new ArgumentOutOfRangeException(nameof(pid));
-            if (account == null) throw new ArgumentNullException(nameof(account));
-            if (cancelled == null) throw new ArgumentNullException(nameof(cancelled));
+            if (account == null || cancelled == null || movementResumed == null || factory == null || clock == null || pause == null)
+                throw new ArgumentNullException("Teleport requires complete ownership, foreground and timing services.");
             mode = string.IsNullOrWhiteSpace(mode) ? "verified" : mode;
-
+            detail = "Smart Teleport cancelled";
             if (account.SmartTeleportKey < 8 || account.SmartTeleportKey > 254)
             {
-                detail = "Smart Teleport recovery skipped: no teleport hotkey is configured";
-                VanillaDebugLog.Write("TELEPORT", "event=teleport-skipped mode=" + mode + " account='" + account.Label
-                    + "' accountId=" + account.Id + " pid=" + pid + " reason='teleport hotkey not configured'; inputSent=false.");
+                detail = "Smart Teleport skipped: no teleport hotkey is configured";
+                Report(account, pid, mode, "skipped", detail);
                 return false;
             }
-
-            using (var input = new VanillaBackgroundWindowInput(pid, cancelled))
-            using (Bitmap before = input.CaptureClientBitmap())
+            bool moved = false, confirmed = false;
+            Func<bool> inputCancelled = () =>
             {
-                if (VanillaTeleportVision.HasWarpDialog(null, before))
+                if (cancelled()) return true;
+                if (movementResumed()) moved = true;
+                return moved;
+            };
+            System.Action check = () =>
+            {
+                if (inputCancelled()) throw new OperationCanceledException("Teleport ownership changed or movement resumed.");
+            };
+            try
+            {
+                check();
+                using (var input = factory(pid, inputCancelled))
                 {
-                    detail = "Smart Teleport deferred because a warp dialog was already open";
-                    VanillaDebugLog.Write("TELEPORT", "event=teleport-deferred mode=" + mode + " account='" + account.Label
-                        + "' pid=" + pid + " reason='warp dialog already open before hotkey'; no input sent.");
-                    return false;
-                }
-
-                VanillaDebugLog.Write("TELEPORT", "event=teleport-hotkey mode=" + mode + " account='" + account.Label
-                    + "' pid=" + pid + " idleSeconds=" + account.SmartTeleportIdleSeconds
-                    + " hotkey='" + account.SmartTeleportHotkeyText + "'.");
-                input.Chord(account.SmartTeleportCtrl, account.SmartTeleportAlt,
-                    account.SmartTeleportShift, (Keys)account.SmartTeleportKey);
-
-                if (!WaitForWarpDialog(input, before, cancelled, 3000))
-                {
-                    detail = "Smart Teleport popup not verified; no Enter sent";
-                    VanillaDebugLog.Write("TELEPORT", "event=teleport-failed mode=" + mode + " account='" + account.Label
-                        + "' pid=" + pid + " stage=popup reason='expected warp popup not positively detected'; enterSent=false.");
-                    return false;
-                }
-
-                using (Bitmap confirmation = input.CaptureClientBitmap())
-                {
-                    if (!VanillaTeleportVision.HasWarpDialog(null, confirmation))
+                    bool activationAttempted = false;
+                    try
                     {
-                        detail = "Smart Teleport popup was no longer present; no Enter sent";
-                        VanillaDebugLog.Write("TELEPORT", "event=teleport-failed mode=" + mode + " account='" + account.Label
-                            + "' pid=" + pid + " stage=confirmation reason='warp popup disappeared'; enterSent=false.");
-                        return false;
+                        check();
+                        activationAttempted = true;
+                        input.Activate();
+                        check();
+                        using (Bitmap before = input.Capture())
+                        {
+                            check();
+                            if (VanillaTeleportVision.HasWarpDialog(null, before))
+                            {
+                                detail = "Smart Teleport deferred: a warp-selection dialog was already open";
+                                Report(account, pid, mode, "deferred", detail);
+                                return false;
+                            }
+                            VanillaDebugLog.Write("TELEPORT", "event=teleport-hotkey mode=" + mode + " pid=" + pid
+                                + " hotkey='" + account.SmartTeleportHotkeyText + "' foreground=verified.");
+                            input.Chord(account);
+                            if (!WaitForDialog(input, before, true, check, clock, pause, 3000))
+                            {
+                                detail = "Smart Teleport stopped: expected warp-selection dialog was not detected; Enter was not sent";
+                                Report(account, pid, mode, "failed", detail);
+                                return false;
+                            }
+                            check();
+                            using (Bitmap confirmation = input.Capture())
+                            {
+                                check();
+                                RequireSameGeometry(before, confirmation);
+                                if (!VanillaTeleportVision.HasWarpDialog(null, confirmation))
+                                {
+                                    detail = "Smart Teleport stopped: warp selection changed before confirmation; Enter was not sent";
+                                    Report(account, pid, mode, "failed", detail);
+                                    return false;
+                                }
+                            }
+                            check();
+                            Report(account, pid, mode, "enter", "Fresh warp popup confirmed; first choice selected.");
+                            input.ConfirmWarp();
+                            confirmed = true;
+                            if (!WaitForDialog(input, before, false, check, clock, pause, 2500))
+                            {
+                                detail = "Smart Teleport stopped: warp-selection dialog did not clear after Enter";
+                                Report(account, pid, mode, "failed", detail);
+                                return false;
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        if (activationAttempted && ownedCleanup != null) input.Minimize(ownedCleanup);
                     }
                 }
-
-                VanillaDebugLog.Write("TELEPORT", "event=teleport-enter mode=" + mode + " account='" + account.Label
-                    + "' pid=" + pid + " popupConfirmed=true firstChoiceSelected=true.");
-                input.Press(Keys.Enter);
-                if (!WaitForWarpDialogGone(input, cancelled, 2500))
-                {
-                    detail = "Smart Teleport confirmation did not clear; no further input sent";
-                    VanillaDebugLog.Write("TELEPORT", "event=teleport-failed mode=" + mode + " account='" + account.Label
-                        + "' pid=" + pid + " stage=post-enter reason='warp popup remained visible'; no further input sent.");
-                    return false;
-                }
-
-                detail = "Smart Teleport completed in background";
-                VanillaDebugLog.Write("TELEPORT", "event=teleport-complete mode=" + mode + " account='" + account.Label
-                    + "' accountId=" + account.Id + " pid=" + pid + " popupCleared=true.");
+                detail = "Smart Teleport completed in the owned foreground client";
+                Report(account, pid, mode, "complete", detail);
                 return true;
             }
+            catch (OperationCanceledException) when (moved && !cancelled())
+            {
+                detail = "Movement resumed; no further Smart Teleport input sent";
+                Report(account, pid, mode, "movement", detail);
+                return false;
+            }
+            catch (InvalidOperationException ex) when (confirmed && !cancelled()
+                && ex.Message == "The client is loading or no longer ready for autobattle.")
+            {
+                // A warp may enter Loading before its dialog-clear capture. This is not
+                // visual confirmation and authorizes no retry/input; the caller observes X/Y.
+                detail = "Warp confirmation sent; fresh gameplay/dialog-clear evidence is pending";
+                Report(account, pid, mode, "pending", detail);
+                return false;
+            }
         }
 
-        private static bool WaitForWarpDialog(VanillaBackgroundWindowInput input, Bitmap before, Func<bool> cancelled, int timeoutMs)
+        private static void Report(VanillaReconnectAccount account, int pid, string mode, string result, string detail)
         {
-            Stopwatch watch = Stopwatch.StartNew();
+            VanillaDebugLog.Write("TELEPORT", "event=teleport-" + result + " mode=" + mode + " account='"
+                + account.Label + "' accountId=" + account.Id + " pid=" + pid + " detail='" + detail + "'.");
+        }
+
+        private static bool WaitForDialog(IVanillaTeleportInput input, Bitmap before, bool expected,
+            System.Action check, Func<TimeSpan> clock, System.Action<int> pause, int timeoutMs)
+        {
+            TimeSpan started = clock(), last = started;
             int consecutive = 0;
-            while (watch.ElapsedMilliseconds < timeoutMs)
+            while (clock() - started < TimeSpan.FromMilliseconds(timeoutMs))
             {
-                if (cancelled()) throw new OperationCanceledException();
-                using (Bitmap frame = input.CaptureClientBitmap())
+                check();
+                TimeSpan current = clock();
+                if (current < last) throw new InvalidOperationException("Teleport clock moved backwards.");
+                last = current;
+                using (Bitmap frame = input.Capture())
                 {
-                    if (VanillaTeleportVision.HasWarpDialog(before, frame))
-                    {
-                        if (++consecutive >= 2) return true;
-                    }
-                    else consecutive = 0;
+                    check();
+                    RequireSameGeometry(before, frame);
+                    bool matches = VanillaTeleportVision.HasWarpDialog(expected ? before : null, frame) == expected;
+                    consecutive = matches ? consecutive + 1 : 0;
+                    if (consecutive >= 2) return true;
                 }
-                Thread.Sleep(150);
+                pause(150);
             }
             return false;
         }
 
-        private static bool WaitForWarpDialogGone(VanillaBackgroundWindowInput input, Func<bool> cancelled, int timeoutMs)
+        private static void RequireSameGeometry(Bitmap before, Bitmap after)
         {
-            Stopwatch watch = Stopwatch.StartNew();
-            int absent = 0;
-            while (watch.ElapsedMilliseconds < timeoutMs)
-            {
-                if (cancelled()) throw new OperationCanceledException();
-                using (Bitmap frame = input.CaptureClientBitmap())
-                {
-                    if (!VanillaTeleportVision.HasWarpDialog(null, frame))
-                    {
-                        if (++absent >= 2) return true;
-                    }
-                    else absent = 0;
-                }
-                Thread.Sleep(150);
-            }
-            return false;
+            if (before != null && before.Size != after.Size)
+                throw new InvalidOperationException("The teleport capture geometry changed; no further input sent.");
         }
     }
 
@@ -260,7 +446,6 @@ namespace _4RTools.Model.Vanilla
     {
         private sealed class CharacterState
         {
-            internal readonly VanillaSmartTeleportTracker Tracker = new VanillaSmartTeleportTracker();
             internal bool Running;
         }
 
@@ -268,12 +453,10 @@ namespace _4RTools.Model.Vanilla
         private readonly VanillaReconnectSupervisor supervisor;
         private readonly Dictionary<string, CharacterState> states = new Dictionary<string, CharacterState>(StringComparer.OrdinalIgnoreCase);
         private readonly object gate = new object();
-        private readonly Stopwatch clock = Stopwatch.StartNew();
-        private System.Threading.Timer timer;
-        private int polling;
+        private bool started;
         private bool disposed;
 
-        internal bool IsRunning { get { lock (gate) return timer != null && !disposed; } }
+        internal bool IsRunning { get { lock (gate) return started && !disposed; } }
 
         internal VanillaSmartTeleportService(VanillaFleetMonitor fleet, VanillaReconnectSupervisor supervisor)
         {
@@ -285,10 +468,10 @@ namespace _4RTools.Model.Vanilla
         {
             lock (gate)
             {
-                if (disposed || timer != null) return;
-                timer = new System.Threading.Timer(_ => Poll(), null, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(1));
+                if (disposed || started) return;
+                started = true;
             }
-            VanillaDebugLog.Write("TELEPORT", "Per-character Smart Teleport service started. It uses verified X/Y only and never requires target/combat state.");
+            VanillaDebugLog.Write("TELEPORT", "Smart Teleport enabled; automatic stationary recovery is owned by the serialized supervisor. Manual tests use the same foreground action.");
         }
 
         internal string RunNow(string accountId)
@@ -312,58 +495,8 @@ namespace _4RTools.Model.Vanilla
             }
             VanillaDebugLog.Write("TELEPORT", "event=teleport-manual-request account='" + account.Label
                 + "' accountId=" + account.Id + " pid=" + pid + ".");
-            ThreadPool.QueueUserWorkItem(_ => Execute(accountId, pid, state, true));
+            ThreadPool.QueueUserWorkItem(_ => Execute(accountId, pid, state));
             return "Smart Teleport test queued for " + account.Label + " (PID " + pid + ").";
-        }
-
-        private void Poll()
-        {
-            if (disposed || Interlocked.Exchange(ref polling, 1) != 0) return;
-            try
-            {
-                if (!supervisor.IsRunning)
-                {
-                    lock (gate) foreach (CharacterState value in states.Values) value.Tracker.Reset(clock.Elapsed);
-                    return;
-                }
-
-                VanillaReconnectSettings settings = supervisor.Settings;
-                VanillaReconnectAccount[] enabled = settings.Accounts.Where(a => a.Enabled && a.SmartTeleportEnabled).ToArray();
-                var activeIds = new HashSet<string>(enabled.Select(a => a.Id), StringComparer.OrdinalIgnoreCase);
-                lock (gate)
-                    foreach (string stale in states.Keys.Where(id => !activeIds.Contains(id)).ToArray()) states.Remove(stale);
-                if (enabled.Length == 0) return;
-
-                IReadOnlyList<VanillaReconnectStatus> statuses = supervisor.Statuses();
-                IReadOnlyList<VanillaFleetClientInfo> clients = fleet.Poll();
-                DateTimeOffset utc = DateTimeOffset.UtcNow;
-
-                foreach (VanillaReconnectAccount account in enabled)
-                {
-                    if (supervisor.FarmingEmergencyHeld(account))
-                    { State(account.Id).Tracker.Reset(clock.Elapsed); continue; }
-                    VanillaReconnectStatus status = statuses.FirstOrDefault(s => string.Equals(s.AccountId, account.Id, StringComparison.OrdinalIgnoreCase));
-                    if (status == null || !status.ProcessId.HasValue || status.Stage != VanillaReconnectStage.Online) continue;
-                    VanillaFleetClientInfo client = clients.FirstOrDefault(item => item.ProcessId == status.ProcessId.Value);
-                    if (client == null || client.Identity == null || client.Position == null
-                        || !VanillaCharacterRoster.Matches(account, client.Identity, utc))
-                    {
-                        State(account.Id).Tracker.Reset(clock.Elapsed);
-                        continue;
-                    }
-
-                    CharacterState state = State(account.Id);
-                    bool due = state.Tracker.Observe(client.Position, clock.Elapsed, utc, account.SmartTeleportIdleSeconds);
-                    if (!due || state.Running) continue;
-                    state.Running = true;
-                    ThreadPool.QueueUserWorkItem(_ => Execute(account.Id, status.ProcessId.Value, state, false));
-                }
-            }
-            catch (Exception ex)
-            {
-                VanillaDebugLog.Write("TELEPORT", "Smart Teleport poll failed safely: " + ex.Message);
-            }
-            finally { Interlocked.Exchange(ref polling, 0); }
         }
 
         private CharacterState State(string id)
@@ -376,11 +509,11 @@ namespace _4RTools.Model.Vanilla
             }
         }
 
-        private void Execute(string accountId, int pid, CharacterState state, bool manual)
+        private void Execute(string accountId, int pid, CharacterState state)
         {
             VanillaSmartTeleportToken token = null;
             string reason;
-            string mode = manual ? "manual-test" : "automatic-idle";
+            const string mode = "manual-test";
             string completionDetail = "Smart Teleport cancelled";
             try
             {
@@ -390,13 +523,26 @@ namespace _4RTools.Model.Vanilla
                         + " pid=" + pid + " reason='" + reason + "'.");
                     return;
                 }
+                if (!string.Equals(token.AccountId, accountId, StringComparison.OrdinalIgnoreCase))
+                {
+                    completionDetail = "Smart Teleport cancelled: selected character binding changed";
+                    return;
+                }
 
-                VanillaDebugLog.Write("TELEPORT", "event=teleport-start mode=" + mode + " account='" + token.Account.Label
+                VanillaDebugLog.Write("TELEPORT", "event=teleport-manual-lease mode=" + mode + " account='" + token.Account.Label
                     + "' accountId=" + token.AccountId + " pid=" + pid + " hotkey='" + token.Account.SmartTeleportHotkeyText + "'.");
-                state.Tracker.Reset(clock.Elapsed);
-                Func<bool> cancelled = () => supervisor.SmartTeleportCancelled(token);
+                Func<bool> cancelled = () => disposed || supervisor.SmartTeleportCancelled(token);
+                Func<VanillaClientState> read = () =>
+                {
+                    VanillaFleetClientInfo client = fleet.Poll().FirstOrDefault(value => value.ProcessId == pid);
+                    if (client == null || !VanillaCharacterRoster.Matches(token.Account, client.Identity, DateTimeOffset.UtcNow))
+                        throw new InvalidOperationException("Fresh teleport character identity is unavailable.");
+                    return client.Snapshot;
+                };
+                var movement = new VanillaTeleportMovementGuard(read(), read);
                 string detail;
-                VanillaVerifiedTeleportAction.TryExecute(pid, token.Account, cancelled, mode, out detail);
+                VanillaVerifiedTeleportAction.TryExecute(pid, token.Account, cancelled, mode, out detail,
+                    movement.MovementResumed, step => { if (!disposed) supervisor.SmartTeleportCleanup(token, step); });
                 completionDetail = detail;
             }
             catch (OperationCanceledException)
@@ -407,20 +553,17 @@ namespace _4RTools.Model.Vanilla
             }
             catch (Exception ex)
             {
-                VanillaDebugLog.Write("TELEPORT", "event=teleport-failed mode=" + mode + " account='"
+                VanillaDebugLog.Write("TELEPORT", "event=teleport-service-error mode=" + mode + " account='"
                     + (token?.Account?.Label ?? accountId) + "' pid=" + pid + " stage=exception reason='" + ex.Message
                     + "'; no blind Enter was sent.");
                 completionDetail = "Smart Teleport failed safely: " + ex.Message;
             }
             finally
             {
-                // A real owned attempt starts a new idle baseline. A deferred attempt did
-                // not send input, so keep the existing due state and retry after contention.
                 if (token != null)
                 {
                     try { supervisor.CompleteSmartTeleport(token, completionDetail); }
                     catch (Exception ex) { VanillaDebugLog.Write("TELEPORT", "Teleport completion notification failed: " + ex.Message); }
-                    state.Tracker.Reset(clock.Elapsed);
                 }
                 lock (gate) state.Running = false;
             }
@@ -432,264 +575,10 @@ namespace _4RTools.Model.Vanilla
             {
                 if (disposed) return;
                 disposed = true;
-                timer?.Dispose();
-                timer = null;
+                started = false;
                 states.Clear();
             }
-            clock.Stop();
         }
-    }
-
-    internal enum VanillaBackgroundInputPurpose { Teleport, RecoveryObservation }
-
-    internal sealed class VanillaBackgroundWindowInput : IDisposable
-    {
-        private const uint WM_KEYDOWN = 0x0100, WM_KEYUP = 0x0101;
-        private const uint WM_SYSKEYDOWN = 0x0104, WM_SYSKEYUP = 0x0105;
-        private const uint PW_CLIENTONLY = 0x00000001, PW_RENDERFULLCONTENT = 0x00000002;
-        private readonly int pid;
-        private readonly Func<bool> cancelled;
-        private IntPtr window;
-
-        private const int GWL_STYLE = -16, GWL_EXSTYLE = -20;
-
-        [StructLayout(LayoutKind.Sequential)]
-        private struct RECT { public int Left, Top, Right, Bottom; }
-        [StructLayout(LayoutKind.Sequential)]
-        private struct POINT { public int X, Y; }
-        [StructLayout(LayoutKind.Sequential)]
-        private struct WINDOWPLACEMENT
-        {
-            public int Length, Flags, ShowCmd;
-            public POINT MinPosition, MaxPosition;
-            public RECT NormalPosition;
-        }
-        private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
-
-        [DllImport("user32.dll")] private static extern bool EnumWindows(EnumWindowsProc callback, IntPtr lParam);
-        [DllImport("user32.dll")] private static extern bool IsWindow(IntPtr hwnd);
-        [DllImport("user32.dll")] private static extern bool IsWindowVisible(IntPtr hwnd);
-        [DllImport("user32.dll")] private static extern bool IsIconic(IntPtr hwnd);
-        [DllImport("user32.dll", SetLastError = true)] private static extern bool GetClientRect(IntPtr hwnd, out RECT rect);
-        [DllImport("user32.dll", SetLastError = true)] private static extern bool GetWindowPlacement(IntPtr hwnd, ref WINDOWPLACEMENT placement);
-        [DllImport("user32.dll", SetLastError = true)] private static extern int GetWindowLong(IntPtr hwnd, int index);
-        [DllImport("user32.dll")] private static extern IntPtr GetMenu(IntPtr hwnd);
-        [DllImport("user32.dll", SetLastError = true)] private static extern bool AdjustWindowRectEx(ref RECT rect, int style, bool menu, int exStyle);
-        [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint processId);
-        [DllImport("user32.dll", SetLastError = true)] private static extern bool PostMessage(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
-        [DllImport("user32.dll")] private static extern uint MapVirtualKey(uint code, uint mapType);
-        [DllImport("user32.dll", SetLastError = true)] private static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
-        [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr hwnd, System.Text.StringBuilder text, int count);
-        [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr hwnd, System.Text.StringBuilder text, int count);
-
-        internal VanillaBackgroundWindowInput(int pid, Func<bool> cancelled,
-            VanillaBackgroundInputPurpose purpose = VanillaBackgroundInputPurpose.Teleport)
-        {
-            if (pid <= 0) throw new ArgumentOutOfRangeException(nameof(pid));
-            this.pid = pid;
-            this.cancelled = cancelled ?? (() => false);
-            window = ResolveWindow();
-            int captureWidth, captureHeight;
-            string captureSource;
-            if (!TryGetCaptureSize(window, out captureWidth, out captureHeight, out captureSource))
-                throw new InvalidOperationException("Owned Vanilla window was found, but no safe background capture size could be derived.");
-            // Recovery observations already report transitions and bounded health
-            // heartbeats. A fresh capture object on every poll is not a teleport.
-            if (purpose == VanillaBackgroundInputPurpose.Teleport)
-                VanillaDebugLog.Write("TELEPORT", "Background input bound to PID=" + pid + ", hwnd=0x" + window.ToInt64().ToString("X")
-                    + ", capture=" + captureWidth + "x" + captureHeight + " source=" + captureSource
-                    + ", iconic=" + IsIconic(window) + ". It will not restore or foreground the game window.");
-        }
-
-        internal void Chord(bool ctrl, bool alt, bool shift, Keys key)
-        {
-            EnsureAllowed();
-            var held = new Stack<Keys>();
-            try
-            {
-                if (ctrl) { Key(Keys.ControlKey, false, false); held.Push(Keys.ControlKey); }
-                if (alt) { Key(Keys.Menu, false, true); held.Push(Keys.Menu); }
-                if (shift) { Key(Keys.ShiftKey, false, alt); held.Push(Keys.ShiftKey); }
-                Thread.Sleep(55);
-                Key(key, false, alt); Thread.Sleep(70); Key(key, true, alt);
-            }
-            finally
-            {
-                while (held.Count > 0)
-                    try
-                    {
-                        Keys release = held.Pop();
-                        Key(release, true, release == Keys.Menu || (alt && release != Keys.ControlKey));
-                    }
-                    catch { }
-            }
-            Thread.Sleep(90);
-        }
-
-        internal void Press(Keys key)
-        {
-            EnsureAllowed();
-            Key(key, false, false); Thread.Sleep(70); Key(key, true, false); Thread.Sleep(90);
-        }
-
-        internal Bitmap CaptureClientBitmap()
-        {
-            EnsureAllowed();
-            int width, height;
-            string sizeSource;
-            if (!TryGetCaptureSize(window, out width, out height, out sizeSource))
-                throw new InvalidOperationException("Background Vanilla client size is unavailable; no teleport input continued.");
-
-            var bitmap = new Bitmap(width, height, PixelFormat.Format24bppRgb);
-            try
-            {
-                using (Graphics graphics = Graphics.FromImage(bitmap))
-                {
-                    IntPtr hdc = graphics.GetHdc();
-                    try
-                    {
-                        if (!PrintWindow(window, hdc, PW_CLIENTONLY | PW_RENDERFULLCONTENT))
-                            throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows could not capture the background Vanilla client.");
-                    }
-                    finally { graphics.ReleaseHdc(hdc); }
-                }
-                if (!VanillaTeleportVision.FrameLooksUsable(bitmap))
-                    throw new InvalidOperationException("Background window capture was blank/indeterminate; no teleport input continued.");
-                return bitmap;
-            }
-            catch
-            {
-                bitmap.Dispose();
-                throw;
-            }
-        }
-
-        private void Key(Keys key, bool up, bool system)
-        {
-            EnsureAllowed();
-            int value = (int)key;
-            if (value < 8 || value > 254) throw new ArgumentException("Invalid Smart Teleport virtual key.");
-            uint scan = MapVirtualKey((uint)value, 4);
-            uint flags = 1U | ((scan & 0xFF) << 16);
-            if ((scan & 0xFF00) != 0) flags |= 1U << 24;
-            if (system) flags |= 1U << 29; // Alt/context bit for WM_SYSKEY*.
-            if (up) flags |= 0xC0000000U;
-            uint message = system ? (up ? WM_SYSKEYUP : WM_SYSKEYDOWN) : (up ? WM_KEYUP : WM_KEYDOWN);
-            if (!PostMessage(window, message, new IntPtr(value), new IntPtr(unchecked((int)flags))))
-                throw new Win32Exception(Marshal.GetLastWin32Error(), "Windows rejected background key input.");
-        }
-
-        private void EnsureAllowed()
-        {
-            if (cancelled()) throw new OperationCanceledException();
-            uint owner;
-            if (window == IntPtr.Zero || !IsWindow(window) || GetWindowThreadProcessId(window, out owner) == 0 || owner != (uint)pid)
-                throw new InvalidOperationException("The bound Vanilla window changed or disappeared.");
-        }
-
-        private IntPtr ResolveWindow()
-        {
-            IntPtr best = IntPtr.Zero;
-            long bestArea = -1;
-            EnumWindows(delegate(IntPtr hwnd, IntPtr state)
-            {
-                uint owner;
-                if (GetWindowThreadProcessId(hwnd, out owner) == 0 || owner != (uint)pid) return true;
-                string cls = Text(hwnd, false), title = Text(hwnd, true);
-                if (!VanillaForegroundInput.IsKnownVanillaGameWindow(cls, title)) return true;
-                int width, height;
-                string sizeSource;
-                if (!TryGetCaptureSize(hwnd, out width, out height, out sizeSource)) return true;
-                long area = (long)width * height + (IsWindowVisible(hwnd) ? 1000000000L : 0L)
-                    + (IsIconic(hwnd) ? 0L : 500000000L);
-                if (area > bestArea) { bestArea = area; best = hwnd; }
-                return true;
-            }, IntPtr.Zero);
-            if (best == IntPtr.Zero)
-                throw new InvalidOperationException("No owned Vanilla game window is available for background Smart Teleport.");
-            return best;
-        }
-
-        internal static bool TryGetCaptureSize(IntPtr hwnd, out int width, out int height, out string source)
-        {
-            width = height = 0;
-            source = "none";
-            RECT client;
-            int clientWidth = 0, clientHeight = 0;
-            if (GetClientRect(hwnd, out client))
-            {
-                clientWidth = client.Right - client.Left;
-                clientHeight = client.Bottom - client.Top;
-            }
-            if (TryResolveCaptureSize(clientWidth, clientHeight, 0, 0, 0, 0, out width, out height, out source))
-                return true;
-
-            // A minimized Vanilla top-level window reports a 0x0 client area on the user's
-            // machine even though PostMessage/PrintWindow can still address that owned HWND.
-            // WINDOWPLACEMENT retains the normal outer bounds. Subtract the current style's
-            // non-client frame to recover the last normal client size without restoring,
-            // foregrounding or moving the game window.
-            var placement = new WINDOWPLACEMENT { Length = Marshal.SizeOf(typeof(WINDOWPLACEMENT)) };
-            if (!GetWindowPlacement(hwnd, ref placement)) return false;
-            int outerWidth = placement.NormalPosition.Right - placement.NormalPosition.Left;
-            int outerHeight = placement.NormalPosition.Bottom - placement.NormalPosition.Top;
-
-            int frameWidth = 0, frameHeight = 0;
-            RECT probe = new RECT { Left = 0, Top = 0, Right = 1000, Bottom = 1000 };
-            int style = GetWindowLong(hwnd, GWL_STYLE);
-            int exStyle = GetWindowLong(hwnd, GWL_EXSTYLE);
-            if (AdjustWindowRectEx(ref probe, style, GetMenu(hwnd) != IntPtr.Zero, exStyle))
-            {
-                frameWidth = Math.Max(0, (probe.Right - probe.Left) - 1000);
-                frameHeight = Math.Max(0, (probe.Bottom - probe.Top) - 1000);
-            }
-            return TryResolveCaptureSize(clientWidth, clientHeight, outerWidth, outerHeight,
-                frameWidth, frameHeight, out width, out height, out source);
-        }
-
-        internal static bool TryResolveCaptureSize(int clientWidth, int clientHeight,
-            int normalOuterWidth, int normalOuterHeight, int frameWidth, int frameHeight,
-            out int width, out int height, out string source)
-        {
-            width = height = 0;
-            source = "none";
-            if (clientWidth >= 200 && clientHeight >= 120)
-            {
-                width = clientWidth;
-                height = clientHeight;
-                source = "client-rect";
-                return true;
-            }
-
-            if (normalOuterWidth < 200 || normalOuterHeight < 120) return false;
-            int derivedWidth = normalOuterWidth - Math.Max(0, frameWidth);
-            int derivedHeight = normalOuterHeight - Math.Max(0, frameHeight);
-            if (derivedWidth >= 200 && derivedHeight >= 120)
-            {
-                width = derivedWidth;
-                height = derivedHeight;
-                source = frameWidth > 0 || frameHeight > 0
-                    ? "normal-placement-minus-frame" : "normal-placement-outer-fallback";
-                return true;
-            }
-
-            // Conservative fallback: PrintWindow paints at the top-left. A small amount of
-            // non-client slack is preferable to restoring a minimized client; visual validation
-            // below still rejects blank/indeterminate captures before any teleport key is sent.
-            width = normalOuterWidth;
-            height = normalOuterHeight;
-            source = "normal-placement-outer-fallback";
-            return width >= 200 && height >= 120;
-        }
-
-        private static string Text(IntPtr hwnd, bool title)
-        {
-            var value = new System.Text.StringBuilder(title ? 256 : 128);
-            if (title) GetWindowText(hwnd, value, value.Capacity); else GetClassName(hwnd, value, value.Capacity);
-            return value.ToString().Replace("\r", " ").Replace("\n", " ").Trim();
-        }
-
-        public void Dispose() { window = IntPtr.Zero; }
     }
 
     internal static class VanillaTeleportVision

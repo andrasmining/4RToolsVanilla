@@ -78,8 +78,8 @@ or GAME START coordinates are used.
 After real login/relog, gameplay settles for ten seconds; the configured resume
 hotkey is followed by ten seconds of fresh X/Y verification. There are at most
 three hotkey attempts per recovery cycle. Failed cycles continue with exponential
-backoff capped at one hour. A healthy adopted client is not toggled just because
-it is stationary or its sibling needs recovery. Movement proves movement, not combat.
+backoff capped at one hour. Adopting a healthy client does not toggle Autobattle;
+subsequent sustained stalls use the recovery flow below. Movement proves movement, not combat.
 
 Fresh matching **Now Logging Out.** / **Disconnected from Server.** dialogs can
 trigger earlier recovery of only the affected client; exit is confirmed before
@@ -92,9 +92,13 @@ recovery. STOP, ownership changes and relevant settings edits cancel stale input
 
 Each character has its own Smart Teleport switch, captured hotkey and stationary
 threshold, default sixty seconds. Only fresh verified X/Y establishes movement or
-stationary duration. Ordinary background messages target the owned client; Enter
-requires two positive observations of its warp-selection popup. Unknown fields do
-not become zero, idle, no target or successful input.
+stationary duration. Background supervision reads memory only and takes no
+screenshots. A sustained movement failure activates only the affected client under
+the shared input lock, then inspects its foreground screen for logout/disconnect.
+Stationary gameplay uses foreground Smart Teleport first and bounded configured
+Autobattle resume if movement still has not returned. Any fresh movement cancels
+further recovery input. Enter requires positive observations of the expected warp
+selection popup; unknown fields do not become zero or successful input.
 
 The longer no-movement restart threshold defaults to 180 seconds and is configurable
 from 60 to 3600 seconds. Teleport attempts do not postpone it without actual verified

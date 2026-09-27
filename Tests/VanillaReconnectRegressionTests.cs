@@ -28,7 +28,7 @@ namespace Vanilla.Diagnostics.Tests
             Test("Supervisor minimizes only healthy gameplay clients", ManagedMinimizePolicy);
             Test("Launcher PID binding closes the duplicate-launch race", SequentialLaunchBinding);
             Test("Sequential startup advances only after gameplay resume and minimize", HardenedStartupAdvanceGate);
-            Test("Existing client startup accepts verified memory when visual is Unknown", ExistingClientMemoryGate);
+            Test("Existing healthy client adoption accepts verified memory without any visual probe", ExistingClientMemoryGate);
             Test("Host diagnostics include session display and window context", HostDiagnosticsBundle);
             Test("Gepard splash and GDI hook helpers are never interactive targets", BootstrapHelpersAreTransient);
             Test("Interactive game readiness retains its full budget after an early splash", InteractiveWindowLateReady);
@@ -206,18 +206,11 @@ namespace Vanilla.Diagnostics.Tests
 
         private static void ExistingClientMemoryGate()
         {
-            Assert(!VanillaReconnectSupervisor.ExistingClientVisualBlocksMemoryAdoption(VanillaVisualState.Unknown),
-                "Unknown visual state must not override fresh verified gameplay memory.");
-            Assert(!VanillaReconnectSupervisor.ExistingClientVisualBlocksMemoryAdoption(VanillaVisualState.Gameplay),
-                "Gameplay unexpectedly blocked memory-backed adoption.");
-            Assert(VanillaReconnectSupervisor.ExistingClientVisualBlocksMemoryAdoption(VanillaVisualState.LoginShell),
-                "A verified login shell must block gameplay adoption.");
-            Assert(VanillaReconnectSupervisor.ExistingClientVisualBlocksMemoryAdoption(VanillaVisualState.LoggingOut),
-                "Logging-out state must block gameplay adoption.");
-            Assert(VanillaReconnectSupervisor.ExistingClientVisualBlocksMemoryAdoption(VanillaVisualState.Disconnected),
-                "Disconnected state must block gameplay adoption.");
-            Assert(VanillaReconnectSupervisor.ExistingClientVisualBlocksMemoryAdoption(VanillaVisualState.ServerClosed),
-                "Server-closed state must block gameplay adoption.");
+            int memoryReads = 0, captures = 0;
+            bool replace = VanillaReconnectSupervisor.ExistingClientRequiresReplacement(
+                () => memoryReads++, () => { captures++; return true; }, () => false);
+            Assert(!replace && memoryReads == 1 && captures == 0,
+                "Verified memory adoption activated or captured an existing healthy client.");
         }
 
         private static void HostDiagnosticsBundle()
@@ -398,17 +391,9 @@ namespace Vanilla.Diagnostics.Tests
             Assert(hiddenGeneric == int.MinValue,
                 "An arbitrary hidden/minimized same-process window must not become an automation target.");
 
-            int width, height; string source;
-            Assert(VanillaBackgroundWindowInput.TryResolveCaptureSize(1024, 768, 0, 0, 0, 0,
-                out width, out height, out source) && width == 1024 && height == 768 && source == "client-rect",
-                "Visible background capture must prefer the actual client rectangle.");
-            Assert(VanillaBackgroundWindowInput.TryResolveCaptureSize(0, 0, 1040, 807, 16, 39,
-                out width, out height, out source) && width == 1024 && height == 768
-                && source == "normal-placement-minus-frame",
-                "A minimized 0x0 Vanilla client must recover its normal capture size without restoring/foregrounding the window.");
-            Assert(!VanillaBackgroundWindowInput.TryResolveCaptureSize(0, 0, 100, 80, 0, 0,
-                out width, out height, out source),
-                "Tiny/helper window geometry must never become a background teleport capture surface.");
+            Assert(VanillaForegroundInput.WindowCandidateScore(true, true, 100, 80, false, false,
+                "SomeWindowClass", "SomeWindow") == int.MinValue,
+                "Tiny helper geometry must not become an interactive foreground target.");
         }
 
         private static void ResponsiveRecoveryBreakpoint()

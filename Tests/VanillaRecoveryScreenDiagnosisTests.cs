@@ -16,7 +16,13 @@ namespace Vanilla.Diagnostics.Tests
         private const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
         internal static int Run()
         {
-            Test("Foreground diagnosis accepts only eligible unavailable background evidence", BackgroundPolicy);
+            Test("Healthy memory supervision takes no screenshots and stall diagnosis ignores legacy visual switch", BackgroundPolicy);
+            Test("Usable Unknown frames authorize memory-backed recovery only at the configured idle", StationaryScheduling);
+            Test("Teleport without auto relog repeats at idle while preserving the restart deadline", TeleportWithoutRelog);
+            Test("Failed foreground capture cannot authorize stationary input", FailedCapture);
+            Test("Original restart deadline does not cancel its foreground diagnosis", DeadlineDiagnosis);
+            Test("Configured teleport idle five through sixty seconds retains exact scheduling", ConfiguredIdle);
+            Test("New movement does not inherit the previous stall diagnosis cooldown", NewStallCooldown);
             Test("Two fresh diagnosis frames restore only an originally minimized window", FreshPair);
             Test("Changed or stale diagnosis frames authorize no terminal result", FrameGuards);
             Test("STOP suppresses cleanup while movement-only cancellation restores original state", Cancellation);
@@ -39,13 +45,106 @@ namespace Vanilla.Diagnostics.Tests
         }
         private static void BackgroundPolicy()
         {
-            foreach (string error in new[] { "Win32Exception: capture; nativeError=18", "Background capture exceeded its bounded observation time",
-                "Background window capture was blank/indeterminate; no teleport input continued." })
-                Assert(VanillaRecoveryScreenDiagnosis.BackgroundAllowsDiagnosis(new VanillaRecoveryVisualObservation(VanillaVisualState.Unknown, false, error)));
-            foreach (string error in new[] { "Access denied; nativeError=5", "Access denied; nativeError=18", "unexplained", "nativeError=87" })
-                Assert(!VanillaRecoveryScreenDiagnosis.BackgroundAllowsDiagnosis(new VanillaRecoveryVisualObservation(VanillaVisualState.Unknown, false, error)));
-            Assert(VanillaRecoveryScreenDiagnosis.BackgroundAllowsDiagnosis(new VanillaRecoveryVisualObservation(VanillaVisualState.Unknown, true, null)));
-            Assert(!VanillaRecoveryScreenDiagnosis.BackgroundAllowsDiagnosis(new VanillaRecoveryVisualObservation(VanillaVisualState.Disconnected, true, null)));
+            foreach (bool legacy in new[] { false, true })
+            using (var h = new Harness())
+            {
+                ((VanillaReconnectSettings)Get(h.Supervisor, "settings")).VisualWatchdog = legacy;
+                h.Sample(); h.Probe();
+                h.E.Seconds = 29; h.Sample(); h.Probe();
+                Assert(h.Opens == 0 && h.E.Work.Count == 0 && h.Resumes == 0);
+                h.E.Seconds = 30; h.Sample(); h.Probe();
+                Assert(h.Opens == 0 && h.E.Work.Count == 1 && h.Resumes == 0);
+            }
+        }
+        private static void StationaryScheduling()
+        {
+            using (var h = new Harness())
+            {
+                var account = (VanillaReconnectAccount)Get(h.A, "Account");
+                account.SmartTeleportEnabled = true; account.SmartTeleportKey = 116; account.SmartTeleportIdleSeconds = 60;
+                h.Arm(); Assert(h.Queue()); h.E.Work.Dequeue()();
+                Assert(h.Resumes == 0 && (long)Get(h.A, "ForegroundGameplayVersion") == h.Watchdog.ProgressVersion);
+                h.E.Seconds = 60; h.Sample();
+                Assert((bool)Call(h.Supervisor, "TryQueueStalledAutobattleRecovery", h.A) && h.Resumes == 1);
+                Assert(!(bool)Call(h.Supervisor, "TryQueueStalledAutobattleRecovery", h.A) && h.Resumes == 1);
+                h.E.Seconds = 61; h.Sample(11); h.Watchdog.Observe(101, h.Position, h.E.MonotonicNow, h.E.UtcNow);
+                h.E.Seconds = 121; h.Sample(11);
+                Assert(!(bool)Call(h.Supervisor, "TryQueueStalledAutobattleRecovery", h.A), "Old foreground evidence authorized a new stall.");
+                Assert(h.Queue()); h.E.Work.Dequeue()(); Assert(h.Resumes == 2);
+            }
+        }
+        private static void TeleportWithoutRelog()
+        {
+            using (var h = new Harness())
+            {
+                ((VanillaReconnectSettings)Get(h.Supervisor, "settings")).AutoRecover = false;
+                var account = (VanillaReconnectAccount)Get(h.A, "Account");
+                account.SmartTeleportEnabled = true; account.SmartTeleportKey = 116; account.SmartTeleportIdleSeconds = 60;
+                h.Arm(); h.E.Seconds = 60; h.Sample(); Assert(h.Queue()); h.E.Work.Dequeue()();
+                Assert(h.Resumes == 1);
+                h.E.Seconds = 90; h.Sample(); Assert(!(bool)Call(h.Supervisor, "TryQueueStalledAutobattleRecovery", h.A));
+                h.E.Seconds = 121; h.Sample(); Assert((bool)Call(h.Supervisor, "TryQueueStalledAutobattleRecovery", h.A));
+                Assert(h.Resumes == 2 && h.E.Closed.Count == 0 && h.Watchdog.StalledSeconds(h.E.MonotonicNow) == 121);
+            }
+            using (var h = new Harness())
+            {
+                ((VanillaReconnectSettings)Get(h.Supervisor, "settings")).AutoRecover = false;
+                ((VanillaReconnectAccount)Get(h.A, "Account")).SmartTeleportEnabled = true;
+                h.Arm(); h.Screen.Frame = n => h.Frame(n, VanillaVisualState.ServerClosed);
+                Assert(h.Queue()); h.E.Work.Dequeue()();
+                Assert(h.E.Closed.Count == 0 && h.E.Work.Count == 0 && h.Resumes == 0);
+            }
+        }
+        private static void FailedCapture()
+        {
+            using (var h = new Harness())
+            {
+                h.Arm(); h.Screen.FailCapture = true; Assert(h.Queue()); h.E.Work.Dequeue()();
+                Assert(h.Resumes == 0 && (long)Get(h.A, "ForegroundGameplayVersion") == -1);
+            }
+        }
+        private static void DeadlineDiagnosis()
+        {
+            using (var h = new Harness())
+            {
+                h.Arm(); Assert(h.Queue()); h.E.Seconds = 180; h.Sample(); h.E.Work.Dequeue()();
+                Assert(h.Opens == 1 && h.Screen.Captures == 2 && h.Resumes == 0 && h.Watchdog.StalledSeconds(h.E.MonotonicNow) >= 180);
+            }
+        }
+        private static void ConfiguredIdle()
+        {
+            foreach (int idle in new[] { 5, 29, 30, 60 })
+            using (var h = new Harness())
+            {
+                var account = (VanillaReconnectAccount)Get(h.A, "Account");
+                account.SmartTeleportEnabled = true; account.SmartTeleportKey = 116; account.SmartTeleportIdleSeconds = idle;
+                h.Sample(); h.Watchdog.Observe(101, h.Position, h.E.MonotonicNow, h.E.UtcNow);
+                h.E.Seconds = Math.Min(30, idle) - .1; h.Sample();
+                h.Watchdog.Observe(101, h.Position, h.E.MonotonicNow, h.E.UtcNow); Assert(!h.Queue());
+                h.E.Seconds += .1; h.Sample(); h.Watchdog.Observe(101, h.Position, h.E.MonotonicNow, h.E.UtcNow);
+                Assert(h.Queue()); h.E.Work.Dequeue()();
+                Assert(h.Resumes == (idle <= 30 ? 1 : 0), "Configured idle changed for " + idle + "s.");
+                if (idle > 30)
+                { h.E.Seconds = idle; h.Sample(); Assert((bool)Call(h.Supervisor, "TryQueueStalledAutobattleRecovery", h.A)); }
+            }
+            using (var h = new Harness())
+            {
+                var account = (VanillaReconnectAccount)Get(h.A, "Account");
+                account.SmartTeleportEnabled = false; account.SmartTeleportKey = 116; account.SmartTeleportIdleSeconds = 60;
+                h.Arm(); Assert(h.Queue()); h.E.Work.Dequeue()();
+                Assert(h.Resumes == 1, "Disabled teleport with retained key delayed the ordinary stall-recovery fallback.");
+            }
+        }
+        private static void NewStallCooldown()
+        {
+            using (var h = new Harness())
+            {
+                h.Arm(); Assert(h.Queue()); h.E.Work.Dequeue()();
+                h.E.Seconds = 31; h.Sample(11); h.Watchdog.Observe(101, h.Position, h.E.MonotonicNow, h.E.UtcNow);
+                h.E.Seconds = 61; h.Sample(11); h.Watchdog.Observe(101, h.Position, h.E.MonotonicNow, h.E.UtcNow);
+                Assert(h.Queue(), "Prior stall's cooldown suppressed a new stationary episode.");
+                h.E.Work.Dequeue()(); Assert(h.Resumes == 2);
+            }
         }
         private sealed class Screen : IVanillaRecoveryScreenSession
         {
@@ -141,7 +240,7 @@ namespace Vanilla.Diagnostics.Tests
             internal readonly object A, B;
             internal Screen Screen = new Screen();
             internal VanillaPositionSample Position;
-            internal int Opens;
+            internal int Opens, Resumes;
             internal VanillaRecoveryVisualObservation Background = new VanillaRecoveryVisualObservation(VanillaVisualState.Unknown, false, "nativeError=18");
             private readonly string directory = Path.Combine(Path.GetTempPath(), "4R-screen-" + Guid.NewGuid().ToString("N"));
             internal Harness()
@@ -153,7 +252,7 @@ namespace Vanilla.Diagnostics.Tests
                 { Set(pair.Item1, "ProcessId", (int?)pair.Item2); Set(pair.Item1, "ResumeSent", true); Set(pair.Item1, "HasBeenOnline", true); Set(pair.Item1, "Stage", VanillaReconnectStage.Online); }
                 Set(Supervisor, "running", true);
                 Supervisor.SetPositionSource(pid => pid == 101 ? Position : null, pid => { });
-                Set(Supervisor, "recoveryVisualSource", (Func<int, VanillaRecoveryVisualObservation>)(pid => Background));
+                Supervisor.SetAutobattleResumeTestHook((id, trigger, recovery) => Resumes++);
                 Supervisor.RecoveryScreenDiagnosisFactory = (pid, created, cancelled) => { Opens++; return Screen; };
                 Screen.Frame = n => Frame(n);
                 Set(A, "LastVisualObservation", Background);
@@ -187,17 +286,15 @@ namespace Vanilla.Diagnostics.Tests
         }
         private static void QueuedCancellation()
         {
-            foreach (string change in new[] { "movement", "deadline", "stop", "creation" })
+            foreach (string change in new[] { "movement", "stop", "creation" })
             using (var h = new Harness())
             {
                 h.Arm(); Assert(h.Queue());
                 if (change == "movement") { h.E.Seconds = 31; h.Sample(11); }
-                else if (change == "deadline") { h.E.Seconds = 180; h.Sample(); }
                 else if (change == "creation") h.E.CreationShift = 1;
                 else h.Supervisor.Stop();
                 h.E.Work.Dequeue()();
                 Assert(h.Opens == 0 && h.E.Closed.Count == 0 && !(bool)Get(h.A, "ScriptRunning"));
-                if (change == "deadline") Assert(h.Watchdog.StalledSeconds(h.E.MonotonicNow) == 180);
             }
         }
         private static void ServerClosedIntegration()
@@ -305,7 +402,7 @@ namespace Vanilla.Diagnostics.Tests
         {
             using (var h = new Harness())
             {
-                h.Background = new VanillaRecoveryVisualObservation(VanillaVisualState.ModalDialog, true, null);
+                Set(h.A, "Visual", VanillaVisualState.ModalDialog);
                 h.Sample(); h.Probe(); Assert(h.Watchdog.IsArmed && h.E.Work.Count == 0);
                 h.E.Seconds = 30; h.Sample();
                 h.Background = new VanillaRecoveryVisualObservation(VanillaVisualState.Unknown, false, "nativeError=18");

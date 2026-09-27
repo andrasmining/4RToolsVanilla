@@ -112,6 +112,7 @@ namespace _4RTools.Model.Vanilla
         public int Version { get; set; } = 1;
         public bool StartWith4RTools { get; set; }
         public bool AutoRecover { get; set; } = true;
+        // Retained for old settings files only. No value enables background screenshots.
         public bool VisualWatchdog { get; set; } = true;
         public string LaunchExecutable { get; set; } = "";
         public string LaunchArguments { get; set; } = "";
@@ -414,24 +415,43 @@ namespace _4RTools.Model.Vanilla
     internal static class VanillaVisualProbe
     {
         private static readonly VanillaRecoveryVisualCapture RecoveryCapture = new VanillaRecoveryVisualCapture();
-        [DllImport("user32.dll", SetLastError = true)] private static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
         [DllImport("user32.dll", SetLastError = true)] private static extern bool GetClientRect(IntPtr hwnd, out RECT rect);
+        [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+        [DllImport("user32.dll")] private static extern uint GetWindowThreadProcessId(IntPtr hwnd, out uint pid);
+        [DllImport("user32.dll", SetLastError = true)] private static extern bool ClientToScreen(IntPtr hwnd, ref POINT point);
         [StructLayout(LayoutKind.Sequential)] private struct RECT { public int Left, Top, Right, Bottom; }
+        [StructLayout(LayoutKind.Sequential)] private struct POINT { public int X, Y; }
         public static VanillaVisualState Classify(IntPtr hwnd)
         {
-            int width, height;
-            string source;
-            if (hwnd == IntPtr.Zero || !VanillaBackgroundWindowInput.TryGetCaptureSize(hwnd, out width, out height, out source))
-                return VanillaVisualState.Unknown;
-            if (width < 320 || height < 240 || width > 4096 || height > 4096) return VanillaVisualState.Unknown;
-            using (var bitmap = new Bitmap(width, height, PixelFormat.Format24bppRgb))
-            using (var graphics = Graphics.FromImage(bitmap))
+            if (hwnd == IntPtr.Zero || GetForegroundWindow() != hwnd) return VanillaVisualState.Unknown;
+            using (Bitmap bitmap = CaptureOwnedForeground(hwnd)) return Classify(bitmap);
+        }
+
+        private static Bitmap CaptureOwnedForeground(IntPtr hwnd)
+        {
+            uint pid, afterPid;
+            RECT rect, after;
+            var origin = new POINT(); var afterOrigin = new POINT();
+            if (hwnd == IntPtr.Zero || GetForegroundWindow() != hwnd
+                || GetWindowThreadProcessId(hwnd, out pid) == 0 || pid == 0
+                || !GetClientRect(hwnd, out rect) || !ClientToScreen(hwnd, ref origin))
+                throw new InvalidOperationException("Foreground screenshot withheld: intended client does not own the active window.");
+            int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;
+            if (width < 320 || height < 240 || width > 4096 || height > 4096)
+                throw new InvalidOperationException("Foreground client geometry is unavailable for screenshot recognition.");
+            var bitmap = new Bitmap(width, height, PixelFormat.Format24bppRgb);
+            try
             {
-                IntPtr hdc = graphics.GetHdc(); bool ok;
-                try { ok = PrintWindow(hwnd, hdc, 3); } finally { graphics.ReleaseHdc(hdc); }
-                if (!ok) return VanillaVisualState.Unknown;
-                return Classify(bitmap);
+                using (var graphics = Graphics.FromImage(bitmap))
+                    graphics.CopyFromScreen(origin.X, origin.Y, 0, 0, new Size(width, height));
+                if (GetForegroundWindow() != hwnd || GetWindowThreadProcessId(hwnd, out afterPid) == 0 || afterPid != pid
+                    || !GetClientRect(hwnd, out after) || !ClientToScreen(hwnd, ref afterOrigin)
+                    || after.Right - after.Left != width || after.Bottom - after.Top != height
+                    || afterOrigin.X != origin.X || afterOrigin.Y != origin.Y)
+                    throw new InvalidOperationException("Foreground screenshot discarded: window ownership or geometry changed.");
+                return bitmap;
             }
+            catch { bitmap.Dispose(); throw; }
         }
         internal static VanillaRecoveryVisualObservation ObserveProcess(int pid)
         {
@@ -439,17 +459,18 @@ namespace _4RTools.Model.Vanilla
         }
         private static VanillaRecoveryVisualObservation ObserveProcessCore(int pid)
         {
-            // Window enumeration avoids Process.MainWindowHandle's protected metadata
-            // query. Normal background capture never restores or sends game input.
+            // This helper never activates a window. The caller must already own
+            // the serialized foreground operation; passive supervision uses X/Y.
             bool windowAvailable = false;
             try
             {
-                using (var input = new VanillaBackgroundWindowInput(pid, () => false, purpose: VanillaBackgroundInputPurpose.RecoveryObservation))
-                {
-                    windowAvailable = true;
-                    using (Bitmap image = input.CaptureClientBitmap())
-                        return new VanillaRecoveryVisualObservation(Classify(image), true, null);
-                }
+                IntPtr hwnd = GetForegroundWindow(); uint owner;
+                if (hwnd == IntPtr.Zero || GetWindowThreadProcessId(hwnd, out owner) == 0 || owner != (uint)pid)
+                    return new VanillaRecoveryVisualObservation(VanillaVisualState.Unknown, false,
+                        "Foreground screenshot withheld: the intended client is not active.");
+                windowAvailable = true;
+                using (Bitmap image = CaptureOwnedForeground(hwnd))
+                    return new VanillaRecoveryVisualObservation(Classify(image), true, null);
             }
             catch (Exception ex)
             {
@@ -533,11 +554,11 @@ namespace _4RTools.Model.Vanilla
             }
             try
             {
-                if (!work.Wait(timeoutMs)) return Unavailable("Background capture exceeded its bounded observation time");
-                return work.Result ?? Unavailable("Background capture returned no observation");
+                if (!work.Wait(timeoutMs)) return Unavailable("Foreground capture exceeded its bounded observation time");
+                return work.Result ?? Unavailable("Foreground capture returned no observation");
             }
             catch (AggregateException ex)
-            { return Unavailable("Background capture failed: " + ex.GetBaseException().Message); }
+            { return Unavailable("Foreground capture failed: " + ex.GetBaseException().Message); }
             finally
             {
                 if (work.IsCompleted)
@@ -590,6 +611,9 @@ namespace _4RTools.Model.Vanilla
             public bool ServerOutagePending;
             public long VisualObservationSequence;
             public VanillaRecoveryVisualObservation LastVisualObservation;
+            public long ForegroundGameplayVersion = -1;
+            public long StationaryRecoveryVersion = -1;
+            public TimeSpan? LastStationaryRecoveryAt;
         }
         private readonly object gate = new object();
         private readonly string baseDirectory;
@@ -599,7 +623,6 @@ namespace _4RTools.Model.Vanilla
         private System.Threading.Timer timer;
         private VanillaReconnectSettings settings;
         private bool running, disposed, ticking;
-        private Func<int, VanillaRecoveryVisualObservation> recoveryVisualSource = VanillaVisualProbe.ObserveProcess;
         public event System.Action Updated;
         public event System.Action<string> Logged;
         public VanillaReconnectSupervisor(string baseDirectory) : this(baseDirectory, new VanillaRecoveryRestartEnvironment()) { }
@@ -884,78 +907,24 @@ namespace _4RTools.Model.Vanilla
                 if (runtime.NextRecoveryAt.HasValue && runtime.NextRecoveryAt.Value > now)
                 { SetStage(runtime, VanillaReconnectStage.Backoff, BackoffDetail(runtime, now)); return; }
                 Func<DateTime> identity = () => restartEnvironment.GetStartTimeUtc(runtime.ProcessId.Value);
-                long previousVisual = runtime.VisualObservationSequence;
-                if (settings.VisualWatchdog || runtime.RecoveryOwned || runtime.FailedReplacementRetryPending
-                    || runtime.Visual == VanillaVisualState.ModalDialog)
-                {
-                    ObserveRecoveryVisual(runtime);
-                    now = restartEnvironment.UtcNow;
-                    // An unknown modal blocks action before the movement deadline
-                    // can authorize a close. Exact terminal messages still recover.
-                    if (HandleTerminalVisual(runtime, runtime.Visual, now, identity)) return;
-                }
                 if (RetryFailedReplacement(runtime, now, identity)) return;
-                if (CheckMovementWatchdogWithVisual(runtime, now, identity, runtime.VisualObservationSequence != previousVisual)) return;
+                if (CheckMovementWatchdog(runtime, now, identity)) return;
                 now = restartEnvironment.UtcNow;
-                bool visualObserved = runtime.VisualObservationSequence != previousVisual;
-                VanillaVisualState visual = visualObserved ? runtime.Visual : VanillaVisualState.Unknown;
                 if (runtime.MovementRecoveryPending)
-                { QueueAutobattleClientRestartLocked(runtime, now, runtime.ResumeFailureDetail ?? "Restart-only autobattle verification failed"); return; }
-                // A failed minimized capture does not turn an established client
-                // into a newly launched one. Only our actual replacement may enter
-                // the bounded interactive-window wait in LoginWorker.
-                if (visual == VanillaVisualState.Unknown && runtime.RecoveryOwned && !runtime.HasBeenOnline
-                    && runtime.LastLaunch.HasValue && (now - runtime.LastLaunch.Value).TotalMilliseconds >= settings.GepardWaitMs)
+                { QueueAutobattleClientRestartLocked(runtime, now, runtime.ResumeFailureDetail ?? "Movement recovery failed"); return; }
+                if (runtime.RecoveryOwned && !runtime.HasBeenOnline && runtime.LastLaunch.HasValue
+                    && (now - runtime.LastLaunch.Value).TotalMilliseconds >= settings.GepardWaitMs)
                 { QueueLogin(runtime, true, "Replacement client awaiting its interactive login window"); return; }
-                if (visualObserved && runtime.LastVisualObservation != null
-                    && !runtime.LastVisualObservation.WindowAvailable)
+                if (runtime.Visual == VanillaVisualState.ModalDialog)
                 {
-                    runtime.LoginLikeSince = runtime.GameplaySince = null;
-                    bool established = !runtime.RecoveryOwned && (runtime.HasBeenOnline || runtime.ResumeSent);
-                    SetStage(runtime, established ? VanillaReconnectStage.Online : VanillaReconnectStage.WaitingForWindow,
-                        established ? "Screen capture unavailable; verified X/Y watchdog remains active"
-                            : "Waiting for the replacement client's interactive screen");
+                    SetStage(runtime, VanillaReconnectStage.WaitingForGameplay,
+                        "Previously observed unknown modal; waiting for a movement-triggered foreground check");
                     return;
                 }
-                if (visual == VanillaVisualState.Gameplay)
-                {
-                    runtime.LoginLikeSince = null; runtime.HasBeenOnline = true; runtime.ResumeVerificationFailed = false; runtime.ResumeFailureDetail = null;
-                    if (runtime.RecoveryOwned && !runtime.ResumeSent && !runtime.ScriptRunning)
-                    {
-                        if (!runtime.GameplaySince.HasValue)
-                        {
-                            runtime.GameplaySince = now;
-                            SetStage(runtime, VanillaReconnectStage.WaitingForGameplay, "Replacement gameplay confirmed; settling 10s before restart-only autobattle hotkey");
-                            Log(runtime.Account.Label + ": replacement gameplay confirmed; waiting 10s before sending " + runtime.Account.HotkeyText + ".");
-                        }
-                        if ((now - runtime.GameplaySince.Value).TotalMilliseconds >= VanillaAutobattleResumeVerifier.PostLoginSettleMs)
-                            RequestVerifiedResume(runtime, "Replacement post-login 10s settle complete.", false);
-                    }
-                    else
-                    {
-                        runtime.GameplaySince = null;
-                        SetStage(runtime, VanillaReconnectStage.Online, "Gameplay detected; steady-state X/Y watchdog armed; automatic hotkeys are disabled outside restart/relogin");
-                    }
-                    return;
-                }
-                runtime.GameplaySince = null;
-                if (visual == VanillaVisualState.LoginShell)
-                {
-                    if (!runtime.LoginLikeSince.HasValue) runtime.LoginLikeSince = now;
-                    if (runtime.HasBeenOnline && !runtime.RecoveryOwned && settings.AutoRecover
-                        && (now - runtime.LoginLikeSince.Value).TotalMilliseconds >= settings.LoginStableMs)
-                    { QueueClientRestart(runtime, now, "Login/service screen detected after confirmed gameplay", false, identity); return; }
-                    if (runtime.RecoveryOwned && settings.AutoRecover && (now - runtime.LoginLikeSince.Value).TotalMilliseconds >= settings.LoginStableMs)
-                        QueueLogin(runtime, true, "Replacement client login shell detected");
-                    else if (runtime.RecoveryOwned) SetStage(runtime, VanillaReconnectStage.WaitingForGameplay, "Replacement login/service screen detected; waiting before login input");
-                    else SetStage(runtime, VanillaReconnectStage.WaitingForGameplay, "Login/service screen detected after gameplay; confirming before sequential replacement");
-                    return;
-                }
-                runtime.LoginLikeSince = null;
-                if (runtime.ResumeVerificationFailed) SetStage(runtime, VanillaReconnectStage.Error, runtime.ResumeFailureDetail);
-                else SetStage(runtime, !runtime.RecoveryOwned && (runtime.HasBeenOnline || runtime.ResumeSent)
-                    ? VanillaReconnectStage.Online : VanillaReconnectStage.WaitingForGameplay,
-                    "Screen state unknown; verified X/Y supervision continues");
+                bool established = !runtime.RecoveryOwned && (runtime.HasBeenOnline || runtime.ResumeSent);
+                SetStage(runtime, established ? VanillaReconnectStage.Online : VanillaReconnectStage.WaitingForGameplay,
+                    established ? "Monitoring fresh X/Y; foreground screen checks run only after movement stalls"
+                        : "Waiting for verified replacement gameplay");
             }
             catch (Exception ex)
             {
@@ -964,29 +933,6 @@ namespace _4RTools.Model.Vanilla
             }
         }
 
-        private void ObserveRecoveryVisual(Runtime runtime)
-        {
-            VanillaRecoveryVisualObservation observation;
-            try { observation = recoveryVisualSource(runtime.ProcessId.Value); }
-            catch (Exception ex)
-            {
-                observation = new VanillaRecoveryVisualObservation(VanillaVisualState.Unknown, false,
-                    ex.GetType().Name + ": " + ex.Message);
-            }
-            if (observation == null)
-                observation = new VanillaRecoveryVisualObservation(VanillaVisualState.Unknown, false, "No visual observation returned");
-            VanillaRecoveryVisualObservation previous = runtime.LastVisualObservation;
-            if (previous == null || previous.State != observation.State || previous.Error != observation.Error)
-                Log(runtime.Account.Label + ": recovery screen diagnosis=" + observation.State
-                    + (observation.Error == null ? "" : "; capture unavailable: " + observation.Error));
-            runtime.LastVisualObservation = observation;
-            runtime.VisualObservationSequence++;
-            // A missing/ambiguous frame cannot establish that a previously seen
-            // unknown modal disappeared. Keep its no-input/no-close guard until
-            // a fresh positive screen classification clears it.
-            if (observation.State != VanillaVisualState.Unknown || runtime.Visual != VanillaVisualState.ModalDialog)
-                runtime.Visual = observation.State;
-        }
         private bool CanLaunch(Runtime runtime, int aliveCount, DateTimeOffset now)
         {
             if (!settings.AutoRecover || runtime.ScriptRunning || FarmingEmergencyHeld(runtime) || FarmingCompletionHeld(runtime.Account)) return false;
@@ -1259,6 +1205,11 @@ namespace _4RTools.Model.Vanilla
             if (runtime.HasBeenOnline || runtime.ResumeSent || runtime.ProcessId != runtime.FailedReplacementRetryPid
                 || runtime.ResumeOperationGeneration != runtime.FailedReplacementRetryGeneration)
             { ClearFailedReplacementRetry(runtime); return false; }
+            if (runtime.Visual == VanillaVisualState.ModalDialog)
+            {
+                SetStage(runtime, VanillaReconnectStage.WaitingForGameplay, "Retained unknown modal; no replacement close authorized.");
+                return true;
+            }
             DateTime expectedStart = runtime.FailedReplacementRetryStartTimeUtc;
             QueueClientRestart(runtime, now, "Retrying this tool's failed replacement after recovery backoff", false, () =>
             {
@@ -1465,7 +1416,6 @@ namespace _4RTools.Model.Vanilla
         private readonly NumericUpDown maxClients = new NumericUpDown { Minimum = 1, Maximum = 2, Width = 55 };
         private readonly CheckBox startWithApp = new CheckBox { Text = "Start supervisor with 4RTools", AutoSize = true };
         private readonly CheckBox autoRecover = new CheckBox { Text = "Auto relaunch/relogin", AutoSize = true };
-        private readonly CheckBox visualWatchdog = new CheckBox { Text = "Detect login screens/popups visually", AutoSize = true };
         private readonly NumericUpDown movementRestartSeconds = new VanillaSettingsNumber { Minimum = 60, Maximum = 3600, Value = 180, Increment = 30, Width = 70 };
         private readonly DataGridView accounts = new DataGridView
         {
@@ -1505,7 +1455,7 @@ namespace _4RTools.Model.Vanilla
             proxy.FormattingEnabled = true; proxy.Format += (s, e) => { if (e.ListItem is VanillaProxyRoute) e.Value = VanillaProxyPattern.NameForRoute((VanillaProxyRoute)e.ListItem); };
             proxy.DataSource = Enum.GetValues(typeof(VanillaProxyRoute)); opts.Controls.Add(proxy);
             opts.Controls.Add(new Label { Text = "Clients", AutoSize = true, Margin = new Padding(12, 8, 8, 0) }); opts.Controls.Add(maxClients); top.Controls.Add(opts);
-            var switches = Flow(); switches.Controls.Add(startWithApp); switches.Controls.Add(autoRecover); switches.Controls.Add(visualWatchdog);
+            var switches = Flow(); switches.Controls.Add(startWithApp); switches.Controls.Add(autoRecover);
             switches.Controls.Add(new Label { Text = "Restart after no movement (sec)", AutoSize = true, Margin = new Padding(12, 8, 4, 0) }); switches.Controls.Add(movementRestartSeconds); top.Controls.Add(switches);
             var commands = Flow();
             AddButton(commands, "START SUPERVISOR", StartSupervisor); AddButton(commands, "STOP", () => supervisor.Stop());
@@ -1547,7 +1497,6 @@ namespace _4RTools.Model.Vanilla
             help.SetToolTip(maxClients, "Maximum supervised Vanilla clients on this PC. Normally leave this at 2.");
             help.SetToolTip(startWithApp, "If checked, opening 4RTools automatically starts recovery monitoring. If unchecked, 4RTools can be open while the supervisor remains stopped.");
             help.SetToolTip(autoRecover, "Automatically relaunch and relog clients that close or return to a login screen.");
-            help.SetToolTip(visualWatchdog, "Classifies Vanilla screenshots as gameplay/login/modal states. This does not modify the game or Gepard.");
             help.SetToolTip(movementRestartSeconds, "Restart only this character after this many seconds without fresh verified X/Y movement. Default 180 seconds gives Smart Teleport time to self-heal first. Recovery retries indefinitely with exponential backoff capped at one hour.");
             help.SetToolTip(accounts, "Your one or two configured account profiles. Select a row before using selected-account actions.");
             help.SetToolTip(status, "Runtime state only: account -> assigned PID -> recovery stage -> detected screen -> detail. These are not additional accounts.");
@@ -1592,7 +1541,7 @@ namespace _4RTools.Model.Vanilla
             {
                 settings = supervisor.Settings; launchPath.Text = settings.LaunchExecutable ?? ""; launchArgs.Text = settings.LaunchArguments ?? "";
                 proxy.SelectedItem = settings.Proxy; maxClients.Value = settings.MaxClients; startWithApp.Checked = settings.StartWith4RTools;
-                autoRecover.Checked = settings.AutoRecover; visualWatchdog.Checked = settings.VisualWatchdog;
+                autoRecover.Checked = settings.AutoRecover;
                 VanillaSettingsNumber.Load(movementRestartSeconds, Math.Max(movementRestartSeconds.Minimum, Math.Min(movementRestartSeconds.Maximum, settings.MovementRestartSeconds)));
                 RefreshAccounts();
             }
@@ -1604,7 +1553,7 @@ namespace _4RTools.Model.Vanilla
             settings.LaunchExecutable = launchPath.Text.Trim(); settings.LaunchArguments = launchArgs.Text;
             settings.Proxy = proxy.SelectedItem is VanillaProxyRoute ? (VanillaProxyRoute)proxy.SelectedItem : VanillaProxyRoute.Tokyo;
             settings.MaxClients = (int)maxClients.Value; settings.StartWith4RTools = startWithApp.Checked; settings.AutoRecover = autoRecover.Checked;
-            settings.VisualWatchdog = visualWatchdog.Checked; settings.MovementRestartSeconds = restartSeconds;
+            settings.MovementRestartSeconds = restartSeconds;
         }
         private void StartSupervisor()
         {

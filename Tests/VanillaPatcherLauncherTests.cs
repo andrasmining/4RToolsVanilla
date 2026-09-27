@@ -17,8 +17,35 @@ namespace Vanilla.Diagnostics.Tests
             Test("GAME START visual detector is available", VisualDetectorAvailable);
             Test("Launcher actions are deliberately paced", Pacing);
             Test("GAME START visual confirmation rejects a moving candidate", StableCandidate);
+            Test("Production capture has no PrintWindow import", NoBackgroundCaptureImport);
+            Test("Launcher capture rejects an unavailable foreground window", MissingForeground);
             Console.WriteLine("Patcher launcher: {0} passed; {1} failed. No processes were started.", passed, failed);
             return failed;
+        }
+
+        private static void NoBackgroundCaptureImport()
+        {
+            foreach (Type type in typeof(VanillaDiscovery).Assembly.GetTypes())
+                foreach (MethodInfo method in type.GetMethods(BindingFlags.Static | BindingFlags.Instance
+                    | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
+                {
+                    var import = (System.Runtime.InteropServices.DllImportAttribute)Attribute.GetCustomAttribute(
+                        method, typeof(System.Runtime.InteropServices.DllImportAttribute));
+                    Assert(import == null || !string.Equals(import.EntryPoint, "PrintWindow", StringComparison.OrdinalIgnoreCase),
+                        "Background window rendering is prohibited: " + type.FullName + "." + method.Name);
+                }
+        }
+
+        private static void MissingForeground()
+        {
+            MethodInfo capture = LauncherType().GetMethod("CaptureLauncherForeground", BindingFlags.Static | BindingFlags.NonPublic);
+            Assert(capture != null && capture.Invoke(null, new object[] { 1, IntPtr.Zero }) == null,
+                "A missing owned foreground window must not produce a launcher image.");
+            MethodInfo discoveryCapture = typeof(VanillaDiscovery).GetMethod("Capture", BindingFlags.Static | BindingFlags.NonPublic);
+            string path = Path.Combine(Path.GetTempPath(), "4rtools-no-background-" + Guid.NewGuid().ToString("N") + ".png");
+            string detail = (string)discoveryCapture.Invoke(null, new object[] { int.MaxValue, path, false });
+            Assert(detail.Contains("Screenshot skipped") && !File.Exists(path),
+                "Background discovery must continue memory-only without opening/capturing the selected process.");
         }
 
         private static void PatcherDetection()

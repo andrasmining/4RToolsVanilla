@@ -23,12 +23,13 @@ namespace _4RTools.Model.Vanilla
 
         internal async Task VerifyAsync(int processId, Func<VanillaClientState> read, System.Action focus, System.Action send,
             Func<int, bool> teleport, Func<bool> cancelled, Func<TimeSpan> clock, Func<DateTimeOffset> utcNow,
-            Func<int, Task> delay, System.Action<string> report)
+            Func<int, Task> delay, System.Action<string> report, bool teleportFirst = false,
+            int recoveryLimitMs = RecoveryDeadlineMs, bool allowResume = true)
         {
             if (started) throw new InvalidOperationException("A resume verification cannot be restarted.");
             started = true;
             if (processId <= 0 || read == null || focus == null || send == null || teleport == null || cancelled == null
-                || clock == null || utcNow == null || delay == null || report == null)
+                || clock == null || utcNow == null || delay == null || report == null || recoveryLimitMs <= 0)
                 throw new ArgumentException("Resume verification requires a client and complete observation/input services.");
 
             VanillaClientState identity = null, baseline = null, previousRead = null;
@@ -59,10 +60,34 @@ namespace _4RTools.Model.Vanilla
                 return state;
             };
 
-            TimeSpan recoveryDeadline = now() + TimeSpan.FromMilliseconds(RecoveryDeadlineMs);
-            for (int attempt = 1; attempt <= MaximumAttempts; attempt++)
+            TimeSpan recoveryDeadline = now() + TimeSpan.FromMilliseconds(Math.Min(RecoveryDeadlineMs, recoveryLimitMs));
+            if (teleportFirst)
+            {
+                baseline = sample();
+                focus();
+                checkCancelled();
+                VanillaClientState current = sample();
+                if (Moved(baseline, current))
+                { MovementVerified = true; report("Movement resumed while activating; stationary recovery input suppressed"); return; }
+                if (now() < recoveryDeadline)
+                {
+                    baseline = current;
+                    report("Stationary gameplay confirmed; trying Smart Teleport before Autobattle recovery");
+                    try { teleport(0); }
+                    catch (OperationCanceledException) { throw; }
+                    catch (VanillaServerClosedException) { throw; }
+                    catch (Exception ex) { report("Initial Smart Teleport failed safely: " + ex.Message); }
+                    checkCancelled();
+                    TimeSpan firstDeadline = now() + TimeSpan.FromMilliseconds(ObservationWindowMs);
+                    if (firstDeadline > recoveryDeadline) firstDeadline = recoveryDeadline;
+                    if (await ObserveMovementAsync(baseline, sample, cancelled, now, delay, firstDeadline).ConfigureAwait(false))
+                    { MovementVerified = true; report("Movement verified after initial Smart Teleport; no Autobattle hotkey needed"); return; }
+                }
+            }
+            for (int attempt = 1; allowResume && attempt <= MaximumAttempts; attempt++)
             {
                 checkCancelled();
+                if (now() >= recoveryDeadline) break;
                 if (attempt > 1) report("Retrying autobattle recovery cycle " + attempt + "/" + MaximumAttempts);
                 focus();
                 checkCancelled();
@@ -74,10 +99,16 @@ namespace _4RTools.Model.Vanilla
                     report("Movement verified after " + Attempts + "/" + MaximumAttempts + " recovery cycles");
                     return;
                 }
+                if (now() >= recoveryDeadline) break;
 
                 baseline = current;
+                if (now() >= recoveryDeadline) break;
                 Attempts = attempt;
                 report("Sending autobattle hotkey attempt " + attempt + "/" + MaximumAttempts);
+                current = sample();
+                if (Moved(baseline, current))
+                { MovementVerified = true; report("Movement resumed before hotkey; remaining recovery input suppressed"); return; }
+                if (now() >= recoveryDeadline) break;
                 send();
                 checkCancelled();
 
@@ -115,6 +146,7 @@ namespace _4RTools.Model.Vanilla
                     return;
                 }
 
+                if (now() >= recoveryDeadline) break;
                 baseline = current;
                 report("Still stationary after autobattle " + attempt + "/" + MaximumAttempts
                     + "; trying verified Smart Teleport before any retry");
@@ -162,7 +194,7 @@ namespace _4RTools.Model.Vanilla
             TimeSpan remaining = recoveryDeadline - now();
             if (remaining > TimeSpan.Zero)
             {
-                report("Three recovery cycles exhausted; monitoring X/Y until the 180s restart deadline");
+                report("Recovery cycles exhausted; passively monitoring X/Y until the remaining restart deadline");
                 if (await ObserveMovementAsync(baseline, sample, cancelled, now, delay, recoveryDeadline).ConfigureAwait(false))
                 {
                     MovementVerified = true;
@@ -171,7 +203,7 @@ namespace _4RTools.Model.Vanilla
                 }
             }
             throw new InvalidOperationException(
-                "Failed: no verified X/Y movement after 3 autobattle + teleport recovery cycles within 180 seconds.");
+                "Failed: no verified X/Y movement before the bounded autobattle/teleport recovery deadline.");
         }
 
         private static async Task<bool> ObserveMovementAsync(VanillaClientState baseline, Func<VanillaClientState> sample,
@@ -206,7 +238,9 @@ namespace _4RTools.Model.Vanilla
 
         private static bool Moved(VanillaClientState before, VanillaClientState after)
         {
-            return before.X.Value != after.X.Value || before.Y.Value != after.Y.Value;
+            return before != null && (before.X.Value != after.X.Value || before.Y.Value != after.Y.Value
+                || (after.LastMovementAtUtc.HasValue && after.LastMovementAtUtc > before.SampledAtUtc)
+                || after.X.LastChangedAtUtc > before.SampledAtUtc || after.Y.LastChangedAtUtc > before.SampledAtUtc);
         }
 
         internal static void ValidateSample(VanillaClientState state, VanillaClientState identity, int processId, DateTimeOffset now)
@@ -507,7 +541,6 @@ namespace _4RTools.Model.Vanilla
         {
             if (account == null) throw new ArgumentNullException(nameof(account));
             if (cancelled == null) throw new ArgumentNullException(nameof(cancelled));
-            ThrowIfConfirmedServerClosed(pid, cancelled);
             string purpose = postLoginHotkey ? "mandatory post-login hotkey" : "existing-client adoption";
             Log(account.Label + ": " + context + ": waiting for fresh verified username/character/X/Y/map/living HP for " + purpose + ".");
             VanillaDebugLog.Write("MEMORY-GATE", "PID=" + pid + "; " + account.Label + ": " + context
@@ -527,7 +560,6 @@ namespace _4RTools.Model.Vanilla
                     while (watch.ElapsedMilliseconds < timeoutMs)
                     {
                         if (cancelled()) throw new OperationCanceledException(context + ": gameplay memory verification cancelled.");
-                        ThrowIfConfirmedServerClosed(pid, cancelled);
                         var now = DateTimeOffset.UtcNow;
                         try
                         {
@@ -568,78 +600,172 @@ namespace _4RTools.Model.Vanilla
         private async Task VerifyAutobattleResumeAsync(VanillaReconnectAccount account, int pid,
             Func<bool> cancelled, System.Action<string> progress)
         {
+            await VerifyAutobattleResumeCoreAsync(account, pid, cancelled, progress, false,
+                VanillaAutobattleResumeVerifier.RecoveryDeadlineMs, null, true, null).ConfigureAwait(false);
+        }
+
+        private async Task<bool> VerifyAutobattleResumeCoreAsync(VanillaReconnectAccount account, int pid,
+            Func<bool> cancelled, System.Action<string> progress, bool stationary, int limitMs,
+            Func<bool> movementResumed, bool allowResume, VanillaPositionSample stationaryBaseline)
+        {
             Func<bool> callerCancelled = cancelled;
-            cancelled = () => callerCancelled() || FarmingEmergencyHeld(account) || FarmingEmergencyHeld(pid);
+            cancelled = () => callerCancelled() || FarmingEmergencyHeld(account) || FarmingEmergencyHeld(pid)
+                || FarmingCompletionHeld(account);
             if (cancelled()) throw new OperationCanceledException("Autobattle verification cancelled.");
-            using (var memory = new ReadOnlyProcessMemory(pid))
+            bool touched = false;
+            var clock = Stopwatch.StartNew();
+            VanillaTeleportMovementGuard memoryMovement = null;
+            Func<bool> moved = () => (movementResumed != null && movementResumed())
+                || (memoryMovement != null && memoryMovement.MovementResumed());
+            System.Action checkBudget = () =>
             {
-                var identity = VanillaExecutableIdentity.Read(memory.ExecutablePath);
-                var profile = VanillaBuildProfile.Find(AutobattleBuildProfileDirectory, identity,
-                    message => Log(account.Label + ": " + message));
-                if (profile == null) throw new InvalidOperationException("No verified Vanilla build profile; autobattle resume was not sent.");
-                var adapter = new VanillaStateAdapter(profile, identity);
-                var file = new FileInfo(memory.ExecutablePath);
-                long executableLength = file.Length;
-                DateTime executableWriteTime = file.LastWriteTimeUtc;
-                using (var source = new MemoryStateSource(memory, profile.MemoryMap))
-                using (var input = new VanillaForegroundInput(pid))
+                if (clock.ElapsedMilliseconds >= limitMs)
+                    throw new InvalidOperationException("Original movement-recovery deadline reached; no further input authorized.");
+            };
+            Func<bool> inputCancelled = () =>
+            { if (cancelled() || moved()) return true; checkBudget(); return false; };
+            try
+            {
+                // Recheck the original stall before acquiring/restoring any foreground window.
+                if (moved()) return false;
+                using (var memory = new ReadOnlyProcessMemory(pid))
                 {
-                    input.CancellationRequested = cancelled;
-                    var clock = Stopwatch.StartNew();
-                    var verifier = new VanillaAutobattleResumeVerifier();
-                    VanillaClientState lastIdentity = null;
-                    Func<VanillaClientState> read = () =>
+                    var identity = VanillaExecutableIdentity.Read(memory.ExecutablePath);
+                    var profile = VanillaBuildProfile.Find(AutobattleBuildProfileDirectory, identity,
+                        message => Log(account.Label + ": " + message));
+                    if (profile == null) throw new InvalidOperationException("No verified Vanilla build profile; autobattle resume was not sent.");
+                    var adapter = new VanillaStateAdapter(profile, identity);
+                    var file = new FileInfo(memory.ExecutablePath);
+                    long executableLength = file.Length;
+                    DateTime executableWriteTime = file.LastWriteTimeUtc;
+                    using (var source = new MemoryStateSource(memory, profile.MemoryMap))
                     {
-                        var currentFile = new FileInfo(memory.ExecutablePath);
-                        if (!currentFile.Exists || currentFile.Length != executableLength || currentFile.LastWriteTimeUtc != executableWriteTime)
-                            throw new InvalidOperationException("The Vanilla executable changed during verification.");
-                        VanillaVisualState visual = VanillaVisualState.Unknown;
-                        try { visual = VanillaVisualProbe.Classify(input.Window); }
-                        catch (Exception ex)
+                        VanillaClientState lastIdentity = null;
+                        Func<VanillaClientState> read = () =>
                         {
-                            VanillaDebugLog.Write("AUTOBATTLE", "PID=" + pid
-                                + "; visual probe unavailable during memory-verified resume: " + ex.Message);
+                            if (cancelled()) throw new OperationCanceledException();
+                            var currentFile = new FileInfo(memory.ExecutablePath);
+                            if (!currentFile.Exists || currentFile.Length != executableLength || currentFile.LastWriteTimeUtc != executableWriteTime)
+                                throw new InvalidOperationException("The Vanilla executable changed during verification.");
+                            var state = source.Poll(DateTimeOffset.UtcNow);
+                            if (source.IsStopped) throw new InvalidOperationException(state.Error ?? source.Status);
+                            adapter.Observe(state, clock.Elapsed);
+                            ValidateExpectedCharacter(account, state);
+                            lastIdentity = state;
+                            return state;
+                        };
+                        VanillaClientState initial = read();
+                        VanillaAutobattleResumeVerifier.ValidateSample(initial, null, pid, DateTimeOffset.UtcNow);
+                        if (stationaryBaseline != null)
+                        {
+                            if (!string.Equals(initial.Map.Value, stationaryBaseline.Map, StringComparison.Ordinal))
+                                throw new OperationCanceledException("Original stationary map changed before recovery.");
+                            if (initial.X.Value != stationaryBaseline.X || initial.Y.Value != stationaryBaseline.Y) return false;
                         }
-                        if (visual == VanillaVisualState.ServerClosed) ThrowIfConfirmedServerClosed(pid, cancelled);
-                        if (AutobattleVisualBlocksInput(visual))
-                            throw new InvalidOperationException("Client is in blocking visual state " + visual
-                                + "; autobattle verification stopped before input.");
-                        var state = source.Poll(DateTimeOffset.UtcNow);
-                        if (source.IsStopped) throw new InvalidOperationException(state.Error ?? source.Status);
-                        adapter.Observe(state, clock.Elapsed);
-                        ValidateExpectedCharacter(account, state);
-                        lastIdentity = state;
-                        return state;
-                    };
-                    await verifier.VerifyAsync(pid, read, input.Activate,
-                        () => input.ChordInVerifiedForeground(account.ResumeCtrl, account.ResumeAlt, account.ResumeShift,
-                            (Keys)account.ResumeKey),
-                        attempt =>
+                        memoryMovement = new VanillaTeleportMovementGuard(initial, read);
+                        if (moved()) return false;
+                        int remaining = limitMs - (int)clock.ElapsedMilliseconds;
+                        if (remaining <= 0) throw new InvalidOperationException("Original movement-recovery deadline reached before foreground input.");
+                        touched = true;
+                        using (var input = new VanillaForegroundInput(pid, IntPtr.Zero, inputCancelled))
                         {
-                            string detail;
-                            bool confirmed = VanillaVerifiedTeleportAction.TryExecute(pid, account, cancelled,
-                                "autobattle-recovery-" + attempt, out detail);
-                            progress("Teleport recovery " + attempt + "/" + VanillaAutobattleResumeVerifier.MaximumAttempts
-                                + ": " + detail);
-                            return confirmed;
-                        },
-                        cancelled, () => clock.Elapsed, () => DateTimeOffset.UtcNow,
-                        milliseconds => Task.Delay(milliseconds), progress).ConfigureAwait(false);
-                    lock (gate)
-                    {
-                        Runtime owner;
-                        if (!cancelled() && runtimes.TryGetValue(account.Id, out owner) && owner.ProcessId == pid)
+                            System.Action focus = () =>
+                            {
+                                if (inputCancelled()) throw new OperationCanceledException();
+                                using (var image = input.CaptureClientBitmapForObservation())
+                                {
+                                    if (!VanillaTeleportVision.FrameLooksUsable(image))
+                                        throw new InvalidOperationException("Foreground gameplay frame is unavailable; no recovery input sent.");
+                                    var visual = VanillaVisualProbe.Classify(image);
+                                    if (visual == VanillaVisualState.ServerClosed) ThrowIfConfirmedServerClosed(pid, cancelled);
+                                    if (AutobattleVisualBlocksInput(visual))
+                                        throw new InvalidOperationException("Blocking foreground state " + visual + "; no recovery input sent.");
+                                }
+                            };
+                            await new VanillaAutobattleResumeVerifier().VerifyAsync(pid, read, focus,
+                                () =>
+                                {
+                                    if (inputCancelled()) throw new OperationCanceledException();
+                                    input.ChordInVerifiedForeground(account.ResumeCtrl, account.ResumeAlt, account.ResumeShift,
+                                        (Keys)account.ResumeKey);
+                                }, attempt =>
+                                {
+                                    if (inputCancelled()) throw new OperationCanceledException();
+                                    if (stationary && !account.SmartTeleportEnabled)
+                                    { progress("Smart Teleport disabled for this character; skipping teleport phase"); return false; }
+                                    var guard = new VanillaTeleportMovementGuard(read(), read);
+                                    string detail;
+                                    bool confirmed = VanillaVerifiedTeleportAction.TryExecute(pid, account,
+                                        () => { if (cancelled()) return true; checkBudget(); return false; },
+                                        "autobattle-recovery-" + attempt, out detail,
+                                        () => moved() || guard.MovementResumed());
+                                    progress("Teleport recovery " + attempt + "/" + VanillaAutobattleResumeVerifier.MaximumAttempts + ": " + detail);
+                                    return confirmed;
+                                }, cancelled, () => clock.Elapsed, () => DateTimeOffset.UtcNow,
+                                milliseconds => Task.Delay(milliseconds), progress, stationary,
+                                Math.Max(1, limitMs - (int)clock.ElapsedMilliseconds), allowResume).ConfigureAwait(false);
+                        }
+                        lock (gate)
                         {
-                            owner.ConfirmedCharacter = VanillaCharacterIdentity.FromState(lastIdentity);
-                            var fleetIdentity = CurrentCharacter(pid);
-                            if (fleetIdentity != null && owner.ConfirmedCharacter != null
-                                && VanillaCharacterRoster.Key(fleetIdentity) != null
-                                && VanillaCharacterRoster.Key(fleetIdentity) == VanillaCharacterRoster.Key(owner.ConfirmedCharacter))
-                                owner.CharacterSession = fleetIdentity.Session;
+                            Runtime owner;
+                            if (!cancelled() && runtimes.TryGetValue(account.Id, out owner) && owner.ProcessId == pid)
+                            {
+                                owner.ConfirmedCharacter = VanillaCharacterIdentity.FromState(lastIdentity);
+                                var fleetIdentity = CurrentCharacter(pid);
+                                if (fleetIdentity != null && owner.ConfirmedCharacter != null
+                                    && VanillaCharacterRoster.Key(fleetIdentity) != null
+                                    && VanillaCharacterRoster.Key(fleetIdentity) == VanillaCharacterRoster.Key(owner.ConfirmedCharacter))
+                                    owner.CharacterSession = fleetIdentity.Session;
+                            }
                         }
                     }
                 }
             }
+            catch (OperationCanceledException) when (!cancelled() && moved())
+            { progress("Fresh X/Y movement resumed; remaining recovery input suppressed"); }
+            return touched;
+        }
+
+        private bool StationaryMovementResumed(Runtime runtime, int pid, long version, VanillaPositionSample baseline)
+        {
+            lock (gate)
+            {
+                var sample = positionSource?.Invoke(pid);
+                var now = restartEnvironment.UtcNow;
+                if (sample == null || !sample.Verified || sample.Error != null || sample.Pid != pid
+                    || !sample.X.HasValue || !sample.Y.HasValue || sample.At > now || (now - sample.At).TotalSeconds > 3)
+                    throw new InvalidOperationException("Fresh stationary coordinates became unavailable before input.");
+                if (sample.Session != baseline.Session || !string.Equals(sample.Map, baseline.Map, StringComparison.Ordinal))
+                    throw new OperationCanceledException("Stationary client session/map changed.");
+                runtime.MovementWatchdog.Observe(pid, sample, restartEnvironment.MonotonicNow, now);
+                return runtime.MovementWatchdog.ProgressVersion != version
+                    || sample.X != baseline.X || sample.Y != baseline.Y
+                    || (sample.MovementAt.HasValue && sample.MovementAt > baseline.At);
+            }
+        }
+
+        private bool TryQueueStalledAutobattleRecovery(Runtime runtime)
+        {
+            bool teleport = runtime.Account.SmartTeleportEnabled && runtime.Account.SmartTeleportKey >= 8;
+            if (!running || disposed || (!settings.AutoRecover && !teleport) || !runtime.Account.Enabled
+                || !runtime.ProcessId.HasValue || runtime.ScriptRunning || runtime.RecoveryOwned || runtime.ClosingForRecovery
+                || (!runtime.HasBeenOnline && !runtime.ResumeSent) || FarmingEmergencyHeld(runtime)
+                || FarmingCompletionHeld(runtime.Account) || weightManualHolds.Contains(runtime.Account.Id)
+                || TemporaryActionRegistered(runtime.ProcessId.Value) || OtherRecoveryOwner(runtime) != null
+                || AutobattleVisualBlocksInput(runtime.Visual)
+                || runtime.ForegroundGameplayVersion != runtime.MovementWatchdog.ProgressVersion
+                || (runtime.StationaryRecoveryVersion == runtime.MovementWatchdog.ProgressVersion
+                    && (settings.AutoRecover || (runtime.LastStationaryRecoveryAt.HasValue
+                        && (restartEnvironment.MonotonicNow - runtime.LastStationaryRecoveryAt.Value).TotalSeconds
+                            < runtime.Account.SmartTeleportIdleSeconds)))) return false;
+            double stalled = runtime.MovementWatchdog.StalledSeconds(restartEnvironment.MonotonicNow);
+            int due = teleport ? runtime.Account.SmartTeleportIdleSeconds
+                : VanillaRecoveryScreenDiagnosis.MinimumStallSeconds;
+            if (stalled < due || (settings.AutoRecover && stalled >= settings.MovementRestartSeconds)) return false;
+            runtime.StationaryRecoveryVersion = runtime.MovementWatchdog.ProgressVersion;
+            runtime.LastStationaryRecoveryAt = restartEnvironment.MonotonicNow;
+            RequestVerifiedResume(runtime, "Fresh foreground and memory evidence confirm stationary gameplay.", true);
+            return true;
         }
 
         private bool RunOwnedClientStep(Runtime owner, int pid, Func<bool> cancelled, Func<bool> action)
@@ -686,7 +812,7 @@ namespace _4RTools.Model.Vanilla
             if (owner != null)
             {
                 SetStage(runtime, VanillaReconnectStage.WaitingForClient,
-                    "Restart queued behind " + owner.Account.Label + "; no steady-state hotkey will be sent");
+                    "Restart queued behind " + owner.Account.Label + "; stationary recovery attempt is complete");
                 Log(runtime.Account.Label + ": restart is queued behind " + owner.Account.Label
                     + "; the failed 3-cycle autoattack/teleport recovery will not be repeated on the existing client.");
                 return;
@@ -719,6 +845,17 @@ namespace _4RTools.Model.Vanilla
                 return;
             }
             int pid = runtime.ProcessId.Value;
+            long stationaryVersion = runtime.MovementWatchdog.ProgressVersion;
+            VanillaPositionSample stationaryBaseline = movementRecovery ? positionSource?.Invoke(pid) : null;
+            if (movementRecovery && stationaryBaseline == null) return;
+            bool allowResume = settings.AutoRecover;
+            TimeSpan originalDeadline = restartEnvironment.MonotonicNow + TimeSpan.FromMilliseconds(
+                movementRecovery && allowResume ? Math.Max(0, (settings.MovementRestartSeconds
+                    - runtime.MovementWatchdog.StalledSeconds(restartEnvironment.MonotonicNow)) * 1000)
+                    : movementRecovery ? 30000 : VanillaAutobattleResumeVerifier.RecoveryDeadlineMs);
+            DateTime created;
+            try { created = restartEnvironment.GetStartTimeUtc(pid); }
+            catch (Exception ex) { Log(runtime.Account.Label + ": resume identity unavailable: " + ex.Message); return; }
             int generation = Interlocked.Increment(ref resumeVerificationGeneration);
             runtime.ResumeOperationGeneration = generation;
             var account = runtime.Account.Clone();
@@ -726,7 +863,8 @@ namespace _4RTools.Model.Vanilla
             runtime.RecoveryOwned = true;
             runtime.ResumeSent = false;
             string preparation = (string.IsNullOrWhiteSpace(trigger) ? "" : trigger + " ")
-                + "Preparing autoattack + teleport recovery cycle 1/3";
+                + (movementRecovery && !allowResume ? "Preparing stationary Smart Teleport; automatic relog is disabled"
+                    : "Preparing autoattack + teleport recovery cycle 1/3");
             SetStage(runtime, VanillaReconnectStage.VerifyingAutobattle, preparation);
             Log(account.Label + ": " + preparation);
             // The continuation is owned by this Task, never an async-void ThreadPool callback.
@@ -735,13 +873,21 @@ namespace _4RTools.Model.Vanilla
                 string error = null;
                 bool cancelled = false;
                 bool serverClosed = false;
+                bool touched = false;
                 try
                 {
-                    await VerifyAutobattleResumeAsync(account, pid,
-                        () => !IsRunning || ResumeWorkerCancelled(runtime, pid, generation),
-                        detail => ResumeProgress(runtime, pid, generation, detail)).ConfigureAwait(false);
+                    Func<bool> workerCancelled = () => !IsRunning || ResumeWorkerCancelled(runtime, pid, generation)
+                        || restartEnvironment.GetStartTimeUtc(pid) != created;
+                    int remaining = movementRecovery ? (int)Math.Min(VanillaAutobattleResumeVerifier.RecoveryDeadlineMs,
+                        Math.Max(0, (originalDeadline - restartEnvironment.MonotonicNow).TotalMilliseconds))
+                        : VanillaAutobattleResumeVerifier.RecoveryDeadlineMs;
+                    if (remaining <= 0) throw new InvalidOperationException("Original no-movement deadline reached.");
+                    touched = await VerifyAutobattleResumeCoreAsync(account, pid, workerCancelled,
+                        detail => ResumeProgress(runtime, pid, generation, detail), movementRecovery, remaining,
+                        movementRecovery ? (Func<bool>)(() => StationaryMovementResumed(runtime, pid, stationaryVersion, stationaryBaseline)) : null,
+                        !movementRecovery || allowResume, stationaryBaseline).ConfigureAwait(false);
                     if (!IsRunning || ResumeWorkerCancelled(runtime, pid, generation)) throw new OperationCanceledException();
-                    if (!WaitForOwnedClientSafeMinimize(runtime, pid,
+                    if (touched && !WaitForOwnedClientSafeMinimize(runtime, pid,
                         () => !IsRunning || ResumeWorkerCancelled(runtime, pid, generation), account.Label + ": autobattle recovery", true))
                         throw new InvalidOperationException("Movement verified but client minimization could not be confirmed.");
                 }
@@ -756,6 +902,7 @@ namespace _4RTools.Model.Vanilla
                         || runtime.ProcessId != pid || runtime.ResumeOperationGeneration != generation || !runtime.ScriptRunning) return;
                     cancelled = cancelled || !running || ResumeWorkerCancelled(runtime, pid, generation);
                     runtime.ScriptRunning = false;
+                    if (movementRecovery) runtime.LastStationaryRecoveryAt = restartEnvironment.MonotonicNow;
                     if (cancelled)
                     {
                         runtime.RecoveryOwned = false;
@@ -763,17 +910,32 @@ namespace _4RTools.Model.Vanilla
                     }
                     else if (serverClosed)
                     {
-                        ConfirmServerOutageLocked(runtime);
-                        FinishServerOutageFailureLocked(runtime, error);
+                        if (!movementRecovery || allowResume)
+                        { ConfirmServerOutageLocked(runtime); FinishServerOutageFailureLocked(runtime, error); }
+                        else
+                        {
+                            runtime.RecoveryOwned = false; runtime.ResumeSent = true;
+                            SetStage(runtime, VanillaReconnectStage.Error, error + "; automatic relog is disabled");
+                        }
                     }
                     else if (error != null)
                     {
                         runtime.ResumeVerificationFailed = true;
                         runtime.ResumeFailureDetail = "Autobattle verification failed: " + error;
-                        runtime.MovementRecoveryPending = true;
+                        runtime.MovementRecoveryPending = !movementRecovery;
                         Log(account.Label + ": " + runtime.ResumeFailureDetail);
                         runtime.ScriptRunning = false;
-                        QueueAutobattleClientRestartLocked(runtime, restartEnvironment.UtcNow, runtime.ResumeFailureDetail);
+                        runtime.RecoveryOwned = false;
+                        if (!movementRecovery)
+                            QueueAutobattleClientRestartLocked(runtime, restartEnvironment.UtcNow, runtime.ResumeFailureDetail);
+                        else
+                        {
+                            runtime.ResumeSent = true;
+                            runtime.ForegroundGameplayVersion = -1;
+                            screenDiagnosisAttempts.Remove(runtime.Account.Id);
+                            SetStage(runtime, VanillaReconnectStage.Online, runtime.ResumeFailureDetail
+                                + "; retaining original movement deadline for affected-client recovery");
+                        }
                     }
                     else
                     {
@@ -782,7 +944,9 @@ namespace _4RTools.Model.Vanilla
                         runtime.ResumeFailureDetail = null;
                         runtime.HasBeenOnline = true;
                         CompleteAutobattleRecoverySuccessLocked(runtime);
-                        SetStage(runtime, VanillaReconnectStage.Online, "Movement verified; client minimized; recovery budget reset");
+                        SetStage(runtime, VanillaReconnectStage.Online, touched
+                            ? "Movement verified; client minimized; recovery budget reset"
+                            : "Movement resumed before foreground input; recovery input suppressed");
                     }
                 }
                 RaiseUpdated();

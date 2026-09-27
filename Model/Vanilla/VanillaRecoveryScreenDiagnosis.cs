@@ -28,17 +28,11 @@ namespace _4RTools.Model.Vanilla
     {
         internal const int MinimumStallSeconds = 30, RetrySeconds = 60, MaximumDurationMs = 5000;
 
-        internal static bool BackgroundAllowsDiagnosis(VanillaRecoveryVisualObservation observation)
+        internal static int DelaySeconds(VanillaReconnectAccount account)
         {
-            if (observation == null || observation.State != VanillaVisualState.Unknown) return false;
-            string error = observation.Error;
-            if (string.IsNullOrEmpty(error)) return observation.WindowAvailable;
-            // A denied operation is never retried through a different observation path.
-            if (error.IndexOf("denied", StringComparison.OrdinalIgnoreCase) >= 0
-                || error.IndexOf("nativeError=5", StringComparison.OrdinalIgnoreCase) >= 0) return false;
-            return error.IndexOf("nativeError=18", StringComparison.OrdinalIgnoreCase) >= 0
-                || error.IndexOf("Background capture exceeded its bounded observation time", StringComparison.Ordinal) >= 0
-                || error.IndexOf("Background window capture was blank/indeterminate", StringComparison.Ordinal) >= 0;
+            return account != null && account.SmartTeleportEnabled && account.SmartTeleportKey >= 8
+                && account.SmartTeleportKey <= 254
+                ? Math.Min(MinimumStallSeconds, account.SmartTeleportIdleSeconds) : MinimumStallSeconds;
         }
 
         internal static VanillaRecoveryScreenFrame[] Observe(IVanillaRecoveryScreenSession session,
@@ -176,6 +170,7 @@ namespace _4RTools.Model.Vanilla
             internal int Pid, DiagnosticGeneration, ResumeGeneration;
             internal DateTime Created;
             internal TimeSpan QueuedAt;
+            internal long ProgressVersion;
             internal bool Active, ModalRecheck;
         }
         private readonly Dictionary<string, ScreenDiagnosisAttempt> screenDiagnosisAttempts = new Dictionary<string, ScreenDiagnosisAttempt>();
@@ -184,14 +179,12 @@ namespace _4RTools.Model.Vanilla
         private bool TryQueueRecoveryScreenDiagnosis(Runtime runtime, DateTimeOffset now, Func<DateTime> startTimeUtc, double stalled)
         {
             bool modalRecheck = runtime.Visual == VanillaVisualState.ModalDialog;
-            if (disposed || !running || !settings.AutoRecover || hardenedStartupRunning || runtime.ProcessId == null
+            if (disposed || !running || (!settings.AutoRecover && !runtime.Account.SmartTeleportEnabled) || hardenedStartupRunning || runtime.ProcessId == null
                 || !runtime.Account.Enabled || runtime.ScriptRunning || runtime.RecoveryOwned || runtime.ClosingForRecovery
                 || (!runtime.HasBeenOnline && !runtime.ResumeSent) || FarmingEmergencyHeld(runtime)
                 || weightManualHolds.Contains(runtime.Account.Id) || weightCompletedHolds.Contains(runtime.Account.Id)
                 || TemporaryActionRegistered(runtime.ProcessId.Value) || OtherRecoveryOwner(runtime) != null
-                || stalled < VanillaRecoveryScreenDiagnosis.MinimumStallSeconds
-                || (!modalRecheck && stalled >= Math.Max(60, settings.MovementRestartSeconds))
-                || !VanillaRecoveryScreenDiagnosis.BackgroundAllowsDiagnosis(runtime.LastVisualObservation)) return false;
+                || stalled < VanillaRecoveryScreenDiagnosis.DelaySeconds(runtime.Account)) return false;
             var factory = RecoveryScreenDiagnosisFactory;
             if (factory == null)
             {
@@ -203,7 +196,8 @@ namespace _4RTools.Model.Vanilla
             TimeSpan clock = restartEnvironment.MonotonicNow;
             if (screenDiagnosisAttempts.TryGetValue(runtime.Account.Id, out previous)
                 && ReferenceEquals(previous.Runtime, runtime) && previous.Pid == runtime.ProcessId
-                && previous.DiagnosticGeneration == diagnosticGeneration && clock >= previous.QueuedAt
+                && previous.DiagnosticGeneration == diagnosticGeneration
+                && previous.ProgressVersion == runtime.MovementWatchdog.ProgressVersion && clock >= previous.QueuedAt
                 && (clock - previous.QueuedAt).TotalSeconds < VanillaRecoveryScreenDiagnosis.RetrySeconds) return false;
             DateTime createdAt;
             try { createdAt = startTimeUtc(); }
@@ -211,11 +205,12 @@ namespace _4RTools.Model.Vanilla
             var attempt = new ScreenDiagnosisAttempt
             {
                 Runtime = runtime, Pid = runtime.ProcessId.Value, Created = createdAt, QueuedAt = clock, Active = true,
+                ProgressVersion = runtime.MovementWatchdog.ProgressVersion,
                 DiagnosticGeneration = diagnosticGeneration, ResumeGeneration = runtime.ResumeOperationGeneration, ModalRecheck = modalRecheck
             };
             screenDiagnosisAttempts[runtime.Account.Id] = attempt;
             runtime.ScriptRunning = true;
-            Log(runtime.Account.Label + ": background diagnosis unavailable; briefly observing only this stalled client in the foreground. No gameplay input is sent.");
+            Log(runtime.Account.Label + ": X/Y movement has stalled; observing only this client in the foreground before any recovery input.");
             try { restartEnvironment.Queue(() => RunRecoveryScreenDiagnosis(attempt, factory)); }
             catch { attempt.Active = false; runtime.ScriptRunning = false; throw; }
             return true;
@@ -232,7 +227,7 @@ namespace _4RTools.Model.Vanilla
         private bool ScreenDiagnosisOwns(ScreenDiagnosisAttempt attempt)
         {
             Runtime current = attempt.Runtime;
-            return ScreenDiagnosisLeaseCurrent(attempt) && !disposed && running && settings.AutoRecover && !hardenedStartupRunning
+            return ScreenDiagnosisLeaseCurrent(attempt) && !disposed && running && (settings.AutoRecover || current.Account.SmartTeleportEnabled) && !hardenedStartupRunning
                 && current.ScriptRunning && !current.RecoveryOwned && !current.ClosingForRecovery && current.Account.Enabled
                 && !FarmingEmergencyHeld(current) && !weightManualHolds.Contains(current.Account.Id)
                 && !weightCompletedHolds.Contains(current.Account.Id) && !TemporaryActionRegistered(attempt.Pid)
@@ -249,8 +244,7 @@ namespace _4RTools.Model.Vanilla
                 catch { /* Existing reader failure stays unavailable, never fabricated movement. */ }
                 attempt.Runtime.MovementWatchdog.Observe(attempt.Pid, sample, restartEnvironment.MonotonicNow, restartEnvironment.UtcNow);
                 double stalled = attempt.Runtime.MovementWatchdog.StalledSeconds(restartEnvironment.MonotonicNow);
-                return stalled < VanillaRecoveryScreenDiagnosis.MinimumStallSeconds
-                    || (!attempt.ModalRecheck && stalled >= Math.Max(60, settings.MovementRestartSeconds));
+                return stalled < VanillaRecoveryScreenDiagnosis.DelaySeconds(attempt.Runtime.Account);
             }
         }
 
@@ -300,6 +294,9 @@ namespace _4RTools.Model.Vanilla
                         attempt.Active = false;
                         if (publish)
                         {
+                            runtime.ForegroundGameplayVersion = frames.Length == 2
+                                && frames.All(frame => !AutobattleVisualBlocksInput(frame.State))
+                                ? runtime.MovementWatchdog.ProgressVersion : -1;
                             bool retainedModal = runtime.Visual == VanillaVisualState.ModalDialog
                                 && !(frames[0].State == frames[1].State
                                     && frames[0].State != VanillaVisualState.Unknown
@@ -329,6 +326,9 @@ namespace _4RTools.Model.Vanilla
                                     && (frames[1].At - frames[0].At).TotalMilliseconds >= settings.LoginStableMs)
                                     QueueClientRestart(runtime, restartEnvironment.UtcNow,
                                         "Confirmed return to login/service screen during foreground diagnosis", false, () => attempt.Created);
+                                if (!runtime.ScriptRunning && !runtime.RecoveryOwned
+                                    && runtime.ForegroundGameplayVersion == runtime.MovementWatchdog.ProgressVersion)
+                                    TryQueueStalledAutobattleRecovery(runtime);
                             }
                         }
                     }

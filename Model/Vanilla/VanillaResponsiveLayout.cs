@@ -152,8 +152,7 @@ namespace _4RTools.Model.Vanilla
             CompactButton(browse); responsiveHeader.Controls.Add(browse);
             startWithApp.Text = "Start with 4RTools";
             autoRecover.Text = "Auto relog";
-            visualWatchdog.Text = "Visual watchdog";
-            foreach (CheckBox check in new[] { startWithApp, autoRecover, visualWatchdog })
+            foreach (CheckBox check in new[] { startWithApp, autoRecover })
             {
                 check.Dock = DockStyle.None;
                 check.AutoSize = true;

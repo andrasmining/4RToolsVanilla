@@ -53,7 +53,6 @@ namespace _4RTools.Model.Vanilla
         private delegate bool EnumWindowsProc(IntPtr hwnd, IntPtr lParam);
 
         [DllImport("user32.dll", SetLastError = true)] private static extern bool GetClientRect(IntPtr hwnd, out RECT rect);
-        [DllImport("user32.dll", SetLastError = true)] private static extern bool PrintWindow(IntPtr hwnd, IntPtr hdc, uint flags);
         [DllImport("user32.dll", SetLastError = true)] private static extern bool ClientToScreen(IntPtr hwnd, ref POINT point);
         [DllImport("user32.dll", SetLastError = true)] private static extern bool ScreenToClient(IntPtr hwnd, ref POINT point);
         [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
@@ -538,51 +537,18 @@ namespace _4RTools.Model.Vanilla
                     process.Refresh();
                     IntPtr hwnd = ResolveLauncherWindow(processId);
                     if (hwnd == IntPtr.Zero) { evidence = "main window handle is zero"; return false; }
-                    RECT rect;
-                    if (!GetClientRect(hwnd, out rect)) { evidence = "GetClientRect failed err=" + Marshal.GetLastWin32Error(); return false; }
-                    int width = rect.Right - rect.Left;
-                    int height = rect.Bottom - rect.Top;
-                    if (width < 200 || height < 120) { evidence = "client too small: " + width + "x" + height; return false; }
-
-                    string printEvidence = "PrintWindow not attempted";
-                    using (var bitmap = new Bitmap(width, height, PixelFormat.Format24bppRgb))
+                    using (var bitmap = CaptureLauncherForeground(processId, hwnd))
                     {
-                        using (var graphics = Graphics.FromImage(bitmap))
-                        {
-                            IntPtr hdc = graphics.GetHdc();
-                            bool captured;
-                            int captureError;
-                            try { captured = PrintWindow(hwnd, hdc, 1); captureError = captured ? 0 : Marshal.GetLastWin32Error(); }
-                            finally { graphics.ReleaseHdc(hdc); }
-                            SaveDebugBitmap(debugDirectory, "launcher-print-last.png", bitmap);
-                            double printX, printY;
-                            string detector = captured ? "detector not yet evaluated" : "PrintWindow failed before detector";
-                            if (captured && TryFindGameStart(bitmap, out printX, out printY, out detector))
-                            {
-                                x = printX; y = printY;
-                                evidence = "PrintWindow OK; " + detector + DebugCaptureSuffix(debugDirectory, "launcher-print-last.png");
-                                return true;
-                            }
-                            printEvidence = "PrintWindow=" + captured + " err=" + captureError + "; detector=" + detector;
-                        }
-
-                        var origin = new POINT { X = 0, Y = 0 };
-                        if (!ClientToScreen(hwnd, ref origin))
-                        {
-                            evidence = printEvidence + "; ClientToScreen failed err=" + Marshal.GetLastWin32Error();
-                            return false;
-                        }
-                        using (var graphics = Graphics.FromImage(bitmap))
-                            graphics.CopyFromScreen(origin.X, origin.Y, 0, 0, new Size(width, height));
+                        if (bitmap == null) { evidence = "owned launcher foreground unavailable; no screenshot taken"; return false; }
                         SaveDebugBitmap(debugDirectory, "launcher-screen-last.png", bitmap);
                         string screenEvidence;
                         if (!TryFindGameStart(bitmap, out x, out y, out screenEvidence))
                         {
-                            evidence = printEvidence + "; visibleScreen detector=" + screenEvidence + "; origin=(" + origin.X + "," + origin.Y + ")"
+                            evidence = "foreground detector=" + screenEvidence
                                 + DebugCaptureSuffix(debugDirectory, "launcher-screen-last.png");
                             return false;
                         }
-                        evidence = printEvidence + "; visibleScreen OK; " + screenEvidence + "; origin=(" + origin.X + "," + origin.Y + ")"
+                        evidence = "foreground capture OK; " + screenEvidence
                             + DebugCaptureSuffix(debugDirectory, "launcher-screen-last.png");
                         return true;
                     }
@@ -599,38 +565,43 @@ namespace _4RTools.Model.Vanilla
         {
             try
             {
-                uint owner;
-                if (!IsWindow(hwnd) || !IsWindowVisible(hwnd) || GetForegroundWindow() != hwnd
-                    || GetWindowThreadProcessId(hwnd, out owner) == 0 || owner != (uint)pid
-                    || !string.Equals(WindowClass(hwnd), "TThorForm", StringComparison.OrdinalIgnoreCase)) return null;
-                RECT rect;
-                if (!GetClientRect(hwnd, out rect)) return null;
-                int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;
-                if (width < 200 || height < 120 || width > 4096 || height > 2160) return null;
-                using (var image = new Bitmap(width, height, PixelFormat.Format24bppRgb))
-                {
-                    bool captured;
-                    using (var graphics = Graphics.FromImage(image))
-                    {
-                        IntPtr dc = graphics.GetHdc();
-                        try { captured = PrintWindow(hwnd, dc, 1); }
-                        finally { graphics.ReleaseHdc(dc); }
-                    }
-                    var frame = captured ? VanillaLauncherPatchFrame.Read(image) : null;
-                    if (frame != null) return frame;
-                    var origin = new POINT();
-                    if (!ClientToScreen(hwnd, ref origin) || GetForegroundWindow() != hwnd) return null;
-                    foreach (int dx in new[] { width / 12, width / 2, width * 11 / 12 })
-                    {
-                        IntPtr at = WindowFromPoint(new POINT { X = origin.X + dx, Y = origin.Y + height * 93 / 100 });
-                        if (at != hwnd && !IsChild(hwnd, at)) return null;
-                    }
-                    using (var graphics = Graphics.FromImage(image))
-                        graphics.CopyFromScreen(origin.X, origin.Y, 0, 0, new Size(width, height));
-                    return GetForegroundWindow() == hwnd ? VanillaLauncherPatchFrame.Read(image) : null;
-                }
+                using (var image = CaptureLauncherForeground(pid, hwnd))
+                    return image == null ? null : VanillaLauncherPatchFrame.Read(image);
             }
             catch { return null; } // Failed capture is unknown, never stalled-update evidence.
+        }
+
+        private static Bitmap CaptureLauncherForeground(int pid, IntPtr hwnd)
+        {
+            uint owner;
+            if (!IsWindow(hwnd) || !IsWindowVisible(hwnd) || GetForegroundWindow() != hwnd
+                || GetWindowThreadProcessId(hwnd, out owner) == 0 || owner != (uint)pid
+                || !string.Equals(WindowClass(hwnd), "TThorForm", StringComparison.OrdinalIgnoreCase)) return null;
+            RECT rect;
+            if (!GetClientRect(hwnd, out rect)) return null;
+            int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;
+            if (width < 200 || height < 120 || width > 4096 || height > 2160) return null;
+            var origin = new POINT();
+            if (!ClientToScreen(hwnd, ref origin) || GetForegroundWindow() != hwnd) return null;
+            foreach (int dx in new[] { width / 12, width / 2, width * 11 / 12 })
+            {
+                IntPtr at = WindowFromPoint(new POINT { X = origin.X + dx, Y = origin.Y + height * 93 / 100 });
+                if (at != hwnd && !IsChild(hwnd, at)) return null;
+            }
+            var image = new Bitmap(width, height, PixelFormat.Format24bppRgb);
+            try
+            {
+                using (var graphics = Graphics.FromImage(image))
+                    graphics.CopyFromScreen(origin.X, origin.Y, 0, 0, new Size(width, height));
+                RECT after;
+                var afterOrigin = new POINT();
+                if (GetForegroundWindow() != hwnd || GetWindowThreadProcessId(hwnd, out owner) == 0 || owner != (uint)pid
+                    || !GetClientRect(hwnd, out after) || after.Right - after.Left != width || after.Bottom - after.Top != height
+                    || !ClientToScreen(hwnd, ref afterOrigin) || afterOrigin.X != origin.X || afterOrigin.Y != origin.Y)
+                { image.Dispose(); return null; }
+                return image;
+            }
+            catch { image.Dispose(); throw; }
         }
 
         private static string ClickTargetedWindowAtPoint(int processId, double x, double y, Func<bool> cancelled)

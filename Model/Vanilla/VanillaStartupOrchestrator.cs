@@ -52,13 +52,6 @@ namespace _4RTools.Model.Vanilla
             return gameplayConfirmed && movementVerified && minimized && !failed;
         }
 
-        internal static bool ExistingClientVisualBlocksMemoryAdoption(VanillaVisualState visual)
-        {
-            return visual == VanillaVisualState.LoginShell
-                || visual == VanillaVisualState.LoggingOut
-                || visual == VanillaVisualState.Disconnected || visual == VanillaVisualState.ServerClosed;
-        }
-
         public void StartHardenedSequentialStartup(System.Action<bool, string> completed)
         {
             VanillaReconnectSettings config;
@@ -117,6 +110,67 @@ namespace _4RTools.Model.Vanilla
             return disposed || generation != Volatile.Read(ref hardenedStartupGeneration);
         }
 
+        internal static bool ExistingClientRequiresReplacement(System.Action verifyMemory,
+            Func<bool> confirmAndCloseTerminal, Func<bool> cancelled)
+        {
+            if (cancelled()) throw new OperationCanceledException();
+            try
+            {
+                verifyMemory();
+                if (cancelled()) throw new OperationCanceledException();
+                return false;
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception)
+            {
+                if (cancelled()) throw new OperationCanceledException();
+                // Only failed memory readiness may bring this existing client
+                // forward for diagnosis. Healthy adoption never captures a frame.
+                bool closed = confirmAndCloseTerminal();
+                if (cancelled()) throw new OperationCanceledException();
+                if (closed) return true;
+                throw;
+            }
+        }
+
+        private bool DiagnoseFailedStartupClient(Runtime runtime, int pid, int generation, VanillaReconnectSettings config)
+        {
+            Func<bool> cancelled = () =>
+            {
+                lock (gate)
+                {
+                    Runtime current;
+                    return StartupAccountCancelled(generation, runtime.Account)
+                        || !runtimes.TryGetValue(runtime.Account.Id, out current) || !ReferenceEquals(current, runtime)
+                        || current.ProcessId != pid || !current.Account.Enabled || OtherRecoveryOwner(current) != null
+                        || current.ScriptRunning || current.ClosingForRecovery || CharacterOwnershipChanged(current, pid);
+                }
+            };
+            if (cancelled()) throw new OperationCanceledException();
+            using (var process = Process.GetProcessById(pid))
+            using (var input = new VanillaForegroundInput(pid, IntPtr.Zero, cancelled))
+            {
+                DateTime created = process.StartTime.ToUniversalTime();
+                Func<DateTime> requireIdentity = () =>
+                {
+                    if (cancelled()) throw new OperationCanceledException();
+                    process.Refresh();
+                    if (process.HasExited || process.StartTime.ToUniversalTime() != created)
+                        throw new OperationCanceledException("Existing startup client was replaced before diagnosis.");
+                    return created;
+                };
+                return CloseTerminalBeforeStartup(runtime, pid, generation, config, () =>
+                {
+                    requireIdentity();
+                    using (Bitmap image = input.CaptureClientBitmapForObservation())
+                    {
+                        requireIdentity();
+                        return VanillaVisualProbe.Classify(image);
+                    }
+                }, requireIdentity, milliseconds => PauseCharacterSelection(cancelled, milliseconds));
+            }
+        }
+
         private bool StartupAccountCancelled(int generation, VanillaReconnectAccount account)
         {
             lock (gate)
@@ -163,23 +217,23 @@ namespace _4RTools.Model.Vanilla
 
                         if (existingPid.HasValue)
                         {
-                            using (var process = Process.GetProcessById(existingPid.Value))
+                            Log(account.Label + ": existing PID " + existingPid.Value + " found. Verifying gameplay memory before visual diagnosis or releasing the sequential gate.");
+                            try
                             {
-                                try
-                                {
-                                    if (CloseTerminalBeforeStartup(runtime, existingPid.Value, generation, config,
-                                        () => VanillaVisualProbe.ObserveProcess(existingPid.Value).State,
-                                        () => process.StartTime.ToUniversalTime(), milliseconds => PauseCharacterSelection(
-                                            () => StartupAccountCancelled(generation, account), milliseconds)))
-                                        existingPid = null;
-                                }
-                                catch (OperationCanceledException) { throw; }
-                                catch (Exception) when (runtime.ServerOutagePending)
-                                {
-                                    // The verified outage remains a scheduled retry even if its
-                                    // owned close failed. The next attempt must close before launch.
+                                int observedPid = existingPid.Value;
+                                if (ExistingClientRequiresReplacement(
+                                    () => WaitForExistingClientGameplayReady(account, observedPid,
+                                        () => StartupAccountCancelled(generation, account), 15000, account.Label + " existing client"),
+                                    () => DiagnoseFailedStartupClient(runtime, observedPid, generation, config),
+                                    () => StartupAccountCancelled(generation, account)))
                                     existingPid = null;
-                                }
+                            }
+                            catch (OperationCanceledException) { throw; }
+                            catch (Exception) when (runtime.ServerOutagePending)
+                            {
+                                // Preserve the verified outage schedule even when its close
+                                // failed. Replacement still requires confirmed previous exit.
+                                existingPid = null;
                             }
                         }
                         if (existingPid.HasValue)
@@ -189,50 +243,8 @@ namespace _4RTools.Model.Vanilla
                                 if (!CanAdoptExistingGameplayClient(runtime.ResumeSent, runtime.ResumeVerificationFailed, runtime.ScriptRunning))
                                     throw new InvalidOperationException(account.Label + ": existing client has an unfinished or failed startup. Verify it with the Resume hotkey test before starting later clients.");
                             }
-                            Log(account.Label + ": existing PID " + existingPid.Value + " found. Verifying gameplay before releasing the sequential gate.");
-                            VanillaDebugLog.Write("STARTUP", account.Label + ": existing PID " + existingPid.Value + " verification begin.");
-                            try
-                            {
-                                WaitForExistingClientGameplayReady(account, existingPid.Value,
-                                    () => StartupAccountCancelled(generation, account), 15000, account.Label + " existing client");
-                            }
-                            catch (VanillaServerClosedException)
-                            {
-                                lock (gate) { ConfirmServerOutageLocked(runtime); ParkForServerOutageLocked(runtime); }
-                                RunOneColdStart(generation, account, config, index + 1, accounts.Length);
-                                continue;
-                            }
-                            VanillaVisualState supplementalVisual = VanillaVisualState.Unknown;
-                            try
-                            {
-                                using (var process = Process.GetProcessById(existingPid.Value))
-                                {
-                                    process.Refresh();
-                                    supplementalVisual = VanillaVisualProbe.Classify(process.MainWindowHandle);
-                                }
-                            }
-                            catch (Exception ex)
-                            {
-                                VanillaDebugLog.Write("STARTUP", account.Label
-                                    + ": supplemental visual probe failed after memory verification: " + ex.Message);
-                            }
                             VanillaDebugLog.Write("STARTUP", account.Label + ": existing PID " + existingPid.Value
-                                + " accepted by fresh verified memory gameplay state; supplemental visual=" + supplementalVisual
-                                + (supplementalVisual == VanillaVisualState.Unknown ? " (Unknown is non-blocking)." : "."));
-                            if (supplementalVisual == VanillaVisualState.ServerClosed)
-                            {
-                                try { ThrowIfConfirmedServerClosed(existingPid.Value, () => StartupAccountCancelled(generation, account)); }
-                                catch (VanillaServerClosedException)
-                                {
-                                    lock (gate) { ConfirmServerOutageLocked(runtime); ParkForServerOutageLocked(runtime); }
-                                    RunOneColdStart(generation, account, config, index + 1, accounts.Length);
-                                    continue;
-                                }
-                            }
-                            if (ExistingClientVisualBlocksMemoryAdoption(supplementalVisual))
-                                throw new InvalidOperationException(account.Label
-                                    + ": fresh verified memory says gameplay, but supplemental visual is " + supplementalVisual
-                                    + "; existing client was not adopted.");
+                                + " accepted by fresh verified memory gameplay state without capture or foreground activation.");
 
                             if (!WaitForOwnedClientSafeMinimize(runtime, existingPid.Value, () => StartupAccountCancelled(generation, account),
                                 account.Label + ": existing client", false))
@@ -765,7 +777,8 @@ namespace _4RTools.Model.Vanilla
                         Thread.Sleep(150);
                         continue;
                     }
-                    last = VanillaVisualProbe.Classify(process.MainWindowHandle);
+                    using (Bitmap image = input.CaptureClientBitmapForObservation())
+                        last = VanillaVisualProbe.Classify(image);
                 }
 
                 VanillaDebugLog.Write("VISUAL", context + ": PID=" + pid + ", state=" + last + ", elapsedMs=" + watch.ElapsedMilliseconds + ".");

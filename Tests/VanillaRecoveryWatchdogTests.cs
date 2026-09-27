@@ -54,27 +54,27 @@ namespace Vanilla.Diagnostics.Tests
             Test("Close failure retains the PID and exponential backoff", CloseFailure);
             Test("Recovery OFF disables position restarts", RecoveryOff);
             Test("Visual watchdog OFF does not disable the position watchdog", VisualOff);
-            Test("Unreadable health forces terminal diagnosis with visual monitoring OFF", HealthTerminalDiagnosis);
+            Test("Stalled unreadable health queues foreground terminal diagnosis with legacy visual OFF", HealthTerminalDiagnosis);
             Test("Healthy movement avoids forced diagnosis when visual monitoring is OFF", HealthyVisualOff);
             Test("Capture failure cannot bypass the unavailable-health restart deadline", FailedVisualDiagnosis);
             Test("Online capture failures never rearm login from an old launch", OnlineCaptureFailure);
             Test("An adopted waiting stage cannot grant login ownership", AdoptedWaitingStage);
             Test("Replacement capture failure still reaches bounded login readiness", ReplacementCaptureFailure);
             Test("Failed replacement with retained PID retries after backoff under one lease", RetainedReplacementRetry);
-            Test("Retained replacement retry diagnoses unknown modals with visual monitoring OFF", RetainedReplacementModal);
+            Test("Retained replacement retry respects previously diagnosed unknown modals", RetainedReplacementModal);
             Test("An adopted client failure cannot arm a replacement retry", RetainedReplacementAdopted);
             Test("STOP cancels retained replacement retry evidence and queued close", RetainedReplacementStop);
             Test("Settings cancel retained replacement retry evidence and queued close", RetainedReplacementSettings);
             Test("Retained replacement retry rejects recycled process identity", RetainedReplacementIdentity);
             Test("Retained replacement retries remain serialized behind a sibling", RetainedReplacementSibling);
             Test("Retained replacement close failure preserves capped retry progression", RetainedReplacementCloseFailure);
-            Test("Samples produced during capture are fresh rather than future data", CaptureClock);
+            Test("Samples produced during memory reads are fresh rather than future data", CaptureClock);
             Test("Unknown modal blocks a reached movement restart deadline", ModalBeforeRestart);
             Test("Unavailable or ambiguous captures cannot clear a known modal", ModalCaptureGap);
             Test("Failed capture breaks terminal confirmation continuity", FailedTerminalConfirmation);
             Test("STOP during visual diagnosis withholds recovery", CancelVisualDiagnosis);
             Test("Timed out native captures are bounded and late frames discarded", BoundedVisualDiagnosis);
-            Test("Minimized native geometry is retained and unavailable capture stays Unknown", MinimizedTerminalCapture);
+            Test("Minimized windows stay minimized and never render background screenshots", MinimizedTerminalCapture);
             Test("Startup and recovery do not accrue movement timeouts", StartupGrace);
             Test("Automatic minimization requires 60s visible and 60s cursor idle", MinimizeGrace);
             Test("Verified recovery movement bypasses the 60s minimize grace", VerifiedMovementMinimize);
@@ -237,6 +237,7 @@ namespace Vanilla.Diagnostics.Tests
             internal readonly List<string> Wakeups = new List<string>();
             internal readonly Dictionary<int, VanillaRecoveryVisualObservation> Visuals = new Dictionary<int, VanillaRecoveryVisualObservation>();
             internal int VisualReads;
+            internal Action<int> OnVisualRead;
             private readonly string root = Path.Combine(Path.GetTempPath(), "4R-watchdog-" + Guid.NewGuid().ToString("N"));
             internal H()
             {
@@ -248,12 +249,27 @@ namespace Vanilla.Diagnostics.Tests
                 Set(Supervisor, "running", true); // No live Start(), timer or process enumeration.
                 Supervisor.SetPositionSource(pid => Samples.ContainsKey(pid) ? Samples[pid] : null, Forgotten.Add);
                 Supervisor.SetAutobattleResumeTestHook((id, reason, movement) => Wakeups.Add(id + "|" + reason + "|" + movement));
-                Set(Supervisor, "recoveryVisualSource", (Func<int, VanillaRecoveryVisualObservation>)(pid =>
+            }
+            internal void EnableForegroundDiagnosis()
+            { Supervisor.RecoveryScreenDiagnosisFactory = (pid, created, cancelled) => new ForegroundScreen(this, pid); }
+            private sealed class ForegroundScreen : IVanillaRecoveryScreenSession
+            {
+                private readonly H owner;
+                private readonly int pid;
+                internal ForegroundScreen(H owner, int pid) { this.owner = owner; this.pid = pid; }
+                public bool WasMinimized { get { return true; } }
+                public VanillaRecoveryScreenFrame Capture()
                 {
-                    VisualReads++;
-                    return Visuals.ContainsKey(pid) ? Visuals[pid]
+                    owner.VisualReads++; owner.E.Seconds += .15;
+                    owner.OnVisualRead?.Invoke(pid);
+                    var visual = owner.Visuals.ContainsKey(pid) ? owner.Visuals[pid]
                         : new VanillaRecoveryVisualObservation(VanillaVisualState.Unknown, true, null);
-                }));
+                    if (visual.Error != null || !visual.WindowAvailable) throw new InvalidOperationException(visual.Error ?? "Foreground capture unavailable");
+                    return new VanillaRecoveryScreenFrame { State = visual.State, At = owner.E.UtcNow,
+                        Proof = new VanillaVisualInputProof(pid, new IntPtr(pid + 500), new Size(640, 480), new Point(20, 30), owner.VisualReads) };
+                }
+                public void RestoreMinimizedState(Action<Action> ownedStep) { ownedStep(() => { }); }
+                public void Dispose() { }
             }
             internal void Sample(int pid, int x = 10) { Samples[pid] = S(E.Seconds, x, pid: pid); }
             internal bool Motion(object runtime)
@@ -627,43 +643,55 @@ namespace Vanilla.Diagnostics.Tests
         {
             using (var h = new H())
             {
+                h.EnableForegroundDiagnosis();
                 var settings = h.Supervisor.Settings; settings.VisualWatchdog = false; Set(h.Supervisor, "settings", settings);
                 h.Visuals[101] = new VanillaRecoveryVisualObservation(VanillaVisualState.Disconnected, true, null);
                 h.Probe(h.A);
-                Assert(h.VisualReads == 1 && h.E.Work.Count == 0, "Missing health did not request a first fresh visual diagnosis.");
-                h.E.Seconds = 1; h.Sample(101); h.Probe(h.A);
-                Assert(h.VisualReads == 2 && h.E.Work.Count == 1, "Terminal confirmation stopped when a coordinate sample reappeared.");
+                Assert(h.VisualReads == 0 && h.E.Work.Count == 0, "Missing health captured a background window.");
+                h.E.Seconds = 30; h.Probe(h.A);
+                Assert(h.VisualReads == 0 && h.E.Work.Count == 1, "Stalled health did not queue serialized foreground diagnosis.");
+                h.E.Work.Dequeue()();
+                Assert(h.VisualReads == 2 && h.E.Work.Count == 1, "Two fresh foreground terminal frames did not queue close.");
                 h.E.Work.Dequeue()();
                 Assert(h.E.Closed.SequenceEqual(new[] { 101 }) && (int?)Get(h.B, "ProcessId") == 102);
             }
         }
+
         private static void HealthyVisualOff()
         {
             using (var h = new H())
             {
-                var settings = h.Supervisor.Settings; settings.VisualWatchdog = false; Set(h.Supervisor, "settings", settings);
-                h.Sample(101); h.Probe(h.A);
-                h.E.Seconds = 20; h.Sample(101, 11); h.Probe(h.A);
-                Assert(h.VisualReads == 0 && h.E.Work.Count == 0, "Healthy movement forced screen diagnosis.");
-                h.E.Seconds = 51; h.Sample(101, 11); h.Probe(h.A);
-                Assert(h.VisualReads == 1 && h.E.Work.Count == 0, "Stationary health did not request bounded diagnosis before restart.");
+                h.EnableForegroundDiagnosis();
+                foreach (bool legacyVisualEnabled in new[] { false, true })
+                {
+                    var settings = h.Supervisor.Settings; settings.VisualWatchdog = legacyVisualEnabled; Set(h.Supervisor, "settings", settings);
+                    h.E.Seconds += 20; h.Sample(101, (int)h.E.Seconds); h.Probe(h.A);
+                    Assert(h.VisualReads == 0 && h.E.Work.Count == 0, "Healthy movement or the legacy visual setting caused screen diagnosis.");
+                }
+                h.E.Seconds += 31; h.Sample(101, 40); h.Probe(h.A);
+                Assert(h.VisualReads == 0 && h.E.Work.Count == 1, "Stationary health did not queue diagnosis without passive capture.");
+                h.E.Work.Dequeue()();
+                Assert(h.VisualReads == 2 && h.E.Work.Count == 0 && h.E.Closed.Count == 0, "Unknown foreground evidence authorized recovery input.");
             }
         }
+
         private static void FailedVisualDiagnosis()
         {
             using (var h = new H())
             {
-                Set(h.Supervisor, "recoveryVisualSource", (Func<int, VanillaRecoveryVisualObservation>)(pid =>
-                    { h.VisualReads++; throw new System.ComponentModel.Win32Exception(5, "Synthetic capture denied"); }));
+                h.EnableForegroundDiagnosis();
+                h.OnVisualRead = pid => { throw new System.ComponentModel.Win32Exception(5, "Synthetic capture denied"); };
                 h.Probe(h.A);
-                h.E.Seconds = 179; h.Probe(h.A);
-                Assert(h.E.Work.Count == 0);
+                h.E.Seconds = 30; h.Probe(h.A); h.E.Work.Dequeue()();
+                h.E.Seconds = 179; h.Probe(h.A); h.E.Work.Dequeue()();
+                Assert(h.VisualReads == 2 && h.E.Work.Count == 0 && h.E.Closed.Count == 0);
                 h.E.Seconds = 180; h.Probe(h.A);
-                Assert(h.VisualReads == 3 && h.E.Work.Count == 1, "Capture exceptions bypassed or reset unavailable-health recovery.");
+                Assert(h.E.Work.Count == 1, "Capture failures reset the original unavailable-health deadline.");
                 h.E.Work.Dequeue()();
                 Assert(h.E.Closed.SequenceEqual(new[] { 101 }) && h.Wakeups.Count == 0);
             }
         }
+
         private static void OnlineCaptureFailure()
         {
             using (var h = new H())
@@ -727,7 +755,7 @@ namespace Vanilla.Diagnostics.Tests
                 h.Visuals[101] = new VanillaRecoveryVisualObservation(VanillaVisualState.Unknown, false, "capture timeout");
                 h.E.Seconds = 29; h.Probe(h.A); Assert(h.E.Work.Count == 0 && h.VisualReads == 0);
                 h.E.Seconds = 30; h.Probe(h.A);
-                Assert(h.E.Work.Count == 1 && h.VisualReads == 1 && (bool)Get(h.A, "RecoveryOwned"));
+                Assert(h.E.Work.Count == 1 && h.VisualReads == 0 && (bool)Get(h.A, "RecoveryOwned"));
                 h.E.Work.Dequeue()();
                 Assert(h.E.Closed.SequenceEqual(new[] { 101 }) && (int?)Get(h.B, "ProcessId") == 102
                     && Get(h.A, "ProcessId") == null && !(bool)Get(h.A, "FailedReplacementRetryPending")
@@ -740,18 +768,19 @@ namespace Vanilla.Diagnostics.Tests
             using (var h = new H())
             {
                 ArmRetainedReplacement(h);
-                var settings = h.Supervisor.Settings; settings.VisualWatchdog = false; Set(h.Supervisor, "settings", settings);
-                h.Visuals[101] = new VanillaRecoveryVisualObservation(VanillaVisualState.ModalDialog, true, null);
+                Set(h.A, "Visual", VanillaVisualState.ModalDialog);
                 h.E.Seconds = 30; h.Probe(h.A);
-                Assert(h.VisualReads == 1 && h.E.Work.Count == 0 && (bool)Get(h.A, "FailedReplacementRetryPending"));
-                h.Visuals[101] = new VanillaRecoveryVisualObservation(VanillaVisualState.Unknown, false, "capture timeout");
+                Assert(h.VisualReads == 0 && h.E.Work.Count == 0 && (bool)Get(h.A, "FailedReplacementRetryPending"),
+                    "A known unknown modal was bypassed by retained replacement retry.");
+                Set(h.A, "LastVisualObservation", new VanillaRecoveryVisualObservation(VanillaVisualState.Unknown, false, "capture unavailable"));
                 h.E.Seconds = 32; h.Probe(h.A);
-                Assert(h.VisualReads == 2 && h.E.Work.Count == 0, "Unavailable capture cleared the previously observed unknown modal.");
-                h.Visuals[101] = new VanillaRecoveryVisualObservation(VanillaVisualState.LoginShell, true, null);
+                Assert(h.VisualReads == 0 && h.E.Work.Count == 0, "Unavailable evidence cleared a previously observed modal.");
+                Set(h.A, "Visual", VanillaVisualState.LoginShell);
                 h.E.Seconds = 34; h.Probe(h.A);
-                Assert(h.VisualReads == 3 && h.E.Work.Count == 1, "A cleared modal stranded the owned failed replacement after backoff.");
+                Assert(h.VisualReads == 0 && h.E.Work.Count == 1, "Explicitly cleared modal stranded the owned failed replacement.");
             }
         }
+
         private static void RetainedReplacementAdopted()
         {
             using (var h = new H())
@@ -816,80 +845,80 @@ namespace Vanilla.Diagnostics.Tests
         {
             using (var h = new H())
             {
-                Set(h.Supervisor, "recoveryVisualSource", (Func<int, VanillaRecoveryVisualObservation>)(pid =>
+                h.Supervisor.SetPositionSource(pid =>
                 {
                     h.E.Seconds += 1; h.Sample(pid, (int)h.E.Seconds);
-                    return new VanillaRecoveryVisualObservation(VanillaVisualState.Unknown, true, null);
-                }));
+                    return h.Samples[pid];
+                }, pid => { });
                 h.Probe(h.A);
                 h.E.Seconds = 180; h.Probe(h.A);
-                Assert(h.E.Work.Count == 0 && ((VanillaMovementWatchdog)Get(h.A, "MovementWatchdog"))
-                    .StalledSeconds(h.E.MonotonicNow) == 0, "Capture time made fresh movement look like future/stale data.");
+                Assert(h.VisualReads == 0 && h.E.Work.Count == 0 && ((VanillaMovementWatchdog)Get(h.A, "MovementWatchdog"))
+                    .StalledSeconds(h.E.MonotonicNow) == 0, "Read duration made freshly produced movement look like future/stale data.");
             }
         }
+
         private static void ModalBeforeRestart()
         {
             using (var h = new H())
             {
                 h.Sample(101); h.Probe(h.A);
                 h.E.Seconds = 180; h.Sample(101);
-                h.Visuals[101] = new VanillaRecoveryVisualObservation(VanillaVisualState.ModalDialog, true, null);
+                Set(h.A, "Visual", VanillaVisualState.ModalDialog);
                 h.Probe(h.A);
                 Assert(h.E.Work.Count == 0 && h.E.Closed.Count == 0, "Movement deadline bypassed unknown-modal guard.");
                 h.E.Seconds = 181; h.Sample(101);
-                h.Visuals[101] = new VanillaRecoveryVisualObservation(VanillaVisualState.Gameplay, true, null);
+                Set(h.A, "Visual", VanillaVisualState.Gameplay);
                 h.Probe(h.A);
-                Assert(h.E.Work.Count == 1, "Unknown modal reset the preceding movement deadline.");
+                Assert(h.E.Work.Count == 1 && h.VisualReads == 0, "Unknown modal reset the preceding movement deadline.");
             }
         }
+
         private static void ModalCaptureGap()
         {
             using (var h = new H())
             {
-                h.Sample(101); h.Probe(h.A);
-                h.E.Seconds = 1; h.Sample(101, 11);
-                h.Visuals[101] = new VanillaRecoveryVisualObservation(VanillaVisualState.ModalDialog, true, null);
+                h.EnableForegroundDiagnosis();
                 h.Probe(h.A);
-                var settings = h.Supervisor.Settings; settings.VisualWatchdog = false; Set(h.Supervisor, "settings", settings);
+                h.Visuals[101] = new VanillaRecoveryVisualObservation(VanillaVisualState.ModalDialog, true, null);
+                h.E.Seconds = 30; h.Probe(h.A); h.E.Work.Dequeue()();
+                Assert((VanillaVisualState)Get(h.A, "Visual") == VanillaVisualState.ModalDialog);
                 foreach (string error in new[] { "capture timeout", null })
                 {
-                    h.E.Seconds = error == null ? 180 : 2; h.Sample(101, (int)h.E.Seconds + 11);
+                    h.E.Seconds += 61;
                     h.Visuals[101] = new VanillaRecoveryVisualObservation(VanillaVisualState.Unknown, error == null, error);
-                    h.Probe(h.A);
+                    h.Probe(h.A); h.E.Work.Dequeue()();
                     Assert((VanillaVisualState)Get(h.A, "Visual") == VanillaVisualState.ModalDialog
-                        && h.E.Work.Count == 0 && h.Wakeups.Count == 0,
-                        "An unavailable/ambiguous frame was treated as proof that a modal disappeared.");
+                        && h.E.Work.Count == 0 && h.Wakeups.Count == 0 && h.E.Closed.Count == 0,
+                        "Unavailable or ambiguous foreground evidence was treated as modal dismissal.");
                 }
             }
         }
+
         private static void FailedTerminalConfirmation()
         {
             using (var h = new H())
             {
-                var settings = h.Supervisor.Settings; settings.VisualWatchdog = false; Set(h.Supervisor, "settings", settings);
+                h.EnableForegroundDiagnosis();
                 h.Visuals[101] = new VanillaRecoveryVisualObservation(VanillaVisualState.Disconnected, true, null);
-                h.Probe(h.A);
-                h.E.Seconds = 1;
-                h.Visuals[101] = new VanillaRecoveryVisualObservation(VanillaVisualState.Unknown, false, "blank capture"); h.Probe(h.A);
-                h.E.Seconds = 2;
-                h.Visuals[101] = new VanillaRecoveryVisualObservation(VanillaVisualState.Disconnected, true, null); h.Probe(h.A);
-                Assert(h.E.Work.Count == 0, "A missing frame counted as terminal confirmation.");
-                h.E.Seconds = 3; h.Probe(h.A); Assert(h.E.Work.Count == 1);
+                h.OnVisualRead = pid => { if (h.VisualReads == 2) throw new InvalidOperationException("Synthetic missing second frame"); };
+                h.Probe(h.A); h.E.Seconds = 30; h.Probe(h.A); h.E.Work.Dequeue()();
+                Assert(h.VisualReads == 2 && h.E.Work.Count == 0 && h.E.Closed.Count == 0, "A failed second capture confirmed a terminal state.");
+                h.E.Seconds = 91; h.Probe(h.A); h.E.Work.Dequeue()();
+                Assert(h.VisualReads == 4 && h.E.Work.Count == 1, "A fresh matching pair did not establish terminal confirmation.");
             }
         }
+
         private static void CancelVisualDiagnosis()
         {
             using (var h = new H())
             {
-                Set(h.Supervisor, "recoveryVisualSource", (Func<int, VanillaRecoveryVisualObservation>)(pid =>
-                {
-                    h.Supervisor.Stop();
-                    return new VanillaRecoveryVisualObservation(VanillaVisualState.Disconnected, true, null);
-                }));
-                h.Probe(h.A);
-                Assert(h.E.Work.Count == 0 && h.E.Closed.Count == 0 && h.Wakeups.Count == 0);
+                h.EnableForegroundDiagnosis();
+                h.OnVisualRead = pid => h.Supervisor.Stop();
+                h.Probe(h.A); h.E.Seconds = 30; h.Probe(h.A); h.E.Work.Dequeue()();
+                Assert(h.VisualReads == 1 && h.E.Work.Count == 0 && h.E.Closed.Count == 0 && h.Wakeups.Count == 0);
             }
         }
+
         private static void BoundedVisualDiagnosis()
         {
             var capture = new VanillaRecoveryVisualCapture();
@@ -925,68 +954,29 @@ namespace Vanilla.Diagnostics.Tests
         }
         private static void MinimizedTerminalCapture()
         {
-            // This suite runs only on its asserted private non-input desktop.
             VanillaIsolatedTestDesktop.AssertCurrent();
-            using (var image = Scene("Disconnected", 1f))
-            using (var form = new RecoveryDialogForm(image) { ClientSize = image.Size, ShowInTaskbar = false })
+            using (var form = new RecoveryDialogForm { ClientSize = new Size(640, 480), ShowInTaskbar = false })
             {
                 form.Show(); System.Windows.Forms.Application.DoEvents();
-                Size normalClient = form.ClientSize;
                 form.WindowState = System.Windows.Forms.FormWindowState.Minimized;
                 System.Windows.Forms.Application.DoEvents();
-                int width, height; string source;
-                Assert(VanillaBackgroundWindowInput.TryGetCaptureSize(form.Handle, out width, out height, out source)
-                    && width == normalClient.Width && height == normalClient.Height, "Minimized capture geometry was lost.");
-                var observed = VanillaVisualProbe.Classify(form.Handle);
-                if (observed != VanillaVisualState.Disconnected)
-                {
-                    string capturePath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "recovery-minimized-fixture.png");
-                    bool printed;
-                    using (var captured = new Bitmap(width, height))
-                    {
-                        using (Graphics graphics = Graphics.FromImage(captured))
-                        {
-                            IntPtr hdc = graphics.GetHdc();
-                            try { printed = PrintFixture(form.Handle, hdc, 3); }
-                            finally { graphics.ReleaseHdc(hdc); }
-                        }
-                        captured.Save(capturePath, System.Drawing.Imaging.ImageFormat.Png);
-                    }
-                    // A private non-input desktop may reject PrintWindow outright
-                    // without invoking WM_PRINT. That is unavailable evidence, never
-                    // a fabricated terminal state. Pixel matching is covered above
-                    // with synthetic frames, and terminal sequencing with fake input.
-                    if (!printed) Assert(observed == VanillaVisualState.Unknown, "Failed native capture invented a visual state.");
-                    Console.WriteLine("INFO minimized test-owned window: state=" + observed + "; geometry=" + width + "x" + height
-                        + "; source=" + source + "; client=" + form.ClientSize + "; WM_PRINT=" + form.PrintCount
-                        + "; result=" + printed + "; synthetic capture=" + capturePath);
-                }
-                Assert(form.WindowState == System.Windows.Forms.FormWindowState.Minimized, "Read-only diagnosis restored its window.");
+                int printCount = form.PrintCount;
+                Assert(VanillaVisualProbe.Classify(form.Handle) == VanillaVisualState.Unknown,
+                    "A minimized window supplied visual evidence without owning the foreground.");
+                Assert(form.PrintCount == printCount, "Passive classification asked the minimized window to render a background screenshot.");
+                Assert(form.WindowState == System.Windows.Forms.FormWindowState.Minimized, "Passive diagnosis restored a minimized window.");
             }
         }
 
         private sealed class RecoveryDialogForm : System.Windows.Forms.Form
         {
-            private readonly Bitmap frame;
             internal int PrintCount;
-            internal RecoveryDialogForm(Bitmap frame) { this.frame = frame; }
             protected override void WndProc(ref System.Windows.Forms.Message message)
             {
-                // Model a game surface which services PrintWindow even while iconic.
-                // Default WinForms background painting can skip minimized controls.
-                if ((message.Msg == 0x0317 || message.Msg == 0x0318) && message.WParam != IntPtr.Zero)
-                {
-                    PrintCount++;
-                    using (Graphics graphics = Graphics.FromHdc(message.WParam)) graphics.DrawImageUnscaled(frame, 0, 0);
-                    message.Result = new IntPtr(1);
-                    return;
-                }
+                if (message.Msg == 0x0317 || message.Msg == 0x0318) PrintCount++;
                 base.WndProc(ref message);
             }
         }
-
-        [System.Runtime.InteropServices.DllImport("user32.dll", EntryPoint = "PrintWindow", SetLastError = true)]
-        private static extern bool PrintFixture(IntPtr window, IntPtr hdc, uint flags);
 
         private static void OneTerminal()
         {

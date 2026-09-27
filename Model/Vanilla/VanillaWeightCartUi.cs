@@ -274,8 +274,9 @@ namespace _4RTools.Model.Vanilla
                 attempt =>
                 {
                     string detail;
+                    var movement = new VanillaTeleportMovementGuard(read(), read);
                     bool confirmed = VanillaVerifiedTeleportAction.TryExecute(token.ProcessId, token.Account, cancelled,
-                        "weight-resume-" + attempt, out detail);
+                        "weight-resume-" + attempt, out detail, movement.MovementResumed);
                     report(token.Account.Label + ": weight maintenance: teleport recovery " + attempt + "/"
                         + VanillaAutobattleResumeVerifier.MaximumAttempts + ": " + detail);
                     return confirmed;
