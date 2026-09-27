@@ -252,7 +252,7 @@ namespace _4RTools.Model.Vanilla
             lock (gate)
             {
                 notice = null;
-                if (!PendingFarmingStopEmails().Any(stop => stop.EventId == eventId)) return false;
+                if (!PendingFarmingStopEmails().Any(entry => entry.EventId == eventId)) return false;
                 var stop = farmingStops[eventId];
                 var candidate = stop.Clone(); candidate.EmailState = "sending"; candidate.EmailAttemptId = Guid.NewGuid().ToString("N");
                 candidate.EmailDetail = "Delivery in progress.";
@@ -329,7 +329,7 @@ namespace _4RTools.Model.Vanilla
             {
                 if (WeightMaintenanceCancelled(token)) throw new OperationCanceledException("Farming completion ownership changed.");
                 Runtime runtime = runtimes[token.AccountId];
-                if (farmingStops.Values.Any(stop => stop.Kind == VanillaFarmingStopKind.Completed && stop.HoldActive && StopMatches(stop, runtime.Account))) return;
+                if (farmingStops.Values.Any(entry => entry.Kind == VanillaFarmingStopKind.Completed && entry.HoldActive && StopMatches(entry, runtime.Account))) return;
                 if (evidence != null && (!VanillaWeightCartAutomation.HasFreshQuantityWeights(evidence, runtime.Account, token.ProcessId, restartEnvironment.UtcNow)
                     || !VanillaWeightCartAutomation.IsFarmingComplete(evidence.CartWeightPercent.Value, evidence.WeightPercent.Value)))
                     throw new InvalidOperationException("Fresh combined farming-completion evidence is unavailable.");
