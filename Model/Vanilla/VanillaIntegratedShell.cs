@@ -195,6 +195,7 @@ namespace _4RTools.Forms
             integratedReconnectView = new VanillaReconnectForm(integratedReconnectSupervisor, observeClients: !smokeTest);
             integratedReconnectView.SmartTeleportTestRequested = accountId => integratedSmartTeleport.RunNow(accountId);
             integratedReconnectView.PrepareForEmbeddedHost();
+            FormClosing += (s, e) => integratedReconnectView?.FlushPendingSettings();
             vanillaRecoveryPage.Controls.Add(integratedReconnectView);
             integratedReconnectView.Show();
 

@@ -460,10 +460,12 @@ namespace _4RTools.Model.Vanilla
             {
                 if (e.RowIndex >= 0) EditAccountMinimal();
             };
-            FormClosing += (s, e) =>
-            {
-                if (autosaveTimer != null && autosaveTimer.Enabled) SaveAutomaticallyNow();
-            };
+            FormClosing += (s, e) => FlushPendingSettings();
+        }
+
+        internal void FlushPendingSettings()
+        {
+            if (autosaveTimer != null && autosaveTimer.Enabled) SaveAutomaticallyNow();
         }
 
         private void QueueAutoSave(string message)

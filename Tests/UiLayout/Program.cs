@@ -57,6 +57,7 @@ internal static class UiLayoutHarness
                 object recovery = Field(main, "integratedReconnectView");
                 Check(recovery != null, "Production Recovery form was not embedded by Container startup.");
                 CheckWorkspacePolicy(main, recovery);
+                CheckRecoveryHostCloseFlush(main, recovery);
                 CheckWeightCartHotkeys(main);
                 CheckEmergencySettings(main);
                 CheckFarmingOptions(main);
@@ -119,6 +120,34 @@ internal static class UiLayoutHarness
         Check(items.Contains("Smart Teleport now (selected)"), "TESTS menu is missing manual Smart Teleport.");
         Check(items.Contains("Weight/Cart clean now (selected)"), "TESTS menu is missing manual Weight/Cart cleaning.");
         report.AppendLine("CASE workspace policy: Automation tab removed; 180s restart default; manual Smart Teleport and Weight/Cart TESTS actions present.");
+    }
+
+    private static void CheckRecoveryHostCloseFlush(Form main, object recovery)
+    {
+        caseNumber++;
+        object supervisor = Field(recovery, "supervisor");
+        var restart = (NumericUpDown)Field(recovery, "movementRestartSeconds");
+        var pending = (System.Windows.Forms.Timer)Field(recovery, "autosaveTimer");
+        int original = (int)ReadProperty(ReadProperty(supervisor, "Settings"), "MovementRestartSeconds");
+        restart.Text = (original + 30).ToString();
+        Check(pending.Enabled && (int)ReadProperty(ReadProperty(supervisor, "Settings"), "MovementRestartSeconds") == original,
+            "Embedded Recovery fixture must have an uncommitted debounce edit before host closing.");
+        // Raise only the real host's closing event. Do not close/dispose this
+        // harness, start recovery, enumerate clients or send any input.
+        Call(main, "OnFormClosing", new FormClosingEventArgs(CloseReason.UserClosing, false));
+        object reloaded = Call(Field(supervisor, "store"), "Load");
+        Check(!pending.Enabled && (int)ReadProperty(ReadProperty(supervisor, "Settings"), "MovementRestartSeconds") == original + 30
+            && (int)ReadProperty(reloaded, "MovementRestartSeconds") == original + 30,
+            "Main-window closing did not flush embedded Recovery's pending edit to active and durable settings.");
+        Check(ReferenceEquals(supervisor, Field(main, "integratedReconnectSupervisor")) && !(bool)Field(supervisor, "disposed"),
+            "Recovery must remain alive while its pending settings are flushed.");
+        object unchanged = Field(supervisor, "settings");
+        Call(main, "OnFormClosing", new FormClosingEventArgs(CloseReason.UserClosing, false));
+        Check(ReferenceEquals(unchanged, Field(supervisor, "settings")), "Closing without pending Recovery edits unnecessarily reapplied settings.");
+        restart.Text = original.ToString();
+        Call(main, "OnFormClosing", new FormClosingEventArgs(CloseReason.UserClosing, false));
+        Call(main, "AssertSmokeBackgroundServicesInactive");
+        report.AppendLine("CASE embedded Recovery host close: pending debounce flushed before disposal; durable reload verified; no-pending close is a no-op; no live services.");
     }
 
     private static void CheckPrivateUpdateAccess()
