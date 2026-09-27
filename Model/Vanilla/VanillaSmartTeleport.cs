@@ -440,6 +440,8 @@ namespace _4RTools.Model.Vanilla
         }
     }
 
+    internal enum VanillaBackgroundInputPurpose { Teleport, RecoveryObservation }
+
     internal sealed class VanillaBackgroundWindowInput : IDisposable
     {
         private const uint WM_KEYDOWN = 0x0100, WM_KEYUP = 0x0101;
@@ -480,7 +482,8 @@ namespace _4RTools.Model.Vanilla
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetWindowText(IntPtr hwnd, System.Text.StringBuilder text, int count);
         [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern int GetClassName(IntPtr hwnd, System.Text.StringBuilder text, int count);
 
-        internal VanillaBackgroundWindowInput(int pid, Func<bool> cancelled)
+        internal VanillaBackgroundWindowInput(int pid, Func<bool> cancelled,
+            VanillaBackgroundInputPurpose purpose = VanillaBackgroundInputPurpose.Teleport)
         {
             if (pid <= 0) throw new ArgumentOutOfRangeException(nameof(pid));
             this.pid = pid;
@@ -490,9 +493,12 @@ namespace _4RTools.Model.Vanilla
             string captureSource;
             if (!TryGetCaptureSize(window, out captureWidth, out captureHeight, out captureSource))
                 throw new InvalidOperationException("Owned Vanilla window was found, but no safe background capture size could be derived.");
-            VanillaDebugLog.Write("TELEPORT", "Background input bound to PID=" + pid + ", hwnd=0x" + window.ToInt64().ToString("X")
-                + ", capture=" + captureWidth + "x" + captureHeight + " source=" + captureSource
-                + ", iconic=" + IsIconic(window) + ". It will not restore or foreground the game window.");
+            // Recovery observations already report transitions and bounded health
+            // heartbeats. A fresh capture object on every poll is not a teleport.
+            if (purpose == VanillaBackgroundInputPurpose.Teleport)
+                VanillaDebugLog.Write("TELEPORT", "Background input bound to PID=" + pid + ", hwnd=0x" + window.ToInt64().ToString("X")
+                    + ", capture=" + captureWidth + "x" + captureHeight + " source=" + captureSource
+                    + ", iconic=" + IsIconic(window) + ". It will not restore or foreground the game window.");
         }
 
         internal void Chord(bool ctrl, bool alt, bool shift, Keys key)

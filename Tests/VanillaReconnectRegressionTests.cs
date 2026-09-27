@@ -31,6 +31,12 @@ namespace Vanilla.Diagnostics.Tests
             Test("Existing client startup accepts verified memory when visual is Unknown", ExistingClientMemoryGate);
             Test("Host diagnostics include session display and window context", HostDiagnosticsBundle);
             Test("Gepard splash and GDI hook helpers are never interactive targets", BootstrapHelpersAreTransient);
+            Test("Interactive game readiness retains its full budget after an early splash", InteractiveWindowLateReady);
+            Test("Missing or late game readiness cannot release startup after its deadline", InteractiveWindowDeadline);
+            Test("STOP and exited clients cancel game-window readiness before further work", InteractiveWindowCancellation);
+            Test("Sequential retry closes a retained client before launching its replacement", RetainedStartupClient);
+            Test("Unconfirmed prior exit and cancellation never authorize another launch", RetainedStartupClientGuards);
+            Test("A retained startup identity survives failed reads and rejects PID reuse", RetainedStartupIdentity);
             Test("Real Vanilla game window outranks generic windows", GameWindowCandidateRanking);
             Test("Minimized Vanilla game window stays eligible for restore", MinimizedGameWindowCandidate);
             Test("Recovery workspace uses split layout on ordinary Full-HD widths", ResponsiveRecoveryBreakpoint);
@@ -240,6 +246,133 @@ namespace Vanilla.Diagnostics.Tests
             Assert(VanillaForegroundInput.WindowCandidateScore(true, true, 780, 327, true, false,
                     "Gepard_Splash_Class", "GepardSplash") == int.MinValue,
                 "Transient splash remained an eligible input candidate.");
+        }
+
+        private static void InteractiveWindowLateReady()
+        {
+            long elapsed = 0;
+            int observations = 0;
+            VanillaForegroundInput.WaitForInteractiveWindowCore(60000, () =>
+            {
+                observations++;
+                // MainWindowHandle would already be nonzero for this splash.
+                string cls = elapsed < 20000 ? "Gepard_Splash_Class" : "Vanilla MMO";
+                string title = elapsed < 20000 ? "GepardSplash" : "Vanilla MMO";
+                return VanillaForegroundInput.IsKnownVanillaGameWindow(cls, title)
+                    && VanillaForegroundInput.WindowCandidateScore(true, true, 1024, 768, false, false, cls, title) != int.MinValue;
+            }, () => false, () => false, milliseconds => elapsed += milliseconds, () => elapsed);
+            Assert(elapsed == 20000 && observations > 1,
+                "The early splash bypassed the real window wait or the separate 12-second focus budget cut it short.");
+        }
+
+        private static void InteractiveWindowDeadline()
+        {
+            long elapsed = 0;
+            Expect<TimeoutException>(() => VanillaForegroundInput.WaitForInteractiveWindowCore(60000,
+                () => false, () => false, () => false, milliseconds => elapsed += milliseconds, () => elapsed));
+            Assert(elapsed == 60000, "Unavailable game-window readiness did not stop at its deadline.");
+            elapsed = 0;
+            Expect<TimeoutException>(() => VanillaForegroundInput.WaitForInteractiveWindowCore(60000,
+                () => { elapsed = 60001; return true; }, () => false, () => false,
+                milliseconds => elapsed += milliseconds, () => elapsed));
+            int resolutions = 0;
+            Expect<TimeoutException>(() => VanillaForegroundInput.WaitForInteractiveWindowCore(60000,
+                () => { resolutions++; return true; }, () => false, () => false,
+                milliseconds => elapsed += milliseconds, () => elapsed));
+            Assert(resolutions == 0, "An already-expired construction/readiness budget still resolved a window.");
+        }
+
+        private static void InteractiveWindowCancellation()
+        {
+            long elapsed = 0;
+            bool cancelled = true, exited = false;
+            int resolutions = 0;
+            Func<bool> resolve = () => { resolutions++; return true; };
+            Expect<OperationCanceledException>(() => VanillaForegroundInput.WaitForInteractiveWindowCore(60000,
+                resolve, () => exited, () => cancelled, milliseconds => elapsed += milliseconds, () => elapsed));
+            Assert(resolutions == 0, "Cancelled readiness still resolved/restored a window.");
+            cancelled = false; exited = true;
+            Expect<InvalidOperationException>(() => VanillaForegroundInput.WaitForInteractiveWindowCore(60000,
+                resolve, () => exited, () => cancelled, milliseconds => elapsed += milliseconds, () => elapsed));
+            Assert(resolutions == 0, "An exited client was still resolved.");
+            exited = false;
+            Expect<OperationCanceledException>(() => VanillaForegroundInput.WaitForInteractiveWindowCore(60000,
+                () => { cancelled = true; return true; }, () => false, () => cancelled,
+                milliseconds => elapsed += milliseconds, () => elapsed));
+            cancelled = false;
+            Expect<InvalidOperationException>(() => VanillaForegroundInput.WaitForInteractiveWindowCore(60000,
+                () => { exited = true; return true; }, () => exited, () => false,
+                milliseconds => elapsed += milliseconds, () => elapsed));
+        }
+
+        private static void RetainedStartupClient()
+        {
+            int? retained = 101;
+            int closes = 0, launches = 0;
+            bool failClose = true;
+            Action attempt = () => VanillaReconnectSupervisor.RunColdStartAfterPreviousExit(() => retained,
+                () =>
+                {
+                    closes++;
+                    if (failClose) throw new InvalidOperationException("Owned client exit was not confirmed.");
+                    retained = null;
+                }, () => { Assert(!retained.HasValue, "Replacement launched before the old PID was cleared."); launches++; retained = 202; },
+                () => false);
+            Expect<InvalidOperationException>(attempt);
+            Assert(retained == 101 && launches == 0 && closes == 1,
+                "Failed close lost the original PID, retried immediately, or launched another client.");
+            failClose = false;
+            attempt();
+            Assert(closes == 2 && launches == 1 && retained == 202,
+                "The next serialized attempt did not close the retained client before replacement.");
+        }
+
+        private static void RetainedStartupClientGuards()
+        {
+            int? retained = 101;
+            int launches = 0, closes = 0;
+            bool cancelled = false;
+            Expect<InvalidOperationException>(() => VanillaReconnectSupervisor.RunColdStartAfterPreviousExit(() => retained,
+                () => closes++, () => launches++, () => false));
+            Assert(retained == 101 && closes == 1 && launches == 0,
+                "Returning from cleanup without confirmed exit authorized a new client.");
+            cancelled = true;
+            Expect<OperationCanceledException>(() => VanillaReconnectSupervisor.RunColdStartAfterPreviousExit(() => retained,
+                () => closes++, () => launches++, () => cancelled));
+            Assert(closes == 1 && launches == 0, "STOP before cleanup still closed or launched a client.");
+            cancelled = false;
+            Expect<OperationCanceledException>(() => VanillaReconnectSupervisor.RunColdStartAfterPreviousExit(() => retained,
+                () => { retained = null; cancelled = true; }, () => launches++, () => cancelled));
+            Assert(launches == 0, "STOP after prior-client exit allowed replacement launch.");
+            cancelled = false;
+            VanillaReconnectSupervisor.RunColdStartAfterPreviousExit(() => retained,
+                () => { throw new Exception("No retained PID must not call close."); }, () => launches++, () => cancelled);
+            Assert(launches == 1, "Cold startup without a retained PID did not launch.");
+        }
+
+        private static void RetainedStartupIdentity()
+        {
+            var identity = new VanillaStartupCloseIdentity();
+            DateTime original = new DateTime(2026, 9, 27, 10, 0, 0, DateTimeKind.Utc);
+            DateTime reused = original.AddMinutes(2);
+            Assert(identity.Require(101, () => original) == original, "Initial client identity was not pinned.");
+            Expect<InvalidOperationException>(() => identity.Require(101,
+                () => { throw new InvalidOperationException("Identity query failed."); }));
+            Expect<InvalidOperationException>(() => identity.Require(101, () => reused));
+            int queries = 0;
+            Expect<InvalidOperationException>(() => identity.Require(202, () => { queries++; return reused; }));
+            Assert(queries == 0 && identity.Require(101, () => original) == original,
+                "Failed metadata or a changed PID replaced the retained creation-time evidence.");
+            identity.ConfirmedExit();
+            Assert(identity.Require(202, () => reused) == reused,
+                "Confirmed exit did not allow a distinct replacement identity.");
+        }
+
+        private static void Expect<T>(Action action) where T : Exception
+        {
+            try { action(); }
+            catch (T) { return; }
+            throw new Exception("Expected " + typeof(T).Name + ".");
         }
 
         private static void GameWindowCandidateRanking()

@@ -441,7 +441,7 @@ namespace _4RTools.Model.Vanilla
             bool windowAvailable = false;
             try
             {
-                using (var input = new VanillaBackgroundWindowInput(pid, () => false))
+                using (var input = new VanillaBackgroundWindowInput(pid, () => false, purpose: VanillaBackgroundInputPurpose.RecoveryObservation))
                 {
                     windowAvailable = true;
                     using (Bitmap image = input.CaptureClientBitmap())
@@ -567,6 +567,9 @@ namespace _4RTools.Model.Vanilla
             public DateTimeOffset? LastLaunch;
             public DateTimeOffset? NextRecoveryAt;
             public int RecoveryFailures;
+            public bool FailedReplacementRetryPending;
+            public int FailedReplacementRetryPid, FailedReplacementRetryGeneration;
+            public DateTime FailedReplacementRetryStartTimeUtc;
             public bool ScriptRunning;
             public bool ResumeSent;
             public int ResumeOperationGeneration;
@@ -696,6 +699,7 @@ namespace _4RTools.Model.Vanilla
                     }
                     foreach (var runtime in runtimes.Values)
                     {
+                        ClearFailedReplacementRetry(runtime);
                         runtime.ClosingForRecovery = runtime.RecoveryOwned = false;
                         runtime.MovementRecoveryPending = false; runtime.NonMinimizedSince = null;
                         runtime.MovementWatchdog.Reset(); ResetTerminalEvidence(runtime);
@@ -722,6 +726,7 @@ namespace _4RTools.Model.Vanilla
                     Interlocked.Increment(ref weightMaintenanceGeneration); Interlocked.Increment(ref smartTeleportGeneration);
                     foreach (Runtime runtime in runtimes.Values)
                     {
+                        ClearFailedReplacementRetry(runtime);
                         runtime.MovementRecoveryPending = false; runtime.ResumeVerificationFailed = false;
                         runtime.ResumeFailureDetail = null; runtime.NextRecoveryAt = null; runtime.NonMinimizedSince = null;
                         runtime.MovementWatchdog.Reset();
@@ -743,6 +748,7 @@ namespace _4RTools.Model.Vanilla
                 timer?.Change(Timeout.Infinite, Timeout.Infinite);
                 foreach (var runtime in runtimes.Values)
                 {
+                    ClearFailedReplacementRetry(runtime);
                     if (runtime.ScriptRunning && !runtime.ResumeSent)
                     {
                         runtime.ResumeVerificationFailed = true;
@@ -805,6 +811,7 @@ namespace _4RTools.Model.Vanilla
                 {
                     if (runtime.ScriptRunning && (runtime.ClosingForRecovery || FarmingEmergencyHeld(runtime))) continue;
                     int old = runtime.ProcessId.Value;
+                    ClearFailedReplacementRetry(runtime);
                     if (positionClientExited != null) positionClientExited(old);
                     runtime.MovementWatchdog.Reset(); runtime.MovementRecoveryPending = false;
                     bool failedDuringRecovery = runtime.RecoveryOwned;
@@ -827,17 +834,17 @@ namespace _4RTools.Model.Vanilla
             foreach (var runtime in desired.Select(a => runtimes[a.Id]))
             {
                 if (FarmingEmergencyHeld(runtime))
-                { SetStage(runtime, VanillaReconnectStage.Error, FarmingEmergencyDetail(runtime)); continue; }
+                { LogMovementWatchdogDiagnostic(runtime, now, null, "critical farming emergency hold"); SetStage(runtime, VanillaReconnectStage.Error, FarmingEmergencyDetail(runtime)); continue; }
                 if (runtime.ProcessId.HasValue && TemporaryActionRegistered(runtime.ProcessId.Value))
                 {
                     // Only the explicitly controlled character is exempt. Siblings can
                     // recover between its atomic temporary-input cycles.
-                    runtime.MovementWatchdog.Reset(); continue;
+                    LogMovementWatchdogDiagnostic(runtime, now, null, "temporary action"); runtime.MovementWatchdog.Reset(); continue;
                 }
                 if (weightCompletedHolds.Contains(runtime.Account.Id))
-                { SetStage(runtime, VanillaReconnectStage.Stopped, "Farming complete: Cart >=99% and carried weight >=50%; Autobattle intentionally OFF"); continue; }
+                { LogMovementWatchdogDiagnostic(runtime, now, null, "farming completed hold"); SetStage(runtime, VanillaReconnectStage.Stopped, "Farming complete: Cart >=99% and carried weight >=50%; Autobattle intentionally OFF"); continue; }
                 if (weightManualHolds.Contains(runtime.Account.Id))
-                { SetStage(runtime, VanillaReconnectStage.Error, "Weight/cart maintenance needs manual emptying; automatic recovery is held for this character only"); continue; }
+                { LogMovementWatchdogDiagnostic(runtime, now, null, "Cart manual hold"); SetStage(runtime, VanillaReconnectStage.Error, "Weight/cart maintenance needs manual emptying; automatic recovery is held for this character only"); continue; }
                 if (runtime.ProcessId.HasValue && CharacterOwnershipChanged(runtime, runtime.ProcessId.Value)) { ReleaseChangedCharacter(runtime); continue; }
                 if (runtime.ScriptRunning) continue;
                 if (!runtime.ProcessId.HasValue)
@@ -865,7 +872,8 @@ namespace _4RTools.Model.Vanilla
                 { SetStage(runtime, VanillaReconnectStage.Backoff, BackoffDetail(runtime, now)); return; }
                 Func<DateTime> identity = () => restartEnvironment.GetStartTimeUtc(runtime.ProcessId.Value);
                 long previousVisual = runtime.VisualObservationSequence;
-                if (settings.VisualWatchdog || runtime.RecoveryOwned)
+                if (settings.VisualWatchdog || runtime.RecoveryOwned || runtime.FailedReplacementRetryPending
+                    || runtime.Visual == VanillaVisualState.ModalDialog)
                 {
                     ObserveRecoveryVisual(runtime);
                     now = restartEnvironment.UtcNow;
@@ -873,15 +881,29 @@ namespace _4RTools.Model.Vanilla
                     // can authorize a close. Exact terminal messages still recover.
                     if (HandleTerminalVisual(runtime, runtime.Visual, now, identity)) return;
                 }
+                if (RetryFailedReplacement(runtime, now, identity)) return;
                 if (CheckMovementWatchdogWithVisual(runtime, now, identity, runtime.VisualObservationSequence != previousVisual)) return;
                 now = restartEnvironment.UtcNow;
                 bool visualObserved = runtime.VisualObservationSequence != previousVisual;
                 VanillaVisualState visual = visualObserved ? runtime.Visual : VanillaVisualState.Unknown;
                 if (runtime.MovementRecoveryPending)
                 { QueueAutobattleClientRestartLocked(runtime, now, runtime.ResumeFailureDetail ?? "Restart-only autobattle verification failed"); return; }
+                // A failed minimized capture does not turn an established client
+                // into a newly launched one. Only our actual replacement may enter
+                // the bounded interactive-window wait in LoginWorker.
+                if (visual == VanillaVisualState.Unknown && runtime.RecoveryOwned && !runtime.HasBeenOnline
+                    && runtime.LastLaunch.HasValue && (now - runtime.LastLaunch.Value).TotalMilliseconds >= settings.GepardWaitMs)
+                { QueueLogin(runtime, true, "Replacement client awaiting its interactive login window"); return; }
                 if (visualObserved && runtime.LastVisualObservation != null
                     && !runtime.LastVisualObservation.WindowAvailable)
-                { SetStage(runtime, VanillaReconnectStage.WaitingForWindow, "Waiting for Vanilla main window"); return; }
+                {
+                    runtime.LoginLikeSince = runtime.GameplaySince = null;
+                    bool established = !runtime.RecoveryOwned && (runtime.HasBeenOnline || runtime.ResumeSent);
+                    SetStage(runtime, established ? VanillaReconnectStage.Online : VanillaReconnectStage.WaitingForWindow,
+                        established ? "Screen capture unavailable; verified X/Y watchdog remains active"
+                            : "Waiting for the replacement client's interactive screen");
+                    return;
+                }
                 if (visual == VanillaVisualState.Gameplay)
                 {
                     runtime.LoginLikeSince = null; runtime.HasBeenOnline = true; runtime.ResumeVerificationFailed = false; runtime.ResumeFailureDetail = null;
@@ -917,14 +939,10 @@ namespace _4RTools.Model.Vanilla
                     return;
                 }
                 runtime.LoginLikeSince = null;
-                if (runtime.Stage == VanillaReconnectStage.Launching || runtime.Stage == VanillaReconnectStage.WaitingForWindow)
-                {
-                    if (runtime.LastLaunch.HasValue && (now - runtime.LastLaunch.Value).TotalMilliseconds >= settings.GepardWaitMs)
-                        QueueLogin(runtime, true, "New client reached initial login window");
-                }
-                else if (runtime.ResumeVerificationFailed) SetStage(runtime, VanillaReconnectStage.Error, runtime.ResumeFailureDetail);
-                else SetStage(runtime, runtime.Stage == VanillaReconnectStage.Online ? VanillaReconnectStage.Online : VanillaReconnectStage.WaitingForGameplay,
-                    "Window state is unknown; no recovery input sent");
+                if (runtime.ResumeVerificationFailed) SetStage(runtime, VanillaReconnectStage.Error, runtime.ResumeFailureDetail);
+                else SetStage(runtime, !runtime.RecoveryOwned && (runtime.HasBeenOnline || runtime.ResumeSent)
+                    ? VanillaReconnectStage.Online : VanillaReconnectStage.WaitingForGameplay,
+                    "Screen state unknown; verified X/Y supervision continues");
             }
             catch (Exception ex)
             {
@@ -950,7 +968,11 @@ namespace _4RTools.Model.Vanilla
                     + (observation.Error == null ? "" : "; capture unavailable: " + observation.Error));
             runtime.LastVisualObservation = observation;
             runtime.VisualObservationSequence++;
-            runtime.Visual = observation.State;
+            // A missing/ambiguous frame cannot establish that a previously seen
+            // unknown modal disappeared. Keep its no-input/no-close guard until
+            // a fresh positive screen classification clears it.
+            if (observation.State != VanillaVisualState.Unknown || runtime.Visual != VanillaVisualState.ModalDialog)
+                runtime.Visual = observation.State;
         }
         private bool CanLaunch(Runtime runtime, int aliveCount, DateTimeOffset now)
         {
@@ -1035,6 +1057,7 @@ namespace _4RTools.Model.Vanilla
         }
         private void Bind(Runtime runtime, int pid, bool freshLaunch, string detail)
         {
+            ClearFailedReplacementRetry(runtime);
             if (freshLaunch) runtime.ServerOutagePending = false;
             else if (serverOutage.Active)
             {
@@ -1054,7 +1077,7 @@ namespace _4RTools.Model.Vanilla
         }
         private void QueueLogin(Runtime runtime, bool freshLaunch, string reason)
         {
-            if (runtime.ScriptRunning || !runtime.ProcessId.HasValue || FarmingEmergencyHeld(runtime)) return;
+            if (!runtime.RecoveryOwned || runtime.ScriptRunning || !runtime.ProcessId.HasValue || FarmingEmergencyHeld(runtime)) return;
             Runtime owner = OtherRecoveryOwner(runtime);
             if (owner != null)
             { SetStage(runtime, VanillaReconnectStage.WaitingForGameplay, "Queued: waiting for " + owner.Account.Label + " recovery to finish before login input"); return; }
@@ -1171,6 +1194,7 @@ namespace _4RTools.Model.Vanilla
         }
         private void ResetRecoverySuccessLocked(Runtime runtime)
         {
+            ClearFailedReplacementRetry(runtime);
             runtime.ServerOutagePending = false;
             if (serverOutage.CompleteVerifiedRecovery(runtime.Account.Id)) Log(runtime.Account.Label + ": verified recovery succeeded; server is available and the 15-minute outage schedule is cleared.");
             if (runtime.RecoveryFailures > 0 || runtime.NextRecoveryAt.HasValue || runtime.RecoveryOwned) Log(runtime.Account.Label + ": recovery succeeded; retry state reset.");
@@ -1178,12 +1202,60 @@ namespace _4RTools.Model.Vanilla
         }
         private void ScheduleRecoveryFailureLocked(Runtime runtime, DateTimeOffset now, string reason)
         {
-            if (serverOutage.Active) { FinishServerOutageFailureLocked(runtime, reason); return; }
+            if (serverOutage.Active) { ClearFailedReplacementRetry(runtime); FinishServerOutageFailureLocked(runtime, reason); return; }
+            if (runtime.RecoveryOwned && !runtime.HasBeenOnline && !runtime.ResumeSent && runtime.ProcessId.HasValue
+                && (runtime.Stage != VanillaReconnectStage.ClosingClient || runtime.FailedReplacementRetryPending))
+            {
+                try
+                {
+                    int pid = runtime.ProcessId.Value;
+                    DateTime started = restartEnvironment.GetStartTimeUtc(pid);
+                    if (!runtime.FailedReplacementRetryPending || (runtime.FailedReplacementRetryPid == pid
+                        && runtime.FailedReplacementRetryStartTimeUtc == started))
+                    {
+                        runtime.FailedReplacementRetryPending = true;
+                        runtime.FailedReplacementRetryPid = pid;
+                        runtime.FailedReplacementRetryGeneration = runtime.ResumeOperationGeneration;
+                        runtime.FailedReplacementRetryStartTimeUtc = started;
+                    }
+                    else ClearFailedReplacementRetry(runtime);
+                }
+                catch (Exception ex)
+                {
+                    ClearFailedReplacementRetry(runtime);
+                    reason += "; failed replacement identity unavailable: " + ex.Message;
+                }
+            }
             runtime.RecoveryFailures = Math.Min(30, runtime.RecoveryFailures + 1);
             int retryDelay = VanillaRecoveryPolicy.RetryDelayMs(runtime.RecoveryFailures, settings.RetryBackoffMs, settings.MaxRetryBackoffMs);
             runtime.NextRecoveryAt = now.AddMilliseconds(retryDelay); runtime.RecoveryOwned = false; runtime.ScriptRunning = false;
             SetStage(runtime, VanillaReconnectStage.Backoff, reason + "; retry in " + FormatDelay(retryDelay) + " (failure " + runtime.RecoveryFailures + ", capped at 1 hour)");
             Log(runtime.Account.Label + ": " + reason + "; next recovery attempt in " + FormatDelay(retryDelay) + ". Backoff doubles after each failed attempt and is capped at 1 hour; retries continue until success or STOP.");
+        }
+        private static void ClearFailedReplacementRetry(Runtime runtime)
+        {
+            runtime.FailedReplacementRetryPending = false;
+            runtime.FailedReplacementRetryPid = runtime.FailedReplacementRetryGeneration = 0;
+            runtime.FailedReplacementRetryStartTimeUtc = default(DateTime);
+        }
+        private bool RetryFailedReplacement(Runtime runtime, DateTimeOffset now, Func<DateTime> startTimeUtc)
+        {
+            if (!runtime.FailedReplacementRetryPending) return false;
+            if (runtime.HasBeenOnline || runtime.ResumeSent || runtime.ProcessId != runtime.FailedReplacementRetryPid
+                || runtime.ResumeOperationGeneration != runtime.FailedReplacementRetryGeneration)
+            { ClearFailedReplacementRetry(runtime); return false; }
+            DateTime expectedStart = runtime.FailedReplacementRetryStartTimeUtc;
+            QueueClientRestart(runtime, now, "Retrying this tool's failed replacement after recovery backoff", false, () =>
+            {
+                DateTime currentStart = startTimeUtc();
+                if (currentStart != expectedStart)
+                {
+                    ClearFailedReplacementRetry(runtime);
+                    throw new InvalidOperationException("Failed replacement process identity changed; no close authorized.");
+                }
+                return expectedStart;
+            });
+            return true;
         }
         private string BackoffDetail(Runtime runtime, DateTimeOffset now)
         {
@@ -1225,17 +1297,11 @@ namespace _4RTools.Model.Vanilla
         private static void WaitForWindow(int pid, int timeoutMs, Func<bool> cancelled = null)
         {
             Stopwatch watch = Stopwatch.StartNew();
-            while (watch.ElapsedMilliseconds < timeoutMs)
+            if (cancelled?.Invoke() == true) throw new OperationCanceledException("Waiting for Vanilla window cancelled.");
+            using (var input = new VanillaForegroundInput(pid, IntPtr.Zero, cancelled))
             {
-                if (cancelled?.Invoke() == true) throw new OperationCanceledException("Waiting for Vanilla window cancelled.");
-                using (var p = Process.GetProcessById(pid))
-                {
-                    p.Refresh(); if (p.MainWindowHandle != IntPtr.Zero) return;
-                    if (p.HasExited) throw new InvalidOperationException("Vanilla exited while waiting for its window.");
-                }
-                Thread.Sleep(250);
+                input.WaitForInteractiveWindow(timeoutMs, watch);
             }
-            throw new TimeoutException("Vanilla main window did not appear in time.");
         }
         private int AdoptExistingClients(bool supervise)
         {

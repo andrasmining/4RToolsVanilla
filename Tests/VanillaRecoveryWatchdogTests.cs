@@ -18,6 +18,8 @@ namespace Vanilla.Diagnostics.Tests
         private const BindingFlags Flags = BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Instance;
         internal static int Run()
         {
+            Test("Health diagnostics retain a 30s heartbeat without per-poll noise", DiagnosticHeartbeat);
+            Test("Flapping health diagnostics are bounded and process replacement is reported", DiagnosticTransitions);
             Test("Unchanged coordinates expire at exactly 30 seconds", Deadline);
             Test("X-only movement resets the deadline", () => Axis(true));
             Test("Y-only movement resets the deadline", () => Axis(false));
@@ -55,8 +57,20 @@ namespace Vanilla.Diagnostics.Tests
             Test("Unreadable health forces terminal diagnosis with visual monitoring OFF", HealthTerminalDiagnosis);
             Test("Healthy movement avoids forced diagnosis when visual monitoring is OFF", HealthyVisualOff);
             Test("Capture failure cannot bypass the unavailable-health restart deadline", FailedVisualDiagnosis);
+            Test("Online capture failures never rearm login from an old launch", OnlineCaptureFailure);
+            Test("An adopted waiting stage cannot grant login ownership", AdoptedWaitingStage);
+            Test("Replacement capture failure still reaches bounded login readiness", ReplacementCaptureFailure);
+            Test("Failed replacement with retained PID retries after backoff under one lease", RetainedReplacementRetry);
+            Test("Retained replacement retry diagnoses unknown modals with visual monitoring OFF", RetainedReplacementModal);
+            Test("An adopted client failure cannot arm a replacement retry", RetainedReplacementAdopted);
+            Test("STOP cancels retained replacement retry evidence and queued close", RetainedReplacementStop);
+            Test("Settings cancel retained replacement retry evidence and queued close", RetainedReplacementSettings);
+            Test("Retained replacement retry rejects recycled process identity", RetainedReplacementIdentity);
+            Test("Retained replacement retries remain serialized behind a sibling", RetainedReplacementSibling);
+            Test("Retained replacement close failure preserves capped retry progression", RetainedReplacementCloseFailure);
             Test("Samples produced during capture are fresh rather than future data", CaptureClock);
             Test("Unknown modal blocks a reached movement restart deadline", ModalBeforeRestart);
+            Test("Unavailable or ambiguous captures cannot clear a known modal", ModalCaptureGap);
             Test("Failed capture breaks terminal confirmation continuity", FailedTerminalConfirmation);
             Test("STOP during visual diagnosis withholds recovery", CancelVisualDiagnosis);
             Test("Timed out native captures are bounded and late frames discarded", BoundedVisualDiagnosis);
@@ -110,6 +124,27 @@ namespace Vanilla.Diagnostics.Tests
         { return new VanillaPositionSample(pid, session ?? Session, Epoch.AddSeconds(sec), x, y, map, verified, error, moved.HasValue ? (DateTimeOffset?)Epoch.AddSeconds(moved.Value) : null); }
         private static string Check(VanillaMovementWatchdog w, double sec, VanillaPositionSample s, int pid = 101)
         { return w.Observe(pid, s, TimeSpan.FromSeconds(sec), Epoch.AddSeconds(sec)); }
+        private static void DiagnosticHeartbeat()
+        {
+            var rate = new VanillaMovementDiagnosticRate();
+            Assert(rate.ShouldWrite(101, "observing", TimeSpan.Zero));
+            for (int second = 1; second < 30; second++) Assert(!rate.ShouldWrite(101, "observing", TimeSpan.FromSeconds(second)));
+            Assert(rate.ShouldWrite(101, "observing", TimeSpan.FromSeconds(30)));
+            Assert(!rate.ShouldWrite(101, "observing", TimeSpan.FromSeconds(59.999)));
+            Assert(rate.ShouldWrite(101, "observing", TimeSpan.FromSeconds(60)));
+        }
+        private static void DiagnosticTransitions()
+        {
+            var rate = new VanillaMovementDiagnosticRate();
+            Assert(rate.ShouldWrite(101, "unavailable", TimeSpan.Zero));
+            for (int tenth = 1; tenth < 50; tenth++)
+                Assert(!rate.ShouldWrite(101, tenth % 2 == 0 ? "unavailable" : "observing", TimeSpan.FromSeconds(tenth / 10.0)));
+            Assert(rate.ShouldWrite(101, "observing", TimeSpan.FromSeconds(5)));
+            Assert(!rate.ShouldWrite(101, "unavailable", TimeSpan.FromSeconds(9.999)));
+            Assert(rate.ShouldWrite(101, "unavailable", TimeSpan.FromSeconds(10)));
+            Assert(rate.ShouldWrite(202, "unavailable", TimeSpan.FromSeconds(10.1)));
+            Assert(rate.ShouldWrite(202, "unavailable", TimeSpan.FromSeconds(1)));
+        }
         private static void Deadline()
         { var w = new VanillaMovementWatchdog(); Check(w, 0, S(0)); Assert(Check(w, 29.999, S(29.999)) == null); Assert(Check(w, 30, S(30)) != null); }
         private static void Axis(bool x)
@@ -182,11 +217,12 @@ namespace Vanilla.Diagnostics.Tests
             internal double Seconds;
             internal bool FailClose;
             internal Action BeforeClose;
+            internal int StartShiftSeconds;
             internal readonly Queue<Action> Work = new Queue<Action>();
             internal readonly List<int> Closed = new List<int>();
             public DateTimeOffset UtcNow { get { return Epoch.AddSeconds(Seconds); } }
             public TimeSpan MonotonicNow { get { return TimeSpan.FromSeconds(Seconds); } }
-            public DateTime GetStartTimeUtc(int pid) { return Epoch.UtcDateTime; }
+            public DateTime GetStartTimeUtc(int pid) { return Epoch.UtcDateTime.AddSeconds(StartShiftSeconds); }
             public void Queue(Action work) { Work.Enqueue(work); }
             public void CloseClient(int pid, DateTime expected, Func<bool> cancelled, Action<Action> owned, bool immediate = false)
             { BeforeClose?.Invoke(); if (cancelled()) throw new OperationCanceledException(); if (FailClose) throw new InvalidOperationException("denied"); owned(() => { if (cancelled()) throw new OperationCanceledException(); Closed.Add(pid); }); }
@@ -406,6 +442,7 @@ namespace Vanilla.Diagnostics.Tests
                 h.E.Work.Dequeue()();
                 Assert((int?)Get(h.A, "ProcessId") == 101 && h.Forgotten.Count == 0
                     && (int)Get(h.A, "RecoveryFailures") == 1, "Close failure did not preserve PID/backoff state.");
+                Assert(!(bool)Get(h.A, "FailedReplacementRetryPending"), "An ordinary movement-close failure became a never-online replacement retry.");
                 Assert((DateTimeOffset?)Get(h.A, "NextRecoveryAt") > h.E.UtcNow, "Close failure did not schedule backoff.");
                 h.E.Seconds = 181; h.Sample(101);
                 Assert(!h.Motion(h.A) && h.E.Work.Count == 0, "Backoff allowed an immediate replacement close.");
@@ -627,6 +664,154 @@ namespace Vanilla.Diagnostics.Tests
                 Assert(h.E.Closed.SequenceEqual(new[] { 101 }) && h.Wakeups.Count == 0);
             }
         }
+        private static void OnlineCaptureFailure()
+        {
+            using (var h = new H())
+            {
+                Set(h.A, "HasBeenOnline", true); Set(h.A, "ResumeSent", false);
+                Set(h.A, "LastLaunch", (DateTimeOffset?)Epoch.AddMinutes(-10));
+                h.Visuals[101] = new VanillaRecoveryVisualObservation(VanillaVisualState.Unknown, false,
+                    "Background capture exceeded its bounded observation time");
+                h.Sample(101); h.Probe(h.A);
+                Assert((VanillaReconnectStage)Get(h.A, "Stage") == VanillaReconnectStage.Online,
+                    "A failed capture demoted confirmed gameplay to startup.");
+                h.E.Seconds = 15; h.Sample(101, 11);
+                h.Visuals[101] = new VanillaRecoveryVisualObservation(VanillaVisualState.Unknown, true, null);
+                h.Probe(h.A);
+                Assert((VanillaReconnectStage)Get(h.A, "Stage") == VanillaReconnectStage.Online
+                    && !(bool)Get(h.A, "ScriptRunning") && !(bool)Get(h.A, "RecoveryOwned")
+                    && !(bool)Get(h.A, "ResumeSent") && h.Wakeups.Count == 0 && h.E.Work.Count == 0,
+                    "A later ambiguous capture armed login/resume using the old launch timestamp.");
+            }
+        }
+        private static void AdoptedWaitingStage()
+        {
+            using (var h = new H())
+            {
+                Set(h.A, "Stage", VanillaReconnectStage.WaitingForWindow);
+                Set(h.A, "LastLaunch", (DateTimeOffset?)Epoch.AddMinutes(-10));
+                h.Sample(101); h.Probe(h.A);
+                Call(h.Supervisor, "QueueLogin", h.A, true, "synthetic stale startup stage");
+                Assert(!(bool)Get(h.A, "ScriptRunning") && !(bool)Get(h.A, "RecoveryOwned")
+                    && (VanillaReconnectStage)Get(h.A, "Stage") == VanillaReconnectStage.Online
+                    && h.E.Work.Count == 0 && h.Wakeups.Count == 0,
+                    "A stage label granted recovery ownership to an adopted client.");
+            }
+        }
+        private static void ReplacementCaptureFailure()
+        {
+            using (var h = new H())
+            {
+                Set(h.A, "RecoveryOwned", true); Set(h.A, "HasBeenOnline", false); Set(h.A, "ResumeSent", false);
+                Set(h.A, "LastLaunch", (DateTimeOffset?)Epoch.AddMinutes(-10));
+                Set(h.A, "Stage", VanillaReconnectStage.WaitingForWindow);
+                ((VanillaReconnectAccount)Get(h.A, "Account")).ProtectedPassword = null;
+                h.Visuals[101] = new VanillaRecoveryVisualObservation(VanillaVisualState.Unknown, false, "capture timeout");
+                h.Probe(h.A);
+                Assert((VanillaReconnectStage)Get(h.A, "Stage") == VanillaReconnectStage.NeedsConfiguration,
+                    "Replacement remained in an unbounded capture wait instead of entering the login readiness/configuration gate.");
+                Assert(h.E.Work.Count == 0 && h.Wakeups.Count == 0, "Missing credentials authorized input.");
+            }
+        }
+        private static void ArmRetainedReplacement(H h)
+        {
+            Set(h.A, "RecoveryOwned", true); Set(h.A, "HasBeenOnline", false); Set(h.A, "ResumeSent", false);
+            Call(h.Supervisor, "ScheduleRecoveryFailureLocked", h.A, h.E.UtcNow, "Interactive window never became ready; initial close failed");
+            Assert((bool)Get(h.A, "FailedReplacementRetryPending") && !(bool)Get(h.A, "RecoveryOwned"));
+        }
+        private static void RetainedReplacementRetry()
+        {
+            using (var h = new H())
+            {
+                ArmRetainedReplacement(h);
+                h.Visuals[101] = new VanillaRecoveryVisualObservation(VanillaVisualState.Unknown, false, "capture timeout");
+                h.E.Seconds = 29; h.Probe(h.A); Assert(h.E.Work.Count == 0 && h.VisualReads == 0);
+                h.E.Seconds = 30; h.Probe(h.A);
+                Assert(h.E.Work.Count == 1 && h.VisualReads == 1 && (bool)Get(h.A, "RecoveryOwned"));
+                h.E.Work.Dequeue()();
+                Assert(h.E.Closed.SequenceEqual(new[] { 101 }) && (int?)Get(h.B, "ProcessId") == 102
+                    && Get(h.A, "ProcessId") == null && !(bool)Get(h.A, "FailedReplacementRetryPending")
+                    && (bool)Get(h.A, "RecoveryOwned") && h.Wakeups.Count == 0,
+                    "Failed replacement retry lost exit ordering, sibling isolation or the relaunch lease.");
+            }
+        }
+        private static void RetainedReplacementModal()
+        {
+            using (var h = new H())
+            {
+                ArmRetainedReplacement(h);
+                var settings = h.Supervisor.Settings; settings.VisualWatchdog = false; Set(h.Supervisor, "settings", settings);
+                h.Visuals[101] = new VanillaRecoveryVisualObservation(VanillaVisualState.ModalDialog, true, null);
+                h.E.Seconds = 30; h.Probe(h.A);
+                Assert(h.VisualReads == 1 && h.E.Work.Count == 0 && (bool)Get(h.A, "FailedReplacementRetryPending"));
+                h.Visuals[101] = new VanillaRecoveryVisualObservation(VanillaVisualState.Unknown, false, "capture timeout");
+                h.E.Seconds = 32; h.Probe(h.A);
+                Assert(h.VisualReads == 2 && h.E.Work.Count == 0, "Unavailable capture cleared the previously observed unknown modal.");
+                h.Visuals[101] = new VanillaRecoveryVisualObservation(VanillaVisualState.LoginShell, true, null);
+                h.E.Seconds = 34; h.Probe(h.A);
+                Assert(h.VisualReads == 3 && h.E.Work.Count == 1, "A cleared modal stranded the owned failed replacement after backoff.");
+            }
+        }
+        private static void RetainedReplacementAdopted()
+        {
+            using (var h = new H())
+            {
+                Set(h.A, "ResumeSent", false); Set(h.A, "HasBeenOnline", false);
+                Call(h.Supervisor, "ScheduleRecoveryFailureLocked", h.A, h.E.UtcNow, "unowned failure");
+                h.E.Seconds = 30; h.Probe(h.A);
+                Assert(!(bool)Get(h.A, "FailedReplacementRetryPending") && h.E.Work.Count == 0 && h.Wakeups.Count == 0);
+            }
+        }
+        private static void RetainedReplacementStop()
+        {
+            using (var h = new H())
+            {
+                ArmRetainedReplacement(h); h.E.Seconds = 30; h.Probe(h.A);
+                h.Supervisor.Stop(); h.E.Work.Dequeue()();
+                Assert(!(bool)Get(h.A, "FailedReplacementRetryPending") && h.E.Closed.Count == 0);
+            }
+        }
+        private static void RetainedReplacementSettings()
+        {
+            using (var h = new H())
+            {
+                ArmRetainedReplacement(h); h.E.Seconds = 30; h.Probe(h.A);
+                Set(h.Supervisor, "running", false); h.Supervisor.Apply(h.Supervisor.Settings, false); h.E.Work.Dequeue()();
+                Assert(!(bool)Get(h.A, "FailedReplacementRetryPending") && h.E.Closed.Count == 0);
+            }
+        }
+        private static void RetainedReplacementIdentity()
+        {
+            using (var h = new H())
+            {
+                ArmRetainedReplacement(h); h.E.StartShiftSeconds = 1; h.E.Seconds = 30; h.Probe(h.A);
+                Assert(!(bool)Get(h.A, "FailedReplacementRetryPending") && h.E.Work.Count == 0 && h.E.Closed.Count == 0,
+                    "A recycled PID inherited replacement close authorization.");
+            }
+        }
+        private static void RetainedReplacementSibling()
+        {
+            using (var h = new H())
+            {
+                ArmRetainedReplacement(h); Set(h.B, "RecoveryOwned", true);
+                h.E.Seconds = 30; h.Probe(h.A);
+                Assert(h.E.Work.Count == 0 && (bool)Get(h.A, "FailedReplacementRetryPending"));
+                Set(h.B, "RecoveryOwned", false); h.E.Seconds = 32; h.Probe(h.A);
+                Assert(h.E.Work.Count == 1 && (bool)Get(h.A, "RecoveryOwned") && h.Wakeups.Count == 0);
+            }
+        }
+        private static void RetainedReplacementCloseFailure()
+        {
+            using (var h = new H())
+            {
+                ArmRetainedReplacement(h); h.E.Seconds = 30; h.E.FailClose = true; h.Probe(h.A); h.E.Work.Dequeue()();
+                Assert((bool)Get(h.A, "FailedReplacementRetryPending") && (int)Get(h.A, "RecoveryFailures") == 2);
+                h.E.Seconds = 89; h.Probe(h.A); Assert(h.E.Work.Count == 0);
+                h.E.Seconds = 90; h.E.FailClose = false; h.Probe(h.A);
+                Assert(h.E.Work.Count == 1, "A failed retry close stranded the retained process after backoff.");
+                h.E.Work.Dequeue()(); Assert(h.E.Closed.SequenceEqual(new[] { 101 }));
+            }
+        }
         private static void CaptureClock()
         {
             using (var h = new H())
@@ -652,9 +837,29 @@ namespace Vanilla.Diagnostics.Tests
                 h.Probe(h.A);
                 Assert(h.E.Work.Count == 0 && h.E.Closed.Count == 0, "Movement deadline bypassed unknown-modal guard.");
                 h.E.Seconds = 181; h.Sample(101);
-                h.Visuals[101] = new VanillaRecoveryVisualObservation(VanillaVisualState.Unknown, true, null);
+                h.Visuals[101] = new VanillaRecoveryVisualObservation(VanillaVisualState.Gameplay, true, null);
                 h.Probe(h.A);
                 Assert(h.E.Work.Count == 1, "Unknown modal reset the preceding movement deadline.");
+            }
+        }
+        private static void ModalCaptureGap()
+        {
+            using (var h = new H())
+            {
+                h.Sample(101); h.Probe(h.A);
+                h.E.Seconds = 1; h.Sample(101, 11);
+                h.Visuals[101] = new VanillaRecoveryVisualObservation(VanillaVisualState.ModalDialog, true, null);
+                h.Probe(h.A);
+                var settings = h.Supervisor.Settings; settings.VisualWatchdog = false; Set(h.Supervisor, "settings", settings);
+                foreach (string error in new[] { "capture timeout", null })
+                {
+                    h.E.Seconds = error == null ? 180 : 2; h.Sample(101, (int)h.E.Seconds + 11);
+                    h.Visuals[101] = new VanillaRecoveryVisualObservation(VanillaVisualState.Unknown, error == null, error);
+                    h.Probe(h.A);
+                    Assert((VanillaVisualState)Get(h.A, "Visual") == VanillaVisualState.ModalDialog
+                        && h.E.Work.Count == 0 && h.Wakeups.Count == 0,
+                        "An unavailable/ambiguous frame was treated as proof that a modal disappeared.");
+                }
             }
         }
         private static void FailedTerminalConfirmation()

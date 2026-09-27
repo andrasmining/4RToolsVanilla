@@ -125,8 +125,12 @@ namespace _4RTools.Model.Vanilla
 
         public VanillaForegroundInput(int processId) : this(processId, IntPtr.Zero) { }
 
-        public VanillaForegroundInput(int processId, IntPtr preferredWindow)
+        public VanillaForegroundInput(int processId, IntPtr preferredWindow) : this(processId, preferredWindow, null) { }
+
+        internal VanillaForegroundInput(int processId, IntPtr preferredWindow, Func<bool> cancelled)
         {
+            CancellationRequested = cancelled;
+            ThrowIfCancelled();
             process = Process.GetProcessById(processId);
             this.preferredWindow = preferredWindow;
             string evidence;
@@ -181,6 +185,68 @@ namespace _4RTools.Model.Vanilla
         public void Activate()
         {
             lock (ForegroundGate) ActivateCore();
+        }
+
+        internal void WaitForInteractiveWindow(int timeoutMs, Stopwatch readinessWatch = null)
+        {
+            Stopwatch watch = readinessWatch ?? Stopwatch.StartNew();
+            ThrowIfCancelled();
+            DateTime identity = process.StartTime.ToUniversalTime();
+            long nextLogAt = 0;
+            string evidence = "no window observation";
+            try
+            {
+                WaitForInteractiveWindowCore(timeoutMs, () =>
+                {
+                    bool ready;
+                    lock (ForegroundGate)
+                    {
+                        ThrowIfCancelled();
+                        ready = TryRefreshWindow(out evidence)
+                            && IsKnownVanillaGameWindow(WindowClass(window), WindowTitle(window))
+                            && IsUsableWindowForProcess(window, process.Id);
+                    }
+                    if (!ready && watch.ElapsedMilliseconds >= nextLogAt)
+                    {
+                        VanillaDebugLog.Write("STARTUP", "PID=" + process.Id
+                            + " waiting for interactive game window; elapsedMs=" + watch.ElapsedMilliseconds
+                            + "; " + evidence + ". No input sent.");
+                        nextLogAt = watch.ElapsedMilliseconds + 1000;
+                    }
+                    return ready;
+                }, () => process.HasExited || process.StartTime.ToUniversalTime() != identity,
+                    CancellationRequested, Thread.Sleep, () => watch.ElapsedMilliseconds);
+                VanillaDebugLog.Write("STARTUP", "PID=" + process.Id + " interactive game window ready after "
+                    + watch.ElapsedMilliseconds + "ms; " + evidence + ". Foreground acquisition follows separately.");
+            }
+            catch (TimeoutException ex)
+            {
+                throw new TimeoutException(ex.Message + " Last window observation: " + evidence, ex);
+            }
+        }
+
+        internal static void WaitForInteractiveWindowCore(int timeoutMs, Func<bool> ready, Func<bool> exited,
+            Func<bool> cancelled, Action<int> pause, Func<long> elapsedMilliseconds)
+        {
+            if (timeoutMs <= 0 || timeoutMs > 120000) throw new ArgumentOutOfRangeException(nameof(timeoutMs));
+            if (ready == null || exited == null || pause == null || elapsedMilliseconds == null)
+                throw new ArgumentNullException();
+            while (true)
+            {
+                if (cancelled?.Invoke() == true) throw new OperationCanceledException("Waiting for Vanilla window cancelled.");
+                if (exited()) throw new InvalidOperationException("Vanilla exited or was replaced while waiting for its interactive game window.");
+                if (elapsedMilliseconds() >= timeoutMs) break;
+                bool available = ready();
+                // Resolving/restoring a window can take time. A late observation or
+                // a cancelled/replaced client must not release startup into input.
+                if (cancelled?.Invoke() == true) throw new OperationCanceledException("Waiting for Vanilla window cancelled.");
+                if (exited()) throw new InvalidOperationException("Vanilla exited or was replaced while waiting for its interactive game window.");
+                long remaining = timeoutMs - elapsedMilliseconds();
+                if (remaining <= 0) break;
+                if (available) return;
+                pause((int)Math.Min(250, remaining));
+            }
+            throw new TimeoutException("Vanilla interactive game window did not appear within " + (timeoutMs / 1000) + " seconds.");
         }
 
         private void ActivateCore()
@@ -242,8 +308,13 @@ namespace _4RTools.Model.Vanilla
                 }
 
                 focusAttempt++;
+                // Window resolution/restoration can outlive a STOP or the
+                // observation deadline. Recheck before changing desktop focus.
+                ThrowIfCancelled();
                 ShowWindow(window, SW_RESTORE);
+                ThrowIfCancelled();
                 BringWindowToTop(window);
+                ThrowIfCancelled();
                 SetForegroundWindow(window);
                 Thread.Sleep(90);
                 current = GetForegroundWindow();
@@ -480,6 +551,13 @@ namespace _4RTools.Model.Vanilla
                 }
                 catch { first.Dispose(); LastCaptureProof = null; throw; }
             }
+        }
+
+        internal Bitmap CaptureClientBitmapForObservation()
+        {
+            // Recovery diagnosis classifies the captured outage/terminal evidence
+            // itself. Retain the same owned foreground and fresh geometry guards.
+            return CaptureClientBitmapCore();
         }
 
         private Bitmap CaptureClientBitmapCore()
@@ -902,6 +980,7 @@ namespace _4RTools.Model.Vanilla
             window = best.Handle;
             if (best.KnownGame && (!best.Visible || best.Iconic || best.Width < 200 || best.Height < 120))
             {
+                ThrowIfCancelled();
                 VanillaDebugLog.Write("FOCUS", "PID=" + process.Id + " restoring existing Vanilla game window before visual/input use: "
                     + DescribeWindow(window) + "; visible=" + best.Visible + ", iconic=" + best.Iconic
                     + ", client=" + best.Width + "x" + best.Height + ".");

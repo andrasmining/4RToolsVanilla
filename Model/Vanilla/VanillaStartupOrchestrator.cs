@@ -8,6 +8,28 @@ using System.Windows.Forms;
 
 namespace _4RTools.Model.Vanilla
 {
+    internal sealed class VanillaStartupCloseIdentity
+    {
+        private int? processId;
+        private DateTime created;
+
+        internal DateTime Require(int pid, Func<DateTime> readCreated)
+        {
+            if (processId.HasValue && processId != pid)
+                throw new InvalidOperationException("Retained startup client changed; no close authorized.");
+            DateTime observed = readCreated();
+            if (processId.HasValue && created != observed)
+                throw new InvalidOperationException("Retained startup PID was reused; no close authorized.");
+            // Only a successful first identity query may establish the pin. Failed
+            // reads and failed closes must retain it through every later retry.
+            processId = pid;
+            created = observed;
+            return created;
+        }
+
+        internal void ConfirmedExit() { processId = null; created = default(DateTime); }
+    }
+
     /// <summary>
     /// Strict cold-start orchestration for START SUPERVISOR.
     /// One client must complete launcher -> proxy -> login -> server -> character -> gameplay
@@ -295,6 +317,7 @@ namespace _4RTools.Model.Vanilla
             if (missing != null) throw new InvalidOperationException(account.Label + ": " + missing + ".");
             int failureCount = 0;
             Exception last = null;
+            var closeIdentity = new VanillaStartupCloseIdentity();
             while (true)
             {
                 Runtime runtime;
@@ -304,11 +327,21 @@ namespace _4RTools.Model.Vanilla
                     runtime = runtimes[account.Id];
                 }
                 WaitForStartupServerAvailability(generation, runtime);
+                bool previousCleanupAttempted = false;
                 try
                 {
-                    if (runtime.ServerOutagePending && runtime.ProcessId.HasValue)
-                        CloseColdStartClientForRestart(generation, runtime, failureCount, "Scheduled server availability check");
-                    RunOneColdStartAttempt(generation, account, config, ordinal, total);
+                    RunColdStartAfterPreviousExit(
+                        () => { lock (gate) return runtime.ProcessId; },
+                        () =>
+                        {
+                            previousCleanupAttempted = true;
+                            CloseColdStartClientForRestart(generation, runtime, failureCount, closeIdentity,
+                                runtime.ServerOutagePending ? "Scheduled server availability check"
+                                    : "Previous failed startup client must exit before another launch");
+                            previousCleanupAttempted = false;
+                        },
+                        () => RunOneColdStartAttempt(generation, account, config, ordinal, total),
+                        () => StartupAccountCancelled(generation, account));
                     return;
                 }
                 catch (OperationCanceledException) { throw; }
@@ -319,9 +352,15 @@ namespace _4RTools.Model.Vanilla
                     if (StartupAccountCancelled(generation, account)) throw new OperationCanceledException("Sequential startup cancelled.");
                     if (last is VanillaServerClosedException) ConfirmServerOutageLocked(runtime);
                 }
-                Log(account.Label + ": startup/restart attempt failed: " + last.Message + ". Closing any failed client before retry.");
+                Log(account.Label + ": startup/restart attempt failed: " + last.Message
+                    + (previousCleanupAttempted ? ". Previous client close will retry after backoff; no new client was launched."
+                        : ". Closing any failed client before retry."));
                 VanillaDebugLog.Write("STARTUP", account.Label + ": failure " + failureCount + ": " + last.Message);
-                try { CloseColdStartClientForRestart(generation, runtime, failureCount, last.Message); }
+                try
+                {
+                    if (!previousCleanupAttempted)
+                        CloseColdStartClientForRestart(generation, runtime, failureCount, closeIdentity, last.Message);
+                }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception closeEx)
                 {
@@ -342,6 +381,19 @@ namespace _4RTools.Model.Vanilla
                     + "; retry intervals double and cap at 1 hour. Later clients remain blocked behind this recovery lease.");
                 PauseStartupRetryCore(() => StartupAccountCancelled(generation, account), delay);
             }
+        }
+
+        internal static void RunColdStartAfterPreviousExit(Func<int?> previousProcessId, System.Action closePrevious,
+            System.Action launch, Func<bool> cancelled)
+        {
+            if (previousProcessId == null || closePrevious == null || launch == null || cancelled == null)
+                throw new ArgumentNullException();
+            if (cancelled()) throw new OperationCanceledException("Sequential startup cancelled before prior-client cleanup.");
+            if (previousProcessId().HasValue) closePrevious();
+            if (cancelled()) throw new OperationCanceledException("Sequential startup cancelled before launch.");
+            if (previousProcessId().HasValue)
+                throw new InvalidOperationException("Previous Vanilla client exit is not confirmed; no new client will be launched.");
+            launch();
         }
 
         private void WaitForStartupServerAvailability(int generation, Runtime runtime)
@@ -376,7 +428,8 @@ namespace _4RTools.Model.Vanilla
             }
         }
 
-        private void CloseColdStartClientForRestart(int generation, Runtime runtime, int failureCount, string reason)
+        private void CloseColdStartClientForRestart(int generation, Runtime runtime, int failureCount,
+            VanillaStartupCloseIdentity closeIdentity, string reason)
         {
             int? pid;
             int operation = 0;
@@ -402,13 +455,14 @@ namespace _4RTools.Model.Vanilla
             }
             try
             {
-                DateTime identity = restartEnvironment.GetStartTimeUtc(pid.Value);
+                DateTime identity = closeIdentity.Require(pid.Value, () => restartEnvironment.GetStartTimeUtc(pid.Value));
                 Func<bool> cancelled = () => StartupCancelled(generation) || ResumeWorkerCancelled(runtime, pid.Value, operation);
                 restartEnvironment.CloseClient(pid.Value, identity, cancelled, action =>
                     RunOwnedClientStep(runtime, pid.Value, cancelled, () => { action(); return true; }));
                 lock (gate)
                 {
                     if (cancelled()) throw new OperationCanceledException("Sequential startup restart cancelled.");
+                    closeIdentity.ConfirmedExit();
                     try { positionClientExited?.Invoke(pid.Value); }
                     catch (Exception ex) { Log(runtime.Account.Label + ": exited reader cleanup failed: " + ex.Message); }
                     runtime.ProcessId = null;
@@ -432,9 +486,15 @@ namespace _4RTools.Model.Vanilla
             {
                 lock (gate)
                 {
-                    runtime.ScriptRunning = false;
-                    runtime.RecoveryOwned = false;
-                    runtime.ClosingForRecovery = false;
+                    Runtime current;
+                    if (generation == hardenedStartupGeneration
+                        && runtimes.TryGetValue(runtime.Account.Id, out current) && ReferenceEquals(current, runtime)
+                        && runtime.ProcessId == pid && runtime.ResumeOperationGeneration == operation)
+                    {
+                        runtime.ScriptRunning = false;
+                        runtime.RecoveryOwned = false;
+                        runtime.ClosingForRecovery = false;
+                    }
                 }
                 throw;
             }
@@ -463,8 +523,10 @@ namespace _4RTools.Model.Vanilla
             lock (gate)
             {
                 if (StartupAccountCancelled(generation, account)) throw new OperationCanceledException("Sequential startup cancelled.");
-                resumeGeneration = Interlocked.Increment(ref resumeVerificationGeneration);
                 runtime = runtimes[account.Id];
+                if (runtime.ProcessId.HasValue)
+                    throw new InvalidOperationException("Previous Vanilla client exit is not confirmed; no new client will be launched.");
+                resumeGeneration = Interlocked.Increment(ref resumeVerificationGeneration);
                 runtime.ResumeOperationGeneration = resumeGeneration;
                 runtime.ScriptRunning = true;
                 runtime.RecoveryOwned = true;

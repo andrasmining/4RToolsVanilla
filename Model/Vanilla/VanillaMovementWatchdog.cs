@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Globalization;
 using System.Linq;
 
 namespace _4RTools.Model.Vanilla
@@ -20,6 +21,26 @@ namespace _4RTools.Model.Vanilla
         { Pid = pid; Session = session; At = at; X = x; Y = y; Map = map; Verified = verified; Error = error; MovementAt = movementAt; }
     }
 
+    // Keep health evidence useful on slow machines without turning every poll or
+    // alternating capture error into a log line. This clock never affects recovery.
+    internal sealed class VanillaMovementDiagnosticRate
+    {
+        private TimeSpan? last;
+        private string state;
+        private int pid;
+
+        internal bool ShouldWrite(int processId, string currentState, TimeSpan now)
+        {
+            if (last.HasValue && pid == processId && now >= last.Value)
+            {
+                double elapsed = (now - last.Value).TotalSeconds;
+                if (elapsed < 5 || (elapsed < 30 && string.Equals(state, currentState, StringComparison.Ordinal))) return false;
+            }
+            pid = processId; state = currentState; last = now;
+            return true;
+        }
+    }
+
     internal sealed class VanillaMovementWatchdog
     {
         // Observe() exposes a 30-second diagnostic signal, but the supervisor owns
@@ -32,6 +53,7 @@ namespace _4RTools.Model.Vanilla
         private string map;
         private TimeSpan progressAt, previousClock;
         private DateTimeOffset? observedAt;
+        internal readonly VanillaMovementDiagnosticRate Diagnostics = new VanillaMovementDiagnosticRate();
         internal bool IsArmed { get { return armed; } }
         internal double StalledSeconds(TimeSpan now)
         {
@@ -163,7 +185,15 @@ namespace _4RTools.Model.Vanilla
             if (!running || disposed || !settings.AutoRecover || !runtime.Account.Enabled || !runtime.ProcessId.HasValue
                 || runtime.ScriptRunning || runtime.RecoveryOwned || positionSource == null
                 || (!runtime.ResumeSent && !runtime.HasBeenOnline))
-            { runtime.MovementWatchdog.Reset(); return false; }
+            {
+                string suppressed = !running ? "supervisor stopped" : disposed ? "disposed"
+                    : !settings.AutoRecover ? "automatic recovery disabled" : !runtime.Account.Enabled ? "character disabled"
+                    : !runtime.ProcessId.HasValue ? "no assigned process" : runtime.ScriptRunning ? "input operation running"
+                    : runtime.RecoveryOwned ? "recovery in progress" : positionSource == null ? "coordinate source not configured"
+                    : "gameplay not yet confirmed";
+                LogMovementWatchdogDiagnostic(runtime, now, null, suppressed);
+                runtime.MovementWatchdog.Reset(); return false;
+            }
             VanillaPositionSample sample = null;
             try { sample = positionSource(runtime.ProcessId.Value); }
             catch (Exception ex) { Log(runtime.Account.Label + ": coordinate source unavailable: " + ex.Message); }
@@ -182,8 +212,12 @@ namespace _4RTools.Model.Vanilla
                 // A failed screenshot must not skip or reset the monotonic deadline.
                 ObserveRecoveryVisual(runtime);
                 now = restartEnvironment.UtcNow;
-                if (HandleTerminalVisual(runtime, runtime.Visual, now, startTimeUtc)) return true;
+                if (HandleTerminalVisual(runtime, runtime.Visual, now, startTimeUtc))
+                { LogMovementWatchdogDiagnostic(runtime, now, sample); return true; }
             }
+            LogMovementWatchdogDiagnostic(runtime, now, sample);
+            if (TryQueueRecoveryScreenDiagnosis(runtime, now, startTimeUtc,
+                runtime.MovementWatchdog.StalledSeconds(restartEnvironment.MonotonicNow))) return true;
             int restartAfter = Math.Max(60, settings.MovementRestartSeconds);
             if (stalled < restartAfter) return false;
             string detail = (reason ?? ("No verified X/Y movement for " + (int)stalled + "s"))
@@ -193,6 +227,37 @@ namespace _4RTools.Model.Vanilla
             Log(runtime.Account.Label + ": " + detail);
             QueueClientRestart(runtime, now, detail, false, startTimeUtc);
             return true;
+        }
+
+        private void LogMovementWatchdogDiagnostic(Runtime runtime, DateTimeOffset now, VanillaPositionSample sample, string suppressed = null)
+        {
+            TimeSpan clock = restartEnvironment.MonotonicNow;
+            double stalled = runtime.MovementWatchdog.StalledSeconds(clock);
+            string sampleState = sample == null ? "unavailable" : sample.Pid != runtime.ProcessId ? "different process"
+                : sample.Error != null ? "read error" : !sample.Verified ? "unverified"
+                : sample.Session == Guid.Empty ? "session unavailable" : !sample.X.HasValue || !sample.Y.HasValue ? "coordinates unavailable"
+                : sample.At > now ? "future timestamp" : (now - sample.At).TotalSeconds > 3 ? "stale" : "fresh verified";
+            string mode = suppressed ?? (sampleState != "fresh verified" ? "sample unavailable"
+                : stalled >= VanillaMovementWatchdog.TimeoutSeconds ? "stationary" : "observing movement");
+            if (!runtime.MovementWatchdog.Diagnostics.ShouldWrite(runtime.ProcessId ?? 0, mode, clock)) return;
+            var capture = runtime.LastVisualObservation;
+            VanillaDebugLog.Write("RECOVERY-HEALTH", runtime.Account.Label + ": PID=" + (runtime.ProcessId?.ToString() ?? "none")
+                + "; stage=" + runtime.Stage + "; monitoring=" + (suppressed == null ? "active" : "suppressed") + "; reason=" + mode
+                + "; autoRecover=" + settings.AutoRecover + "; continuousVisual=" + settings.VisualWatchdog
+                + "; sample=" + sampleState + "; sampleAt=" + (sample == null ? "unknown" : sample.At.ToString("O", CultureInfo.InvariantCulture))
+                + "; sampleAgeMs=" + (sample == null ? "unknown" : (now - sample.At).TotalMilliseconds.ToString("0", CultureInfo.InvariantCulture))
+                + "; xy=" + (sample?.X?.ToString() ?? "unknown") + "," + (sample?.Y?.ToString() ?? "unknown")
+                + "; map=" + DiagnosticText(sample?.Map) + "; readError=" + DiagnosticText(sample?.Error)
+                + "; watchdogArmed=" + runtime.MovementWatchdog.IsArmed + "; noMovementSeconds=" + stalled.ToString("0.0", CultureInfo.InvariantCulture)
+                + "; restartAfterSeconds=" + Math.Max(60, settings.MovementRestartSeconds)
+                + "; visual=" + runtime.Visual + "; captureError=" + DiagnosticText(capture?.Error));
+        }
+
+        private static string DiagnosticText(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return "none";
+            text = text.Replace('\r', ' ').Replace('\n', ' ');
+            return text.Length <= 180 ? text : text.Substring(0, 180) + "...";
         }
     }
 }

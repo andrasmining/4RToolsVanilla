@@ -781,6 +781,18 @@ no blind dismissal; unavailable captures alone do not prove disconnection.
 Preserve emergency/completion/manual holds, process identity checks, cancellation
 and the special confirmed server-outage retry policy.
 
+For slower PCs, wait for the real interactive game window through the full bounded
+startup wait; a Gepard splash or helper HWND does not finish that wait. A failed
+client close must retain its PID and prevent another launch until exit is confirmed.
+Failed minimized captures do not demote an established client into startup or grant
+login/resume ownership. Keep bounded per-client health diagnostics that distinguish
+stale/missing movement, capture failure, disabled recovery and intentional holds.
+After sustained movement failure and unavailable minimized capture, a bounded,
+serialized foreground screen diagnosis may restore only that affected client.
+It sends no keys/clicks, preserves the original movement deadline, and retains
+two fresh exact terminal observations before early replacement. Never use this
+as a workaround for access denial or as a Smart Teleport input fallback.
+
 ### Critical farming emergency stop (2026-09-23)
 
 While 4RTools runs, protect every enabled saved username + character row even

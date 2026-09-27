@@ -108,6 +108,9 @@ namespace _4RTools.Model.Vanilla
             {
                 ResetTerminalEvidence(runtime);
                 if (visual != VanillaVisualState.ModalDialog) return false;
+                ObserveModalMovementForDiagnosis(runtime);
+                if (TryQueueRecoveryScreenDiagnosis(runtime, now, startTimeUtc,
+                    runtime.MovementWatchdog.StalledSeconds(restartEnvironment.MonotonicNow))) return true;
                 runtime.GameplaySince = runtime.LoginLikeSince = null;
                 SetStage(runtime, VanillaReconnectStage.WaitingForGameplay,
                     "Unrecognized modal; no dismissal, close or recovery input sent");
@@ -139,6 +142,25 @@ namespace _4RTools.Model.Vanilla
             if (outage) ConfirmServerOutageLocked(runtime);
             QueueClientRestart(runtime, now, reason, runtime.RecoveryOwned, startTimeUtc);
             return true;
+        }
+
+        private void ObserveModalMovementForDiagnosis(Runtime runtime)
+        {
+            // A modal blocks ordinary recovery below this branch. Still track
+            // read-only movement so a first modal cannot leave diagnosis unarmed
+            // forever, and later verified movement cancels unnecessary focusing.
+            if (!running || disposed || !settings.AutoRecover || !runtime.Account.Enabled
+                || !runtime.ProcessId.HasValue || runtime.ScriptRunning || runtime.RecoveryOwned
+                || runtime.ClosingForRecovery || positionSource == null
+                || (!runtime.HasBeenOnline && !runtime.ResumeSent) || FarmingEmergencyHeld(runtime)
+                || weightManualHolds.Contains(runtime.Account.Id) || weightCompletedHolds.Contains(runtime.Account.Id)
+                || TemporaryActionRegistered(runtime.ProcessId.Value)) return;
+            VanillaPositionSample sample = null;
+            try { sample = positionSource(runtime.ProcessId.Value); }
+            catch (Exception ex) { Log(runtime.Account.Label + ": modal coordinate observation unavailable: " + ex.Message); }
+            DateTimeOffset now = restartEnvironment.UtcNow;
+            runtime.MovementWatchdog.Observe(runtime.ProcessId.Value, sample, restartEnvironment.MonotonicNow, now);
+            LogMovementWatchdogDiagnostic(runtime, now, sample);
         }
 
         // START can encounter a terminal dialog before continuous monitoring was
@@ -298,6 +320,7 @@ namespace _4RTools.Model.Vanilla
                 return;
             }
             int exitedPid = runtime.ProcessId.GetValueOrDefault();
+            ClearFailedReplacementRetry(runtime);
             try { positionClientExited?.Invoke(exitedPid); }
             catch (Exception ex) { Log(runtime.Account.Label + ": exited reader cleanup failed: " + ex.Message); }
             runtime.MovementRecoveryPending = false;
