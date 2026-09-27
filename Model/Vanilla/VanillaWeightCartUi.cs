@@ -152,7 +152,7 @@ namespace _4RTools.Model.Vanilla
                     + "% and carried weight "
                     + client.WeightPercent.Value.ToString("0.0", System.Globalization.CultureInfo.InvariantCulture)
                     + "%; Autobattle STOP verified.";
-                supervisor.CompleteWeightFarmingDone(token, detail);
+                supervisor.CompleteWeightFarmingDone(token, detail, client);
                 VanillaDebugLog.Write("WEIGHT", "event=farming-done-stop account='" + token.Account.Label
                     + "' accountId=" + token.AccountId + " pid=" + pid + ".");
                 report(detail);
@@ -173,7 +173,7 @@ namespace _4RTools.Model.Vanilla
                 else supervisor.MarkWeightMaintenanceCancelled(token, paused, detail);
                 return false;
             }
-            finally { input?.Dispose(); }
+            finally { try { input?.Dispose(); } finally { supervisor.FinishWeightFarmingCompletion(token); } }
         }
 
         private static bool HasCompleteWeights(VanillaFleetClientInfo client)

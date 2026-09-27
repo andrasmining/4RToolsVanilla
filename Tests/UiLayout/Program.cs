@@ -58,6 +58,7 @@ internal static class UiLayoutHarness
                 CheckWorkspacePolicy(main, recovery);
                 CheckWeightCartHotkeys(main);
                 CheckEmergencySettings(main);
+                CheckFarmingOptions(main);
                 SeedFleet(main);
                 RunCase(main, recovery, 1920, 1020, 2, 1F, false);
                 CheckRecoverySplitter(main, recovery);
@@ -82,6 +83,7 @@ internal static class UiLayoutHarness
                 RunCase(main, recovery, 1920, 1020, 40, 1.50F, false);
                 RunCase(main, recovery, 1050, 700, 40, 1F, false);
                 RunCase(main, recovery, 1920, 1020, 4, 1F, false);
+                CheckFarmingStopCards(main, recovery);
                 CheckCharacterDiscovery(main, recovery);
                 CheckCharacterEditor(main, recovery);
                 CheckLegacyUsernameDiscovery(main, recovery);
@@ -292,9 +294,56 @@ internal static class UiLayoutHarness
         return (decimal)value.GetType().GetProperty(property).GetValue(value, null);
     }
 
+    private static void CheckFarmingOptions(Form main)
+    {
+        caseNumber++;
+        object service = Field(main, "integratedWeightAlertService");
+        Type panelType = app.GetType("_4RTools.Model.Vanilla.VanillaWeightAlertsPanel", true);
+        using (var host = new Form { ClientSize = new Size(1180, 720), StartPosition = FormStartPosition.Manual, Location = Point.Empty })
+        using (var panel = (ScrollableControl)Activator.CreateInstance(panelType, new[] { service }))
+        {
+            host.Controls.Add(panel); host.Show(); Pump();
+            CheckBox emergencyMail = (CheckBox)Field(panel, "emergencySendEmail");
+            CheckBox completedClose = (CheckBox)Field(panel, "closeWhenComplete");
+            CheckBox normalMail = (CheckBox)Field(panel, "enabled");
+            Check(!emergencyMail.Checked && !completedClose.Checked, "New emergency-mail/completion-close switches must default off.");
+            completedClose.Checked = true;
+            emergencyMail.Checked = true;
+            Check(!emergencyMail.Checked && ((Label)Field(panel, "emergencySaveStatus")).Text.StartsWith("Not saved:"),
+                "Emergency mail without saved SMTP must restore its unchecked state and show the save error.");
+            Check(completedClose.Checked && !(bool)ReadProperty(ReadProperty(service, "Settings"), "CloseClientWhenFarmingComplete"),
+                "Emergency checkbox committed or discarded the pending completion-close setting.");
+            ((TextBox)Field(panel, "smtpHost")).Text = "smtp.example.invalid";
+            ((TextBox)Field(panel, "fromAddress")).Text = "sender@example.invalid";
+            ((TextBox)Field(panel, "toAddress")).Text = "recipient@example.invalid";
+            normalMail.Checked = false; Call(panel, "SaveSettings");
+            emergencyMail.Checked = true; Pump();
+            Check(emergencyMail.Checked && (bool)ReadProperty(ReadProperty(service, "EmergencySettings"), "SendEmail")
+                && !(bool)ReadProperty(ReadProperty(service, "Settings"), "Enabled"),
+                "Emergency e-mail must save independently with normal mail off.");
+            Check((bool)ReadProperty(ReadProperty(service, "Settings"), "CloseClientWhenFarmingComplete"),
+                "Completion-close checkbox was not saved by Weight Save.");
+            using (var reopened = (Control)Activator.CreateInstance(panelType, new[] { service }))
+                Check(((CheckBox)Field(reopened, "emergencySendEmail")).Checked
+                    && ((CheckBox)Field(reopened, "closeWhenComplete")).Checked, "Farming checkboxes did not reload their saved values.");
+            completedClose.Checked = false;
+            emergencyMail.Checked = false;
+            Check((bool)ReadProperty(ReadProperty(service, "Settings"), "CloseClientWhenFarmingComplete"),
+                "Emergency mail opt-out saved pending completion-close edits.");
+            Call(panel, "SaveSettings");
+            host.ClientSize = new Size(760, 560); panel.Scale(new SizeF(1.5F, 1.5F));
+            panel.Font = new Font(panel.Font.FontFamily, panel.Font.Size * 1.5F);
+            Pump(); CheckWeightControlsReachable(host, panel, "farming flags narrow/enlarged");
+            panel.AutoScrollPosition = Point.Empty; Pump();
+            SaveScreenshot(host, Path.Combine(output, "farming-options.png"));
+        }
+        Call(main, "AssertSmokeBackgroundServicesInactive");
+        report.AppendLine("CASE farming options: both defaults off; missing-SMTP rollback; independent emergency-mail auto-save; explicit completion-close save/reload; no SMTP/network call.");
+    }
+
     private static void CheckWeightControlsReachable(Form host, ScrollableControl panel, string context)
     {
-        foreach (string field in new[] { "emergencyWeight", "emergencySp", "emergencyHp", "autoThreshold", "autoRearm",
+        foreach (string field in new[] { "emergencyWeight", "emergencySp", "emergencyHp", "emergencySendEmail", "closeWhenComplete", "autoThreshold", "autoRearm",
             "autobattleStopHotkey", "inventoryHotkey", "cartHotkey", "smtpHost", "smtpPassword", "toAddress",
             "save", "test", "clearHold", "clearEmergency" })
         {
@@ -303,6 +352,173 @@ internal static class UiLayoutHarness
             Check(FullyVisible(control, host), context + ": Weight control is not reachable by scrolling: " + field
                 + "; bounds=" + BoundsIn(control, host) + "; scroll=" + panel.AutoScrollPosition + "; extent=" + panel.AutoScrollMinSize);
         }
+    }
+
+    private static void CheckFarmingStopCards(Form main, object recovery)
+    {
+        caseNumber++;
+        SeedAccounts(recovery, 2);
+        Control fleet = (Control)Field(main, "integratedFleetDashboard");
+        Array cards = (Array)Field(fleet, "cards");
+        IList catalog = (IList)Field(recovery, "accountCatalog");
+        Type accountType = app.GetType("_4RTools.Model.Vanilla.VanillaReconnectAccount", true);
+        Type infoType = app.GetType("_4RTools.Model.Vanilla.VanillaFleetClientInfo", true);
+        Type identityType = app.GetType("_4RTools.Model.Vanilla.VanillaCharacterIdentity", true);
+        Type stopType = app.GetType("_4RTools.Model.Vanilla.VanillaFarmingStopStatus", true);
+        Type runtimeType = app.GetType("_4RTools.Model.Vanilla.VanillaReconnectStatus", true);
+        Array profiles = Array.CreateInstance(accountType, 2);
+        Array clients = Array.CreateInstance(infoType, 2);
+        Array stops = Array.CreateInstance(stopType, 2);
+        Array runtimes = Array.CreateInstance(runtimeType, 0);
+        DateTimeOffset now = DateTimeOffset.UtcNow;
+        for (int i = 0; i < 2; i++)
+        {
+            profiles.SetValue(catalog[i], i);
+            object info = Activator.CreateInstance(infoType);
+            string character = (string)ReadProperty(catalog[i], "CharacterName");
+            string user = (string)ReadProperty(catalog[i], "UserName");
+            Property(info, "ProcessId", 12064 + i); Property(info, "CharacterName", character);
+            Property(info, "NameVerified", true); Property(info, "HpVerified", true); Property(info, "SpVerified", true);
+            Property(info, "CurrentHP", (uint?)(2100 + i)); Property(info, "MaxHP", (uint?)4000);
+            Property(info, "CurrentSP", (uint?)300); Property(info, "MaxSP", (uint?)500);
+            Property(info, "Location", "mock_field (10, 20)");
+            Property(info, "Identity", Activator.CreateInstance(identityType, All, null,
+                new object[] { 12064 + i, Guid.NewGuid(), now, character, user, i + 1 }, null));
+            // Reversed polling order must not exchange the characters' cards.
+            clients.SetValue(info, 1 - i);
+            object stop = Activator.CreateInstance(stopType);
+            Property(stop, "AccountId", ReadProperty(catalog[i], "Id")); Property(stop, "UserName", user);
+            Property(stop, "CharacterName", character); Property(stop, "Status", i == 0 ? "Emergency" : "Completed");
+            Property(stop, "Detail", i == 0
+                ? "2026-09-27 12:05:03: Weight 56.0% (2800/5000) >50.0%, SP 20.0% (100/500) <25.0%, HP 40.0% (400/1000) <50.0%. Close: client exited; exit confirmed for the observed process. Email: failed (SMTP connection timed out while contacting the saved mail host); retry scheduled in 5 minutes."
+                : "2026-09-27 12:06:08: Farming complete: Cart 99.0% (9900/10000) AND Weight 50.0% (2500/5000); Autobattle STOP verified. Close: client exited. Email: retry scheduled.");
+            stops.SetValue(stop, i);
+        }
+        Array firstStop = Array.CreateInstance(stopType, 1); firstStop.SetValue(stops.GetValue(0), 0);
+        Call(fleet, "RenderSnapshot", clients, profiles, runtimes, firstStop, now, null); Pump();
+        Check(((Label)Field(cards.GetValue(0), "title")).Text == "Mock character 1"
+            && ((Label)Field(cards.GetValue(0), "state")).Text == "Emergency"
+            && !((Label)Field(cards.GetValue(0), "hp")).Text.Contains("2100"),
+            "A closed emergency card disappeared, changed identity or retained stale HP.");
+        Check(((Label)Field(cards.GetValue(1), "title")).Text == "Mock character 2"
+            && ((Label)Field(cards.GetValue(1), "hp")).Text.Contains("2101/4000"),
+            "Retaining the offline emergency card hid or exchanged its healthy sibling.");
+
+        Array none = Array.CreateInstance(infoType, 0);
+        Font originalFont = fleet.Font;
+        Action restoreRoster = SeedFarmingStopRoster(recovery, catalog);
+        try
+        {
+            foreach (var viewport in new[] { new Size(1904, 981), new Size(1050, 700) })
+            {
+                ResizeNativeViewport(main, viewport.Width, viewport.Height);
+                fleet.Font = new Font(originalFont.FontFamily, originalFont.Size * (viewport.Width < 1200 ? 1.5F : 1F));
+                Call(fleet, "RenderSnapshot", none, profiles, runtimes, stops, now, null); Pump();
+                Call(main, "UpdateVanillaFleetHeight"); Pump();
+                for (int i = 0; i < 2; i++)
+                {
+                    Label detail = (Label)Field(cards.GetValue(i), "stopDetail");
+                    Check(detail.Visible && detail.Text == (string)ReadProperty(stops.GetValue(i), "Detail")
+                        && FullyVisible(detail, main), viewport + ": exact stopped-character reason is hidden or clipped.");
+                    Check(((Label)Field(cards.GetValue(i), "state")).Text == (i == 0 ? "Emergency" : "Completed"),
+                        viewport + ": typed farming status was replaced with generic Error.");
+                    Check(!((Label)Field(cards.GetValue(i), "hp")).Text.Contains("/")
+                        && !((Label)Field(cards.GetValue(i), "sp")).Text.Contains("/"),
+                        viewport + ": a closed card presents historical vitals as live.");
+                    foreach (Label label in Descendants((Control)cards.GetValue(i)).OfType<Label>().Where(l => l.Visible))
+                        Check(label.Height >= label.Font.Height && FullyVisible(label, main), viewport + ": stopped card label clipped: " + label.Text);
+                }
+                SaveScreenshot(main, Path.Combine(output, "farming-stops-" + viewport.Width + ".png"));
+            }
+        }
+        finally { restoreRoster(); }
+
+        // Reusing the row ID or PID for a different identity cannot transplant history or vitals.
+        string oldCharacter = (string)ReadProperty(profiles.GetValue(0), "CharacterName");
+        Property(profiles.GetValue(0), "CharacterName", "Different character");
+        Call(fleet, "RenderSnapshot", clients, profiles, runtimes, stops, now, null); Pump();
+        Check(!((Label)Field(cards.GetValue(0), "stopDetail")).Visible
+            && !((Label)Field(cards.GetValue(0), "hp")).Text.Contains("/"),
+            "An edited/reused account row inherited another character's stop or HP.");
+        Property(profiles.GetValue(0), "CharacterName", oldCharacter);
+        Array noStops = Array.CreateInstance(stopType, 0);
+        Call(fleet, "RenderSnapshot", clients, profiles, runtimes, noStops, now.AddSeconds(4), null); Pump();
+        Check(!((Label)Field(cards.GetValue(0), "hp")).Text.Contains("/")
+            && !((Label)Field(cards.GetValue(1), "hp")).Text.Contains("/"),
+            "Stale identity samples supplied current vitals to configured cards.");
+        object ordinaryFailure = Activator.CreateInstance(runtimeType);
+        Property(ordinaryFailure, "AccountId", ReadProperty(profiles.GetValue(0), "Id"));
+        Array failedRuntime = Array.CreateInstance(runtimeType, 1); failedRuntime.SetValue(ordinaryFailure, 0);
+        foreach (string stage in new[] { "Error", "Stopped" })
+        {
+            Property(ordinaryFailure, "Stage", Enum.Parse(app.GetType("_4RTools.Model.Vanilla.VanillaReconnectStage", true), stage));
+            Property(ordinaryFailure, "Detail", stage == "Error"
+                ? "Recovery stopped: the expected login controls were unavailable after the bounded wait."
+                : "Stopped by user; automatic recovery is paused.");
+            Call(fleet, "RenderSnapshot", none, profiles, failedRuntime, noStops, now, null); Pump();
+            Label detail = (Label)Field(cards.GetValue(0), "stopDetail");
+            Check(((Label)Field(cards.GetValue(0), "state")).Text == stage && detail.Visible
+                && detail.Text == (string)ReadProperty(ordinaryFailure, "Detail") && FullyVisible(detail, main),
+                "Offline runtime " + stage + " lost its visible reason without a farming ledger event.");
+        }
+        Property(ordinaryFailure, "Stage", Enum.Parse(app.GetType("_4RTools.Model.Vanilla.VanillaReconnectStage", true), "Online"));
+        Property(ordinaryFailure, "ProcessId", (int?)12064);
+        Property(ordinaryFailure, "Detail", "");
+        object unreadable = Activator.CreateInstance(infoType);
+        Property(unreadable, "ProcessId", 12064);
+        Property(unreadable, "Error", "Synthetic read unavailable; native error 5.");
+        Property(unreadable, "CurrentHP", (uint?)999); Property(unreadable, "MaxHP", (uint?)1000);
+        Array readErrors = Array.CreateInstance(infoType, 1); readErrors.SetValue(unreadable, 0);
+        Call(fleet, "RenderSnapshot", readErrors, profiles, failedRuntime, noStops, now, null); Pump();
+        Check(((Label)Field(cards.GetValue(0), "stopDetail")).Text.Contains("Synthetic read unavailable")
+            && ((Label)Field(cards.GetValue(0), "stopDetail")).Visible
+            && !((Label)Field(cards.GetValue(0), "hp")).Text.Contains("/"),
+            "Assigned-PID read error lost its reason or authorized unverified vitals.");
+        fleet.Font = originalFont; SeedFleet(main); ResizeNativeViewport(main, 1920, 1020);
+        Call(main, "UpdateVanillaFleetHeight"); Pump();
+        Call(main, "AssertSmokeBackgroundServicesInactive");
+        report.AppendLine("CASE stopped fleet cards: stable exact identities; healthy sibling retained; both offline statuses/reasons visible; stale or edited identity rejected; Full HD and enlarged narrow rendering.");
+    }
+
+    private static Action SeedFarmingStopRoster(object recovery, IList catalog)
+    {
+        object supervisor = Field(recovery, "supervisor");
+        IDictionary holds = (IDictionary)Field(supervisor, "farmingEmergencyHolds");
+        IDictionary notices = (IDictionary)Field(supervisor, "farmingStops");
+        IDictionary runtimes = (IDictionary)Field(supervisor, "runtimes");
+        object hold = Activator.CreateInstance(supervisor.GetType().GetNestedType("FarmingEmergencyHold", All), true);
+        string user = (string)ReadProperty(catalog[0], "UserName"), name = (string)ReadProperty(catalog[0], "CharacterName");
+        string key = user.Length + ":" + user + name.Length + ":" + name;
+        Property(hold, "UserName", user); Property(hold, "CharacterName", name);
+        Property(hold, "ObservedAt", DateTimeOffset.UtcNow); Property(hold, "Detail", "Synthetic emergency reason");
+        holds.Add(key, hold);
+        object notice = Activator.CreateInstance(app.GetType("_4RTools.Model.Vanilla.VanillaFarmingStopNotice", true));
+        string eventId = Guid.NewGuid().ToString("N");
+        Property(notice, "EventId", eventId);
+        Property(notice, "Kind", Enum.Parse(app.GetType("_4RTools.Model.Vanilla.VanillaFarmingStopKind", true), "Completed"));
+        Property(notice, "AccountId", ReadProperty(catalog[1], "Id"));
+        Property(notice, "UserName", ReadProperty(catalog[1], "UserName"));
+        Property(notice, "CharacterName", ReadProperty(catalog[1], "CharacterName"));
+        Property(notice, "ObservedAt", DateTimeOffset.UtcNow); Property(notice, "Detail", "Synthetic farming completion reason");
+        notices.Add(eventId, notice);
+        object[] owners = { runtimes[ReadProperty(catalog[0], "Id")], runtimes[ReadProperty(catalog[1], "Id")] };
+        object[] pids = owners.Select(o => Field(o, "ProcessId")).ToArray();
+        foreach (object owner in owners) SetField(owner, "ProcessId", null);
+        Call(recovery, "RefreshAccountSupplementalColumnsCore");
+        DataGridView grid = (DataGridView)Field(recovery, "accounts");
+        for (int i = 0; i < 2; i++)
+        {
+            DataGridViewRow row = grid.Rows.Cast<DataGridViewRow>().Single(r => Equals(r.Tag, ReadProperty(catalog[i], "Id")));
+            Check(Convert.ToString(row.Cells["RuntimeStatus"].Value) == (i == 0 ? "Emergency" : "Completed"),
+                "Recovery roster did not use the real typed stop projection.");
+            Check(row.Cells["RuntimeStatus"].ToolTipText.Contains("Synthetic"), "Recovery roster lost the exact stop reason.");
+        }
+        return () =>
+        {
+            holds.Remove(key); notices.Remove(eventId);
+            for (int i = 0; i < owners.Length; i++) SetField(owners[i], "ProcessId", pids[i]);
+            Call(recovery, "RefreshAccountSupplementalColumnsCore");
+        };
     }
 
     private static void CheckCharacterDiscovery(Form main, object recovery)
@@ -735,6 +951,7 @@ internal static class UiLayoutHarness
     private static object Field(object target, string name) { return target.GetType().GetField(name, All).GetValue(target); }
     private static void SetField(object target, string name, object value) { target.GetType().GetField(name, All).SetValue(target, value); }
     private static void Property(object target, string name, object value) { target.GetType().GetProperty(name, All).SetValue(target, value, null); }
+    private static object ReadProperty(object target, string name) { return target.GetType().GetProperty(name, All).GetValue(target, null); }
     private static object Call(object target, string name, params object[] args) { return target.GetType().GetMethod(name, All).Invoke(target, args); }
     private static object CallStatic(string type, string name, params object[] args) { return app.GetType(type, true).GetMethod(name, All).Invoke(null, args); }
 }

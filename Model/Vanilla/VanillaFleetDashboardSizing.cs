@@ -19,6 +19,7 @@ namespace _4RTools.Forms
             vanillaFleetSizingApplied = true;
             ConfigureFleetPresentation(integratedFleetDashboard);
             UpdateVanillaFleetHeight();
+            integratedFleetDashboard.PresentationChanged += (s, e) => UpdateVanillaFleetHeight();
             SizeChanged += (s, e) => { UpdateVanillaFleetHeight(); CompactIntegratedHeader(); };
             FontChanged += (s, e) => { UpdateVanillaFleetHeight(); CompactIntegratedHeader(); };
             integratedUpdateStatus.TextChanged += (s, e) => CompactIntegratedHeader();
@@ -47,12 +48,21 @@ namespace _4RTools.Forms
             {
                 TableLayoutPanel layout = card.Controls.OfType<TableLayoutPanel>().FirstOrDefault();
                 if (layout == null) continue;
+                // GDI label autosizing can round below Font.Height after text scaling.
+                // Keep a full line box even for short metrics and status captions.
+                foreach (Label label in layout.Controls.OfType<Label>())
+                    label.MinimumSize = new Size(label.MinimumSize.Width, label.Font.Height);
+                if (layout.RowStyles.Count > 3)
+                    layout.RowStyles[3].Height = layout.Controls.Cast<Control>().Where(c => layout.GetRow(c) == 3)
+                        .Select(c => c.Font.Height + c.Margin.Vertical + 2).DefaultIfEmpty(layout.Font.Height + 4).Max();
                 int rowsHeight = 0;
-                for (int row = 0; row < 4; row++)
+                for (int row = 0; row < layout.RowCount; row++)
                 {
                     int r = row;
-                    int measured = layout.Controls.Cast<Control>().Where(c => layout.GetRow(c) == r)
-                        .Select(c => (r == 2 ? 4 : c.Font.Height) + c.Margin.Vertical).DefaultIfEmpty(0).Max();
+                    int measured = layout.Controls.Cast<Control>().Where(c => c.Visible && layout.GetRow(c) == r)
+                        .Select(c => (r == 2 ? 4 : r == 5
+                            ? c.GetPreferredSize(new Size(Math.Max(1, layout.ClientSize.Width - c.Margin.Horizontal), 0)).Height
+                            : c.Font.Height) + c.Margin.Vertical).DefaultIfEmpty(0).Max();
                     rowsHeight += measured + (r == 2 ? 2 : 0);
                 }
                 // GroupBox borders/title and TableLayout rounding can consume a few pixels
@@ -198,7 +208,7 @@ namespace _4RTools.Forms
                     layout.RowStyles[1].SizeType = SizeType.Absolute;
                     layout.RowStyles[1].Height = 0;
                 }
-                if (layout != null && layout.Parent is GroupBox && layout.RowCount == 4 && layout.ColumnCount == 4)
+                if (layout != null && layout.Parent is GroupBox && layout.RowCount >= 4 && layout.ColumnCount == 4)
                 {
                     // Current fleet cards are deliberately one compact line of four metrics
                     // (HP/SP/carried/Cart), short bars, then one location/error line. Do not
@@ -210,6 +220,7 @@ namespace _4RTools.Forms
                     layout.RowStyles[2].Height = 6;
                     layout.RowStyles[3].SizeType = SizeType.Absolute;
                     layout.RowStyles[3].Height = layout.Font.Height + 4;
+                    for (int row = 4; row < layout.RowCount; row++) layout.RowStyles[row].SizeType = SizeType.AutoSize;
 
                     GroupBox card = (GroupBox)layout.Parent;
                     card.Padding = new Padding(6, 3, 6, 3);

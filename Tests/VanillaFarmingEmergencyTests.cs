@@ -60,6 +60,20 @@ namespace Vanilla.Diagnostics.Tests
             Test("Supervisor clearing an exited PID cannot cancel pinned exit confirmation", RuntimePidGoneAfterClose);
             Test("An inactive recovery lease cannot strand an emergency hold", InactiveRecoveryLease);
             Test("Emergency clear preserves unrelated errors and remaining Weight holds", ClearIsolation);
+            Test("Emergency email opt-in is captured and mail-only edits do not cancel close", EmergencyEmailOptIn);
+            Test("Restored emergency close reuses one durable email incident", EmergencyNoticeRestart);
+            Test("Completed farming persists before cleanup and optional close", CompletionPersistence);
+            Test("Completion closes only after input cleanup and preserves its exit proof", CompletionClose);
+            Test("Completion requires both fresh exact capacity thresholds", CompletionEvidence);
+            Test("Changed completion close policy cancels queued close and retains hold", CompletionPolicyCancellation);
+            Test("Completion close denial retains visible result and pending notification", CompletionCloseFailure);
+            Test("Completion record write failure holds only the affected character and sends no close", CompletionStorageFailure);
+            Test("Clearing emergency holds cannot detach a queued completion close", ClearKindIsolation);
+            Test("Completed holds survive restart and clear durably without clearing emergencies", CompletionClear);
+            Test("Changing saved character identity does not inherit an old completion hold", CompletionIdentityChange);
+            Test("Unreadable stop ledger fails closed with Error status until explicit clear", CompletionCorruptStore);
+            Test("Completion records read current global and row policies after STOP", CompletionCurrentPolicy);
+            Test("Failed primary emergency hold clear retains the actual sent-email history", EmergencyClearHistoryFailure);
             Console.WriteLine("Farming emergency: {0} passed; {1} failed. Synthetic state, isolated hold files and fake processes only.", passed, failed);
             return failed;
         }
@@ -581,6 +595,248 @@ namespace Vanilla.Diagnostics.Tests
                 Assert(!h.HeldA && (string)Get(h.A, "Detail") == "Weight/Cart manual hold remains after emergency hold clear");
                 Assert((string)Get(h.B, "Detail") == "Independent configuration error");
             }
+        }
+
+        private static void EmergencyEmailOptIn()
+        {
+            using (var h = new Harness())
+            {
+                Assert(!h.Supervisor.FarmingEmergencySettings.SendEmail);
+                var settings = h.Supervisor.FarmingEmergencySettings; settings.SendEmail = true;
+                h.Supervisor.SaveFarmingEmergencySettings(settings); Assert(h.Observe());
+                settings.SendEmail = false; h.Supervisor.SaveFarmingEmergencySettings(settings);
+                h.E.Work.Dequeue()();
+                Assert(h.E.Closed.SequenceEqual(new[] { 101 }), "Email-only edit cancelled emergency close.");
+                var pending = h.Supervisor.PendingFarmingStopEmails();
+                Assert(pending.Count == 1 && pending[0].EmailRequested && pending[0].Kind == VanillaFarmingStopKind.Emergency);
+                h.Restart(); Assert(!h.Supervisor.FarmingEmergencySettings.SendEmail && h.Supervisor.PendingFarmingStopEmails().Count == 1);
+            }
+            using (var h = new Harness())
+            {
+                Assert(h.Observe()); h.E.Work.Dequeue()();
+                var settings = h.Supervisor.FarmingEmergencySettings; settings.SendEmail = true; h.Supervisor.SaveFarmingEmergencySettings(settings);
+                Assert(h.Supervisor.PendingFarmingStopEmails().Count == 0, "Opt-in retroactively authorized an old stop email.");
+            }
+        }
+
+        private static void EmergencyNoticeRestart()
+        {
+            foreach (bool missingLedger in new[] { false, true })
+            using (var h = new Harness())
+            {
+                var settings = h.Supervisor.FarmingEmergencySettings; settings.SendEmail = true; h.Supervisor.SaveFarmingEmergencySettings(settings);
+                Assert(h.Observe()); h.E.Work.Clear();
+                string path = Path.Combine(h.Root, "VanillaReconnect", "farming-stops.json");
+                string original = (string)JObject.Parse(File.ReadAllText(path))["Stops"][0]["EventId"];
+                if (missingLedger) File.Delete(path); // Replay a crash after durable hold intent but before ledger creation.
+                h.Restart(); Assert(h.Observe()); h.E.Work.Dequeue()();
+                Assert(JObject.Parse(File.ReadAllText(path))["Stops"].Count() == 1);
+                Assert(h.Supervisor.PendingFarmingStopEmails().Single().EventId == original, "Restored emergency created duplicate email incidents.");
+            }
+        }
+
+        private static VanillaFleetClientInfo CompletionClient(uint carried = 500, uint cart = 9900)
+        {
+            var state = State(weight: carried, sp: 900, hp: 900);
+            Replace(state, VanillaField.CurrentCartWeight, cart); Replace(state, VanillaField.MaxCartWeight, 10000U);
+            return new VanillaFleetClientInfo { ProcessId = 101, Snapshot = state, Identity = VanillaCharacterIdentity.FromState(state),
+                WeightVerified = true, CartWeightVerified = true, CurrentWeight = carried, MaxWeight = 1000,
+                CurrentCartWeight = cart, MaxCartWeight = 10000 };
+        }
+
+        private static VanillaWeightMaintenanceToken BeginCompletion(Harness h, VanillaFleetClientInfo client)
+        {
+            var settings = h.Supervisor.Settings; settings.Accounts[0].CartMaintenanceEnabled = true;
+            h.Supervisor.Apply(settings, false); Set(h.Supervisor, "running", true); Set(h.A, "ProcessId", (int?)101);
+            h.Samples[101] = client.Snapshot;
+            VanillaWeightMaintenanceToken token; string reason;
+            Assert(h.Supervisor.TryBeginWeightMaintenance(101, out token, out reason), reason);
+            return token;
+        }
+
+        private static void CompletionPersistence()
+        {
+            using (var h = new Harness())
+            {
+                var client = CompletionClient(); var token = BeginCompletion(h, client);
+                h.Supervisor.CompleteWeightFarmingDone(token, "Both limits reached; STOP verified.", client, false, true);
+                Assert(h.Supervisor.IsWeightCompletedHold(token.AccountId) && (bool)Get(h.A, "ScriptRunning") && h.E.Work.Count == 0);
+                Assert(h.Supervisor.PendingFarmingStopEmails().Count == 0, "Email escaped before input cleanup.");
+                h.Supervisor.FinishWeightFarmingCompletion(token);
+                Assert(!(bool)Get(h.A, "ScriptRunning") && h.Supervisor.PendingFarmingStopEmails().Count == 1);
+                h.Restart(); Assert(h.Supervisor.FarmingCompletionHeld(h.Supervisor.Settings.Accounts[0]));
+                var status = h.Supervisor.FarmingStopStatuses().Single();
+                Assert(status.Status == "Completed" && status.ProcessId == null && status.Detail.Contains("9900/10000"));
+                Assert(!(bool)Call(h.Supervisor, "CanLaunch", h.A, 0, DateTimeOffset.UtcNow), "Persisted completion was eligible for relaunch.");
+            }
+        }
+
+        private static void CompletionClose()
+        {
+            using (var h = new Harness())
+            {
+                var client = CompletionClient(); var token = BeginCompletion(h, client);
+                h.Supervisor.SetFarmingCompletionPolicy(true);
+                h.Supervisor.CompleteWeightFarmingDone(token, "Verified STOP", client, true, true);
+                Assert(h.E.Work.Count == 0 && (bool)Get(h.A, "ScriptRunning"));
+                h.Supervisor.FinishWeightFarmingCompletion(token);
+                Assert(h.E.Work.Count == 1 && (bool)Get(h.A, "ScriptRunning") && (bool)Get(h.A, "ClosingForRecovery"));
+                Assert(h.Supervisor.PendingFarmingStopEmails().Count == 0);
+                h.E.AfterOwned = () => h.Supervisor.SetFarmingCompletionPolicy(false);
+                h.E.Work.Dequeue()();
+                Assert(h.E.Closed.SequenceEqual(new[] { 101 }) && !h.E.Immediate.Single() && Get(h.A, "ProcessId") == null);
+                Assert(!(bool)Get(h.A, "ScriptRunning") && h.Supervisor.PendingFarmingStopEmails().Single().CloseState == "closed");
+                Assert(!h.Supervisor.FarmingCompletionHeld(h.Supervisor.Settings.Accounts[1]));
+            }
+        }
+
+        private static void CompletionEvidence()
+        {
+            foreach (string invalid in new[] { "carried", "cart", "unverified", "identity", "stale" })
+            using (var h = new Harness())
+            {
+                var client = CompletionClient(invalid == "carried" ? 499U : 500U, invalid == "cart" ? 9899U : 9900U);
+                var token = BeginCompletion(h, client);
+                if (invalid == "unverified") client.CartWeightVerified = false;
+                if (invalid == "identity") client.Identity = null;
+                if (invalid == "stale") client.Snapshot.SampledAtUtc = DateTimeOffset.UtcNow.AddSeconds(-4);
+                Throws(() => h.Supervisor.CompleteWeightFarmingDone(token, "untrusted", client, false, false));
+                Assert(!h.Supervisor.IsWeightCompletedHold(token.AccountId) && h.E.Work.Count == 0);
+            }
+        }
+
+        private static void CompletionPolicyCancellation()
+        {
+            foreach (bool beforeCleanup in new[] { true, false })
+            using (var h = new Harness())
+            {
+                var client = CompletionClient(); var token = BeginCompletion(h, client); h.Supervisor.SetFarmingCompletionPolicy(true);
+                h.Supervisor.CompleteWeightFarmingDone(token, "Verified STOP", client, true, true);
+                if (beforeCleanup) { h.Supervisor.SetFarmingCompletionPolicy(false); h.Supervisor.SetFarmingCompletionPolicy(true); }
+                h.Supervisor.FinishWeightFarmingCompletion(token);
+                if (!beforeCleanup) { h.Supervisor.SetFarmingCompletionPolicy(false); h.E.Work.Dequeue()(); }
+                Assert(h.E.Closed.Count == 0 && h.Supervisor.IsWeightCompletedHold(token.AccountId));
+                Assert(h.Supervisor.PendingFarmingStopEmails().Single().CloseState == "cancelled");
+            }
+        }
+
+        private static void CompletionCloseFailure()
+        {
+            using (var h = new Harness())
+            {
+                var client = CompletionClient(); var token = BeginCompletion(h, client); h.Supervisor.SetFarmingCompletionPolicy(true);
+                h.Supervisor.CompleteWeightFarmingDone(token, "Verified STOP", client, true, true);
+                h.Supervisor.FinishWeightFarmingCompletion(token); h.E.Denied = true; h.E.Work.Dequeue()();
+                Assert(h.Supervisor.IsWeightCompletedHold(token.AccountId) && h.E.Closed.Count == 0 && (int?)Get(h.A, "ProcessId") == 101);
+                Assert(h.Supervisor.PendingFarmingStopEmails().Single().CloseState == "failed");
+                Assert(h.Supervisor.FarmingStopStatuses().Single().Detail.Contains("access denied"));
+            }
+        }
+
+        private static void CompletionStorageFailure()
+        {
+            using (var h = new Harness())
+            {
+                var client = CompletionClient(); var token = BeginCompletion(h, client); h.Supervisor.SetFarmingCompletionPolicy(true);
+                Directory.CreateDirectory(Path.Combine(h.Root, "VanillaReconnect", "farming-stops.json.tmp"));
+                h.Supervisor.CompleteWeightFarmingDone(token, "Verified STOP", client, true, true);
+                h.Supervisor.FinishWeightFarmingCompletion(token);
+                Assert(h.E.Work.Count == 0 && h.Supervisor.FarmingCompletionHeld(h.Supervisor.Settings.Accounts[0]));
+                Assert(!h.Supervisor.FarmingCompletionHeld(h.Supervisor.Settings.Accounts[1]), "A stop-record save failure held the healthy sibling.");
+                VanillaFarmingStopNotice reservation;
+                Assert(!h.Supervisor.TryReserveFarmingStopEmail(h.Supervisor.PendingFarmingStopEmails().Single().EventId, out reservation));
+            }
+        }
+
+        private static void ClearKindIsolation()
+        {
+            using (var h = new Harness())
+            {
+                Assert(h.Observe(State(pid: 102))); h.E.Work.Dequeue()();
+                var client = CompletionClient(); var token = BeginCompletion(h, client); h.Supervisor.SetFarmingCompletionPolicy(true);
+                h.Supervisor.CompleteWeightFarmingDone(token, "Verified STOP", client, true, true); h.Supervisor.FinishWeightFarmingCompletion(token);
+                h.Supervisor.ClearFarmingEmergencyHolds(); h.E.Work.Dequeue()();
+                Assert(h.E.Closed.SequenceEqual(new[] { 102, 101 }) && h.Supervisor.PendingFarmingStopEmails().Single().CloseState == "closed");
+            }
+        }
+
+        private static void CompletionClear()
+        {
+            using (var h = new Harness())
+            {
+                Assert(h.Observe(State(pid: 102))); h.E.Work.Dequeue()();
+                var client = CompletionClient(); var token = BeginCompletion(h, client);
+                h.Supervisor.CompleteWeightFarmingDone(token, "Verified STOP", client, false, true); h.Supervisor.FinishWeightFarmingCompletion(token);
+                h.Restart(); h.Supervisor.ClearWeightManualHolds();
+                Assert(!h.Supervisor.FarmingCompletionHeld(h.Supervisor.Settings.Accounts[0]) && h.HeldB);
+                h.Restart(); Assert(!h.Supervisor.FarmingCompletionHeld(h.Supervisor.Settings.Accounts[0]) && h.HeldB);
+                Assert(h.Supervisor.PendingFarmingStopEmails().Count == 0);
+            }
+        }
+
+        private static void CompletionIdentityChange()
+        {
+            using (var h = new Harness())
+            {
+                var client = CompletionClient(); var token = BeginCompletion(h, client);
+                h.Supervisor.CompleteWeightFarmingDone(token, "Verified STOP", client, false, true); h.Supervisor.FinishWeightFarmingCompletion(token);
+                var settings = h.Supervisor.Settings; settings.Accounts[0].CharacterName = "Different character";
+                Set(h.Supervisor, "running", false); h.Supervisor.Apply(settings, false);
+                Assert(!h.Supervisor.FarmingCompletionHeld(h.Supervisor.Settings.Accounts[0]) && h.Supervisor.FarmingStopStatuses().Count == 0);
+            }
+        }
+
+        private static void CompletionCorruptStore()
+        {
+            using (var h = new Harness())
+            {
+                File.WriteAllText(Path.Combine(h.Root, "VanillaReconnect", "farming-stops.json"), "{bad-json"); h.Restart();
+                Assert(h.Supervisor.Settings.Accounts.All(h.Supervisor.FarmingCompletionHeld));
+                Assert(h.Supervisor.FarmingStopStatuses().All(stop => stop.Status == "Error"));
+                h.Supervisor.ClearWeightManualHolds(); h.Restart(); Assert(!h.Supervisor.Settings.Accounts.Any(h.Supervisor.FarmingCompletionHeld));
+            }
+        }
+
+        private static void CompletionCurrentPolicy()
+        {
+            foreach (bool disableRow in new[] { false, true })
+            using (var h = new Harness())
+            {
+                var client = CompletionClient(); var token = BeginCompletion(h, client);
+                token.Account.WeightEmailEnabled = true;
+                h.Supervisor.SetFarmingCompletionPolicy(true, true);
+                if (disableRow) ((VanillaReconnectAccount)Get(h.A, "Account")).WeightEmailEnabled = false;
+                else h.Supervisor.SetFarmingCompletionPolicy(false, false);
+                h.Supervisor.CompleteWeightFarmingDone(token, "Verified STOP", client);
+                h.Supervisor.FinishWeightFarmingCompletion(token);
+                if (disableRow) h.E.Work.Dequeue()();
+                Assert(h.Supervisor.PendingFarmingStopEmails().Count == 0, "A stale policy/token authorized a completion email.");
+                if (!disableRow) Assert(h.E.Work.Count == 0 && h.E.Closed.Count == 0, "A stale close policy survived STOP.");
+            }
+        }
+
+        private static void EmergencyClearHistoryFailure()
+        {
+            using (var h = new Harness())
+            {
+                var settings = h.Supervisor.FarmingEmergencySettings; settings.SendEmail = true; h.Supervisor.SaveFarmingEmergencySettings(settings);
+                Assert(h.Observe()); h.E.Work.Dequeue()();
+                VanillaFarmingStopNotice reserved;
+                Assert(h.Supervisor.TryReserveFarmingStopEmail(h.Supervisor.PendingFarmingStopEmails().Single().EventId, out reserved));
+                h.Supervisor.CompleteFarmingStopEmail(reserved.EventId, reserved.EmailAttemptId, true, "Recorded synthetic delivery.");
+                Directory.CreateDirectory(Path.Combine(h.Root, "VanillaReconnect", "farming-emergency-holds.json.tmp"));
+                try { h.Supervisor.ClearFarmingEmergencyHolds(); throw new Exception("Primary hold clear unexpectedly succeeded."); }
+                catch (IOException) { }
+                catch (UnauthorizedAccessException) { }
+                Assert(h.HeldA && h.Supervisor.FarmingStopStatuses().Single().Detail.Contains("Email: sent"));
+                h.Restart(); Assert(h.HeldA && h.Supervisor.FarmingStopStatuses().Single().Detail.Contains("Recorded synthetic delivery"));
+            }
+        }
+
+        private static object Call(object target, string name, params object[] arguments)
+        {
+            try { return target.GetType().GetMethod(name, Flags).Invoke(target, arguments); }
+            catch (TargetInvocationException ex) { throw ex.InnerException; }
         }
 
         private static void Replace<T>(VanillaClientState state, VanillaField field, T value)

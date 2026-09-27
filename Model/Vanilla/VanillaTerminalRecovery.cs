@@ -221,7 +221,7 @@ namespace _4RTools.Model.Vanilla
 
         private void QueueClientRestart(Runtime runtime, DateTimeOffset now, string reason, bool failedAttempt, Func<DateTime> startTimeUtc)
         {
-            if (!running || disposed || FarmingEmergencyHeld(runtime) || !settings.AutoRecover || !runtime.Account.Enabled
+            if (!running || disposed || FarmingEmergencyHeld(runtime) || FarmingCompletionHeld(runtime.Account) || !settings.AutoRecover || !runtime.Account.Enabled
                 || !runtime.ProcessId.HasValue || runtime.ScriptRunning) return;
             if (serverOutage.Active)
             {

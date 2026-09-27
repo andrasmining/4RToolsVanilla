@@ -140,7 +140,6 @@ namespace _4RTools.Model.Vanilla
                 else
                 {
                     weightManualHolds.Remove(token.AccountId);
-                    weightCompletedHolds.Remove(token.AccountId);
                     SetStage(runtime, VanillaReconnectStage.Online, detail ?? "Weight/cart maintenance completed");
                 }
             }
@@ -160,23 +159,8 @@ namespace _4RTools.Model.Vanilla
 
         internal void CompleteWeightFarmingDone(VanillaWeightMaintenanceToken token, string detail)
         {
-            if (token == null) return;
-            lock (gate)
-            {
-                if (token.Generation != weightMaintenanceGeneration) return;
-                Runtime runtime;
-                if (!runtimes.TryGetValue(token.AccountId, out runtime) || runtime.ProcessId != token.ProcessId) return;
-                runtime.ScriptRunning = false;
-                runtime.RecoveryOwned = false;
-                runtime.MovementWatchdog.Reset();
-                runtime.MovementRecoveryPending = false;
-                runtime.NonMinimizedSince = null;
-                weightManualHolds.Remove(token.AccountId);
-                weightCompletedHolds.Add(token.AccountId);
-                SetStage(runtime, VanillaReconnectStage.Stopped,
-                    detail ?? "Farming complete: Cart >=99% and carried weight >=50%; Autobattle intentionally OFF");
-            }
-            RaiseUpdated();
+            CompleteWeightFarmingDone(token, detail, null, false, false);
+            FinishWeightFarmingCompletion(token);
         }
 
         internal bool IsWeightCompletedHold(string accountId)
@@ -215,12 +199,14 @@ namespace _4RTools.Model.Vanilla
             lock (gate)
             {
                 var held = new HashSet<string>(weightManualHolds.Concat(weightCompletedHolds), StringComparer.OrdinalIgnoreCase);
+                ClearFarmingStopRecordsLocked(VanillaFarmingStopKind.Completed);
                 weightManualHolds.Clear();
                 weightCompletedHolds.Clear();
                 foreach (Runtime runtime in runtimes.Values)
-                    if (held.Contains(runtime.Account.Id) && runtime.ProcessId.HasValue && runtime.Account.Enabled
+                    if (held.Contains(runtime.Account.Id) && runtime.Account.Enabled
                         && (runtime.Stage == VanillaReconnectStage.Error || runtime.Stage == VanillaReconnectStage.Stopped))
-                        SetStage(runtime, VanillaReconnectStage.Online, "Weight/Cart hold explicitly cleared");
+                        SetStage(runtime, runtime.ProcessId.HasValue ? VanillaReconnectStage.Online : VanillaReconnectStage.WaitingForClient,
+                            "Weight/Cart hold explicitly cleared");
             }
             VanillaDebugLog.Write("WEIGHT", "event=cart-holds-cleared source=explicit-user-action manualAndCompleted=true.");
             RaiseUpdated();

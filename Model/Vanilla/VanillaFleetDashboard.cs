@@ -339,16 +339,20 @@ namespace _4RTools.Model.Vanilla
     public sealed class VanillaFleetDashboardPanel : UserControl
     {
         private readonly VanillaFleetMonitor monitor;
+        private readonly VanillaReconnectSupervisor supervisor;
         private readonly bool observeClients;
         private readonly Timer timer = new Timer { Interval = 500 };
         private readonly ClientCard[] cards = { new ClientCard("Client 1"), new ClientCard("Client 2") };
         private readonly Label extra = new Label { AutoSize = true, ForeColor = Color.DimGray, Margin = new Padding(8, 4, 0, 0) };
 
         internal bool IsPolling { get { return timer.Enabled; } }
+        public event EventHandler PresentationChanged;
 
-        public VanillaFleetDashboardPanel(VanillaFleetMonitor monitor, bool observeClients = true)
+        public VanillaFleetDashboardPanel(VanillaFleetMonitor monitor, bool observeClients = true,
+            VanillaReconnectSupervisor supervisor = null)
         {
             this.monitor = monitor ?? throw new ArgumentNullException(nameof(monitor));
+            this.supervisor = supervisor;
             this.observeClients = observeClients;
             Dock = DockStyle.Top;
             Height = 150;
@@ -377,21 +381,74 @@ namespace _4RTools.Model.Vanilla
                 return;
             }
             IReadOnlyList<VanillaFleetClientInfo> clients;
+            string observationError = null;
             try { clients = monitor.Poll(); }
             catch (Exception ex)
             {
-                foreach (ClientCard card in cards) card.ShowObservationUnavailable(ex.Message);
-                SetText(extra, "Live memory observation error: " + ex.Message);
-                return;
+                clients = new VanillaFleetClientInfo[0];
+                observationError = ex.Message;
             }
-            for (int i = 0; i < cards.Length; i++) cards[i].ShowClient(i < clients.Count ? clients[i] : null);
+            RenderSnapshot(clients, supervisor?.Settings.Accounts ?? new List<VanillaReconnectAccount>(),
+                supervisor?.Statuses() ?? new VanillaReconnectStatus[0],
+                supervisor?.FarmingStopStatuses() ?? new VanillaFarmingStopStatus[0], DateTimeOffset.UtcNow, observationError);
+            if (observationError != null) { SetText(extra, "Live memory observation error: " + observationError); return; }
             int unavailable = clients.Count(client => client.Error != null);
             if (unavailable > 0) SetText(extra, clients.Count + " Vanilla processes detected; observation stopped for " + unavailable
                 + ". Hover over a client observation error for details.");
             else if (clients.Count <= 2) SetText(extra, clients.Count == 0
-                ? "No Vanilla clients running. Recovery & relog can start the configured clients."
+                ? "No Vanilla clients running. Saved character status remains visible above."
                 : "Live HP, SP, carried weight, Cart weight and location are read from the selected Vanilla build's verified read-only memory map.");
             else SetText(extra, clients.Count + " Vanilla processes detected; the dashboard shows the first two only.");
+        }
+
+        // Saved identities own card positions, so a closed first client cannot be
+        // silently replaced by its healthy sibling or by a reused PID.
+        internal void RenderSnapshot(IReadOnlyList<VanillaFleetClientInfo> clients,
+            IReadOnlyList<VanillaReconnectAccount> accounts, IReadOnlyList<VanillaReconnectStatus> runtimes,
+            IReadOnlyList<VanillaFarmingStopStatus> stops, DateTimeOffset now, string observationError = null)
+        {
+            var configured = accounts.Where(a => a.Enabled && VanillaCharacterRoster.Key(a) != null).Take(cards.Length).ToArray();
+            var used = new HashSet<int>();
+            for (int i = 0; i < configured.Length; i++)
+            {
+                VanillaReconnectAccount account = configured[i];
+                var stop = StopForAccount(account, stops);
+                var identity = VanillaCharacterRoster.FindUnique(account, clients.Select(c => c.Identity),
+                    clients.Select(c => c.ProcessId), now);
+                VanillaFleetClientInfo info = identity == null ? null : clients.First(c => c.ProcessId == identity.ProcessId);
+                if (info != null) used.Add(info.ProcessId);
+                // A confirmed offline stop is stronger than an observation captured
+                // immediately before close. Historical resources stay in Detail only.
+                if (stop != null && (info == null || stop.ProcessId != info.ProcessId)) info = null;
+                var runtime = runtimes.FirstOrDefault(r => string.Equals(r.AccountId, account.Id, StringComparison.Ordinal));
+                string error = observationError;
+                if (error == null && info == null && runtime?.ProcessId.HasValue == true)
+                {
+                    // Error text can describe the assigned PID without claiming that
+                    // its unreadable identity or resources were verified.
+                    var unavailable = clients.FirstOrDefault(c => c.ProcessId == runtime.ProcessId
+                        && c.Identity == null && !string.IsNullOrWhiteSpace(c.Error));
+                    if (unavailable != null) error = "Observation for assigned PID " + runtime.ProcessId.Value + ": " + unavailable.Error;
+                }
+                cards[i].ShowManagedClient(info, account, runtime, stop, error);
+            }
+            var remaining = clients.Where(c => !used.Contains(c.ProcessId)).ToArray();
+            for (int i = configured.Length; i < cards.Length; i++)
+            {
+                int index = i - configured.Length;
+                if (observationError != null) cards[i].ShowObservationUnavailable(observationError);
+                else cards[i].ShowClient(index < remaining.Length ? remaining[index] : null);
+            }
+            PresentationChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        internal static VanillaFarmingStopStatus StopForAccount(VanillaReconnectAccount account,
+            IEnumerable<VanillaFarmingStopStatus> stops)
+        {
+            string key = VanillaCharacterRoster.Key(account);
+            return key == null ? null : stops.Where(s => s != null
+                && VanillaCharacterRoster.Key(s.UserName, s.CharacterName) == key)
+                .OrderByDescending(s => string.Equals(s.Status, "Emergency", StringComparison.Ordinal)).FirstOrDefault();
         }
 
         protected override void Dispose(bool disposing)
@@ -413,6 +470,8 @@ namespace _4RTools.Model.Vanilla
             private readonly Label weight = MetricLabel();
             private readonly Label cartWeight = MetricLabel();
             private readonly Label location = new Label { AutoSize = true, ForeColor = Color.DimGray };
+            private readonly Label state = new Label { AutoSize = true, ForeColor = Color.DimGray };
+            private readonly Label stopDetail = new Label { AutoSize = true, Visible = false, ForeColor = Color.Firebrick };
             private readonly StaticLevelBar hpBar = MetricBar();
             private readonly StaticLevelBar spBar = MetricBar();
             private readonly StaticLevelBar weightBar = MetricBar();
@@ -426,11 +485,13 @@ namespace _4RTools.Model.Vanilla
                 Dock = DockStyle.Fill;
                 Margin = new Padding(4);
                 Padding = new Padding(10);
-                var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 4 };
+                var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 6 };
                 for (int i = 0; i < 4; i++) layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 25));
                 layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                 layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                 layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 10));
+                layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+                layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                 layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
                 layout.Controls.Add(title, 0, 0); layout.SetColumnSpan(title, 4);
                 layout.Controls.Add(hp, 0, 1);
@@ -442,6 +503,10 @@ namespace _4RTools.Model.Vanilla
                 layout.Controls.Add(weightBar, 2, 2);
                 layout.Controls.Add(cartWeightBar, 3, 2);
                 layout.Controls.Add(location, 0, 3); layout.SetColumnSpan(location, 4);
+                layout.Controls.Add(state, 0, 4); layout.SetColumnSpan(state, 4);
+                layout.Controls.Add(stopDetail, 0, 5); layout.SetColumnSpan(stopDetail, 4);
+                layout.SizeChanged += (s, e) =>
+                    stopDetail.MaximumSize = new Size(Math.Max(1, layout.ClientSize.Width - stopDetail.Margin.Horizontal), 0);
                 Controls.Add(layout);
                 ShowClient(null);
             }
@@ -458,6 +523,9 @@ namespace _4RTools.Model.Vanilla
 
             public void ShowClient(VanillaFleetClientInfo info)
             {
+                SetText(state, info == null ? "Offline" : "Running");
+                state.ForeColor = Color.DimGray;
+                SetText(stopDetail, ""); stopDetail.Visible = false;
                 errorTip.SetToolTip(this, info?.Error);
                 errorTip.SetToolTip(location, info?.Error);
                 if (info == null)
@@ -490,6 +558,32 @@ namespace _4RTools.Model.Vanilla
                     && info.MaxCartWeight.Value >= info.CurrentCartWeight.Value)
                     locationText += "   |   Cart left " + (info.MaxCartWeight.Value - info.CurrentCartWeight.Value);
                 SetText(location, info.Error == null ? locationText : "Observation: " + info.Error);
+            }
+
+            public void ShowManagedClient(VanillaFleetClientInfo info, VanillaReconnectAccount account,
+                VanillaReconnectStatus runtime, VanillaFarmingStopStatus stop, string observationError)
+            {
+                ShowClient(info);
+                SetText(title, account.CharacterName);
+                bool assignedUnverified = info == null && runtime?.ProcessId.HasValue == true
+                    && (stop == null || stop.ProcessId.HasValue);
+                bool stoppedRuntime = runtime != null && (runtime.Stage == VanillaReconnectStage.Error
+                    || (runtime.Stage == VanillaReconnectStage.Stopped && !string.IsNullOrWhiteSpace(runtime.Detail)
+                        && !string.Equals(runtime.Detail.Trim(), "Stopped", StringComparison.OrdinalIgnoreCase)));
+                Text = info != null ? "PID " + info.ProcessId
+                    : assignedUnverified ? "PID " + runtime.ProcessId.Value + " [unverified]" : "Offline";
+                if (info == null && (observationError != null || assignedUnverified)) SetText(location, "Observation unavailable");
+                SetText(state, stop?.Status ?? (stoppedRuntime ? runtime.Stage.ToString()
+                    : info == null ? (assignedUnverified ? "Observation unavailable" : "Offline")
+                    : runtime == null ? "Running" : runtime.Stage == VanillaReconnectStage.Stopped ? "Running (recovery off)"
+                    : VanillaAutobattleStatus.Compact(runtime.Stage, runtime.Detail)));
+                state.ForeColor = stop == null ? (runtime?.Stage == VanillaReconnectStage.Error || observationError != null ? Color.Firebrick : Color.DimGray)
+                    : stop.Status == "Completed" ? Color.DarkGreen : Color.Firebrick;
+                stopDetail.ForeColor = state.ForeColor;
+                SetText(stopDetail, stop?.Detail ?? (stoppedRuntime ? runtime.Detail : info == null ? observationError : "") ?? "");
+                stopDetail.Visible = !string.IsNullOrWhiteSpace(stopDetail.Text);
+                errorTip.SetToolTip(state, stop?.Detail ?? runtime?.Detail);
+                errorTip.SetToolTip(this, stop?.Detail ?? observationError ?? info?.Error);
             }
 
             public void ShowObservationUnavailable(string error)

@@ -162,7 +162,8 @@ namespace _4RTools.Forms
             header.Controls.Add(headerStatus, 1, 0);
             root.Controls.Add(header, 0, 0);
 
-            integratedFleetDashboard = new VanillaFleetDashboardPanel(integratedFleetMonitor, observeClients: !smokeTest)
+            integratedFleetDashboard = new VanillaFleetDashboardPanel(integratedFleetMonitor, observeClients: !smokeTest,
+                supervisor: integratedReconnectSupervisor)
             {
                 Dock = DockStyle.Fill,
                 Margin = new Padding(0, 2, 0, 2)

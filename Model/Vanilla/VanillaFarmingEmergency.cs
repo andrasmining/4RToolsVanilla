@@ -12,11 +12,12 @@ namespace _4RTools.Model.Vanilla
         public decimal WeightAbovePercent { get; set; } = 50m;
         public decimal SpBelowPercent { get; set; } = 25m;
         public decimal HpBelowPercent { get; set; } = 50m;
+        public bool SendEmail { get; set; }
 
         public VanillaFarmingEmergencySettings Clone()
         {
             return new VanillaFarmingEmergencySettings
-            { WeightAbovePercent = WeightAbovePercent, SpBelowPercent = SpBelowPercent, HpBelowPercent = HpBelowPercent };
+            { WeightAbovePercent = WeightAbovePercent, SpBelowPercent = SpBelowPercent, HpBelowPercent = HpBelowPercent, SendEmail = SendEmail };
         }
 
         public void Validate()
@@ -128,6 +129,8 @@ namespace _4RTools.Model.Vanilla
             public DateTimeOffset ObservedAt { get; set; }
             public string Ratios { get; set; }
             public string Conditions { get; set; }
+            public string EventId { get; set; }
+            public bool EmailRequested { get; set; }
             public string Detail { get; set; }
             public string CloseState { get; set; } = "pending";
             [JsonIgnore] internal bool ClosePending;
@@ -278,9 +281,11 @@ namespace _4RTools.Model.Vanilla
 
                 if (!alreadyHeld)
                 {
-                    hold = new FarmingEmergencyHold { UserName = evidence.Identity.UserName, CharacterName = evidence.Identity.CharacterName };
+                    hold = new FarmingEmergencyHold { UserName = evidence.Identity.UserName, CharacterName = evidence.Identity.CharacterName,
+                        EventId = Guid.NewGuid().ToString("N"), EmailRequested = settings.FarmingEmergency.SendEmail };
                     farmingEmergencyHolds.Add(key, hold);
                 }
+                if (string.IsNullOrEmpty(hold.EventId)) hold.EventId = Guid.NewGuid().ToString("N");
                 hold.PendingRestored = false;
                 hold.CloseState = "pending";
                 hold.ObservedAt = evidence.At; hold.Ratios = evidence.Ratios;
@@ -299,6 +304,7 @@ namespace _4RTools.Model.Vanilla
                     // The active atomic input owner releases itself in its finally block.
                 }
                 PersistFarmingEmergencyLocked();
+                RecordEmergencyNoticeLocked(runtime, hold, hold.EmailRequested);
                 SetStage(runtime, VanillaReconnectStage.Error, hold.Detail);
                 Log(runtime.Account.Label + ": " + hold.Detail);
                 VanillaDebugLog.Write("EMERGENCY", "event=farming-emergency-triggered accountId=" + runtime.Account.Id
@@ -419,6 +425,7 @@ namespace _4RTools.Model.Vanilla
                 catch (Exception ex) { Log("Emergency exited-reader cleanup failed: " + ex.Message); }
             }
             PersistFarmingEmergencyLocked();
+            UpdateEmergencyNoticeLocked(hold, exited ? "Affected client exit confirmed; automatic relaunch held." : error);
             Log(hold.CharacterName + ": " + hold.Detail);
             VanillaDebugLog.Write("EMERGENCY", "event=farming-emergency-close-result pid=" + pid
                 + " exited=" + exited + " detail='" + hold.Detail + "'.");
@@ -463,6 +470,7 @@ namespace _4RTools.Model.Vanilla
                     || (temporaryInputOwner != null && FarmingEmergencyHeld(temporaryInputOwner.ProcessId)))
                     throw new InvalidOperationException("Affected client input is still stopping; wait for it to finish before clearing emergency holds.");
                 // Do not release the in-memory guard unless the durable clear succeeds.
+                ClearFarmingStopRecordsLocked(VanillaFarmingStopKind.Emergency);
                 WriteFarmingEmergencyDocument(new FarmingEmergencyHold[0]);
                 var cleared = new Dictionary<string, FarmingEmergencyHold>(farmingEmergencyHolds, StringComparer.Ordinal);
                 string clearedFailure = farmingEmergencyStoreFailure;

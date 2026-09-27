@@ -122,8 +122,9 @@ namespace _4RTools.Model.Vanilla
             lock (gate)
             {
                 Runtime runtime;
-                return StartupCancelled(generation) || FarmingEmergencyHeld(account)
-                    || (runtimes.TryGetValue(account.Id, out runtime) && FarmingEmergencyHeld(runtime));
+                return StartupCancelled(generation) || FarmingEmergencyHeld(account) || FarmingCompletionHeld(account)
+                    || (runtimes.TryGetValue(account.Id, out runtime)
+                        && (FarmingEmergencyHeld(runtime) || FarmingCompletionHeld(runtime.Account)));
             }
         }
 
@@ -149,6 +150,11 @@ namespace _4RTools.Model.Vanilla
                             if (FarmingEmergencyHeld(runtime))
                             {
                                 Log(account.Label + ": farming emergency hold; sequential startup skipped this character.");
+                                continue;
+                            }
+                            if (FarmingCompletionHeld(runtime.Account))
+                            {
+                                Log(account.Label + ": farming completed hold; sequential startup skipped this character.");
                                 continue;
                             }
                             existingPid = runtime.ProcessId.HasValue && IsAlive(runtime.ProcessId.Value) ? runtime.ProcessId : null;
@@ -262,12 +268,12 @@ namespace _4RTools.Model.Vanilla
                     {
                         // The synchronous account operation has fully unwound before
                         // the next eligible character may acquire startup ownership.
-                        // An emergency close can also make an in-flight process query fail.
-                        Log(account.Label + ": farming emergency hold cancelled this startup; continuing with eligible characters.");
+                        // A farming close can also make an in-flight process query fail.
+                        Log(account.Label + ": farming stop hold cancelled this startup; continuing with eligible characters.");
                         if (updateSerial != launcherUpdateResetSerial)
                         {
                             updateSerial = launcherUpdateResetSerial; index = -1;
-                            Log("Launcher update reset interrupted by an emergency hold; rechecking eligible characters sequentially.");
+                            Log("Launcher update reset interrupted by a farming hold; rechecking eligible characters sequentially.");
                         }
                     }
                 }
@@ -279,7 +285,7 @@ namespace _4RTools.Model.Vanilla
                     Start();
                 }
                 success = true;
-                result = "Sequential startup complete. Eligible enabled clients reached verified gameplay and minimization; farming emergency holds remain stopped. Continuous supervisor is ON.";
+                result = "Sequential startup complete. Eligible enabled clients reached verified gameplay and minimization; intentional farming holds remain stopped. Continuous supervisor is ON.";
                 Log(result);
                 VanillaDebugLog.Write("STARTUP", result);
             }
@@ -404,11 +410,12 @@ namespace _4RTools.Model.Vanilla
                 {
                     Runtime current;
                     if (StartupCancelled(generation) || !runtimes.TryGetValue(runtime.Account.Id, out current)
-                        || !ReferenceEquals(runtime, current) || !runtime.Account.Enabled || FarmingEmergencyHeld(runtime))
+                        || !ReferenceEquals(runtime, current) || !runtime.Account.Enabled || FarmingEmergencyHeld(runtime)
+                        || FarmingCompletionHeld(runtime.Account))
                         throw new OperationCanceledException("Sequential startup cancelled during server wait.");
                     if (MayStartServerOutageProbeLocked(runtime)) return;
                     foreach (Runtime queued in runtimes.Values.Where(r => r.Account.Enabled && !ReferenceEquals(r, runtime)
-                        && !r.HasBeenOnline && !r.ScriptRunning && !FarmingEmergencyHeld(r)))
+                        && !r.HasBeenOnline && !r.ScriptRunning && !FarmingEmergencyHeld(r) && !FarmingCompletionHeld(r.Account)))
                         SetStage(queued, VanillaReconnectStage.WaitingForServer, "Queued behind server availability check; " + ServerOutageDetail());
                 }
                 RaiseUpdated();
@@ -456,7 +463,8 @@ namespace _4RTools.Model.Vanilla
             try
             {
                 DateTime identity = closeIdentity.Require(pid.Value, () => restartEnvironment.GetStartTimeUtc(pid.Value));
-                Func<bool> cancelled = () => StartupCancelled(generation) || ResumeWorkerCancelled(runtime, pid.Value, operation);
+                Func<bool> cancelled = () => StartupAccountCancelled(generation, runtime.Account)
+                    || ResumeWorkerCancelled(runtime, pid.Value, operation);
                 restartEnvironment.CloseClient(pid.Value, identity, cancelled, action =>
                     RunOwnedClientStep(runtime, pid.Value, cancelled, () => { action(); return true; }));
                 lock (gate)
@@ -576,7 +584,7 @@ namespace _4RTools.Model.Vanilla
                     || ResumeWorkerCancelled(runtime, pid.Value, resumeGeneration));
                 using (var input = new VanillaForegroundInput(pid.Value))
                 {
-                    input.CancellationRequested = () => StartupCancelled(generation)
+                    input.CancellationRequested = () => StartupAccountCancelled(generation, account)
                         || ResumeWorkerCancelled(runtime, pid.Value, resumeGeneration);
                     ConfirmDefaultService(input, VanillaServiceStep.Proxy, account.Label + ": sequential: ");
 
@@ -587,38 +595,38 @@ namespace _4RTools.Model.Vanilla
                     FillDetectedCredentials(input, account, password, pid.Value, true, account.Label + ": sequential: ");
                     VanillaDebugLog.Write("STARTUP", account.Label + ": credentials submitted after login controls were detected and focus verified.");
 
-                    if (StartupCancelled(generation)) throw new OperationCanceledException("Sequential startup cancelled.");
+                    if (StartupAccountCancelled(generation, account)) throw new OperationCanceledException("Sequential startup cancelled.");
                     input.Activate();
                     ConfirmDefaultService(input, VanillaServiceStep.GameServer, account.Label + ": sequential: ");
 
                     WaitForCharacterSurface(input, pid.Value, generation);
                     SelectConfiguredCharacterWithoutCoordinates(input, pid.Value, account,
-                        () => StartupCancelled(generation) || ResumeWorkerCancelled(runtime, pid.Value, resumeGeneration),
+                        () => StartupAccountCancelled(generation, account) || ResumeWorkerCancelled(runtime, pid.Value, resumeGeneration),
                         account.Label + ": sequential: ");
 
                     WaitForAutobattleReady(account, pid.Value,
-                        () => StartupCancelled(generation) || ResumeWorkerCancelled(runtime, pid.Value, resumeGeneration),
+                        () => StartupAccountCancelled(generation, account) || ResumeWorkerCancelled(runtime, pid.Value, resumeGeneration),
                         60000, "Sequential startup post-character");
                     ResumeProgress(runtime, pid.Value, resumeGeneration, "Sequential startup: verified character online; settling 10s before recovery cycle 1/3 (" + account.HotkeyText + " -> 10s -> teleport -> 10s)");
                     PauseCharacterSelection(() => StartupAccountCancelled(generation, account), VanillaAutobattleResumeVerifier.PostLoginSettleMs);
                     ResumeProgress(runtime, pid.Value, resumeGeneration, "Sequential startup: 10s settle complete; starting shared 3-cycle autoattack + verified teleport recovery with 180s restart deadline");
                     VerifyAutobattleResumeAsync(account, pid.Value,
-                        () => StartupCancelled(generation) || ResumeWorkerCancelled(runtime, pid.Value, resumeGeneration),
+                        () => StartupAccountCancelled(generation, account) || ResumeWorkerCancelled(runtime, pid.Value, resumeGeneration),
                         detail => ResumeProgress(runtime, pid.Value, resumeGeneration, "Sequential startup: " + detail))
                         .GetAwaiter().GetResult();
                 }
 
-                if (StartupCancelled(generation) || ResumeWorkerCancelled(runtime, pid.Value, resumeGeneration))
+                if (StartupAccountCancelled(generation, account) || ResumeWorkerCancelled(runtime, pid.Value, resumeGeneration))
                     throw new OperationCanceledException("Sequential startup cancelled.");
                 bool minimized = WaitForOwnedClientSafeMinimize(runtime, pid.Value,
-                    () => StartupCancelled(generation) || ResumeWorkerCancelled(runtime, pid.Value, resumeGeneration),
+                    () => StartupAccountCancelled(generation, account) || ResumeWorkerCancelled(runtime, pid.Value, resumeGeneration),
                     account.Label + ": sequential startup", true);
                 if (!SequentialStartupMayAdvance(true, true, minimized, false))
                     throw new InvalidOperationException(account.Label + ": could not confirm minimization; next client was NOT started.");
 
                 lock (gate)
                 {
-                    if (StartupCancelled(generation) || ResumeWorkerCancelled(runtime, pid.Value, resumeGeneration))
+                    if (StartupAccountCancelled(generation, account) || ResumeWorkerCancelled(runtime, pid.Value, resumeGeneration))
                         throw new OperationCanceledException("Sequential startup cancelled.");
                     runtime.ResumeSent = true;
                     runtime.HasBeenOnline = true;

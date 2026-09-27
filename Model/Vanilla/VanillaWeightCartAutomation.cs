@@ -159,7 +159,8 @@ namespace _4RTools.Model.Vanilla
                 supervisor.CompleteWeightMaintenance(token, false, "Weight/cart maintenance could not acquire the verified client window: " + ex.Message);
                 return new VanillaWeightCartResult { Deferred = true, Message = token.Account.Label + ": cart maintenance deferred: " + ex.Message };
             }
-            using (var input = openedInput)
+            var input = openedInput;
+            try
             {
                 input.CancellationRequested = cancelled;
                 try
@@ -496,7 +497,7 @@ namespace _4RTools.Model.Vanilla
                             + "% (>= " + FarmingDoneCarryPercent.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)
                             + "%); Autobattle remains OFF.";
                         activity(done);
-                        supervisor.CompleteWeightFarmingDone(token, done);
+                        supervisor.CompleteWeightFarmingDone(token, done, afterUi);
                         paused = false;
                         completed = true;
                         VanillaDebugLog.Write("WEIGHT", "event=farming-done trigger=" + trigger + " account='" + token.Account.Label
@@ -589,6 +590,13 @@ namespace _4RTools.Model.Vanilla
                 {
                     if (!completed && cancelled()) VanillaDebugLog.Write("WEIGHT", token.Account.Label + ": weight maintenance cancelled by ownership/supervisor change.");
                 }
+            }
+            finally
+            {
+                // One disposal, after every input path has unwound. Completion
+                // ownership is released even if native resource disposal fails.
+                try { input.Dispose(); }
+                finally { supervisor.FinishWeightFarmingCompletion(token); }
             }
         }
 

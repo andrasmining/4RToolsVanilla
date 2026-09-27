@@ -12,6 +12,7 @@ namespace _4RTools.Model.Vanilla
     {
         private readonly VanillaWeightAlertService service;
         private readonly CheckBox autoCart = new CheckBox { Text = "Cart master", AutoSize = true };
+        private readonly CheckBox closeWhenComplete = new CheckBox { Text = "Close client when farming is complete (Cart >=99% AND Weight >=50%)", AutoSize = true };
         private readonly NumericUpDown autoThreshold = Number(1, 100, 50, 1);
         private readonly NumericUpDown autoRearm = Number(0, 99, 40, 1);
         private readonly CheckBox transferUse = new CheckBox { Text = "Use", AutoSize = true, Checked = true };
@@ -24,7 +25,7 @@ namespace _4RTools.Model.Vanilla
         private bool autobattleStopCtrl, autobattleStopAlt, autobattleStopShift;
         private bool inventoryCtrl, inventoryAlt, inventoryShift, cartCtrl, cartAlt, cartShift;
 
-        private readonly CheckBox enabled = new CheckBox { Text = "E-mail master", AutoSize = true };
+        private readonly CheckBox enabled = new CheckBox { Text = "Normal e-mail", AutoSize = true };
         private readonly NumericUpDown threshold = Number(1, 100, 85, 1);
         private readonly NumericUpDown rearm = Number(0, 99, 80, 1);
         private readonly NumericUpDown pollSeconds = Number(2, 60, 5, 0);
@@ -44,6 +45,7 @@ namespace _4RTools.Model.Vanilla
         private readonly NumericUpDown emergencyWeight = Number(0, 99.9M, 50, 1);
         private readonly NumericUpDown emergencySp = Number(0.1M, 100, 25, 1);
         private readonly NumericUpDown emergencyHp = Number(0.1M, 100, 50, 1);
+        private readonly CheckBox emergencySendEmail = new CheckBox { Text = "E-mail on emergency", AutoSize = true, Margin = new Padding(3, 7, 8, 3) };
         private readonly Label emergencySaveStatus = new Label { AutoSize = true, MaximumSize = new Size(500, 0),
             ForeColor = Color.DimGray, Margin = new Padding(8, 8, 3, 3) };
         private readonly Label emergencyStatus = new Label { AutoSize = true, MaximumSize = new Size(1100, 0), ForeColor = Color.Firebrick };
@@ -74,9 +76,10 @@ namespace _4RTools.Model.Vanilla
                     SaveEmergencySettings(control); e.SuppressKeyPress = e.Handled = true;
                 };
             }
+            emergencySendEmail.CheckedChanged += (s, e) => SaveEmergencySettings(emergencySendEmail);
             save.Click += (s, e) => Guard(SaveSettings);
             test.Click += async (s, e) => await SendTestAsync();
-            clearHold.Click += (s, e) => service.ClearManualHolds();
+            clearHold.Click += (s, e) => Guard(service.ClearManualHolds);
             clearEmergency.Click += (s, e) => Guard(service.ClearEmergencyHolds);
             autobattleStopHotkey.KeyDown += (s, e) => CaptureHotkey(e, HotkeyTarget.AutobattleStop);
             inventoryHotkey.KeyDown += (s, e) => CaptureHotkey(e, HotkeyTarget.Inventory);
@@ -143,10 +146,12 @@ namespace _4RTools.Model.Vanilla
             AddEmergencyField(row, "Weight above %", emergencyWeight);
             AddEmergencyField(row, "SP below %", emergencySp);
             AddEmergencyField(row, "HP below %", emergencyHp);
+            row.Controls.Add(emergencySendEmail);
             row.Controls.Add(emergencySaveStatus); group.Controls.Add(row);
             string description = "Close only the affected client when Weight is strictly above its limit AND SP is strictly below its limit AND HP is strictly below its limit. Equality does not trigger. Saves independently when you leave a field or press Enter; pending Cart/mail edits are unchanged. Changing limits does not clear existing emergency holds.";
             help.SetToolTip(group, description);
             foreach (NumericUpDown control in new[] { emergencyWeight, emergencySp, emergencyHp }) help.SetToolTip(control, description);
+            help.SetToolTip(emergencySendEmail, "Auto-save. Send one emergency notification using the saved SMTP settings, independently of Normal e-mail and character Mail switches. Save SMTP settings first. Sending never delays emergency closure.");
             return group;
         }
 
@@ -167,11 +172,12 @@ namespace _4RTools.Model.Vanilla
                 emergencyWeight.Value = value.WeightAbovePercent;
                 emergencySp.Value = value.SpBelowPercent;
                 emergencyHp.Value = value.HpBelowPercent;
+                emergencySendEmail.Checked = value.SendEmail;
             }
             finally { loadingEmergency = false; }
         }
 
-        private void SaveEmergencySettings(NumericUpDown edited)
+        private void SaveEmergencySettings(Control edited)
         {
             if (disposed || loadingEmergency) return;
             try
@@ -180,12 +186,13 @@ namespace _4RTools.Model.Vanilla
                 // No ValueChanged handler persists partially typed numbers.
                 var active = service.EmergencySettings;
                 var value = active.Clone();
-                if (ReferenceEquals(edited, emergencyWeight)) value.WeightAbovePercent = edited.Value;
-                else if (ReferenceEquals(edited, emergencySp)) value.SpBelowPercent = edited.Value;
-                else if (ReferenceEquals(edited, emergencyHp)) value.HpBelowPercent = edited.Value;
+                if (ReferenceEquals(edited, emergencyWeight)) value.WeightAbovePercent = emergencyWeight.Value;
+                else if (ReferenceEquals(edited, emergencySp)) value.SpBelowPercent = emergencySp.Value;
+                else if (ReferenceEquals(edited, emergencyHp)) value.HpBelowPercent = emergencyHp.Value;
+                else if (ReferenceEquals(edited, emergencySendEmail)) value.SendEmail = emergencySendEmail.Checked;
                 else throw new ArgumentException("Unknown emergency field.", nameof(edited));
                 if (value.WeightAbovePercent == active.WeightAbovePercent && value.SpBelowPercent == active.SpBelowPercent
-                    && value.HpBelowPercent == active.HpBelowPercent) return;
+                    && value.HpBelowPercent == active.HpBelowPercent && value.SendEmail == active.SendEmail) return;
                 service.SaveEmergencySettings(value);
                 LoadEmergencySettings();
                 emergencySaveStatus.ForeColor = Color.DarkGreen; emergencySaveStatus.Text = "Saved";
@@ -205,6 +212,7 @@ namespace _4RTools.Model.Vanilla
         {
             help.SetToolTip(autoCart,
                 "Global Cart master. A character also needs its own Cart switch enabled in Recovery & relog.");
+            help.SetToolTip(closeWhenComplete, "Saved with Weight settings. After verified Autobattle STOP at both Cart >=99% AND carried weight >=50%, close only that character's client completely. Its completed hold prevents automatic restart until you explicitly clear the Weight/Cart hold.");
             help.SetToolTip(autoThreshold,
                 "Carried-weight percentage that triggers a Cart-maintenance pass for Cart-enabled characters.");
             help.SetToolTip(autoRearm,
@@ -218,7 +226,7 @@ namespace _4RTools.Model.Vanilla
             help.SetToolTip(cartHotkey, "Cart hotkey used only after verified Autobattle STOP.");
 
             help.SetToolTip(enabled,
-                "Global e-mail master. A character also needs its own Mail switch. If Cart maintenance is inactive, mail uses the carried-weight threshold. "
+                "Normal weight/farming-done e-mail master. A character also needs its own Mail switch. Emergency e-mail has its own independent switch above and shares these saved SMTP settings. If Cart maintenance is inactive, mail uses the carried-weight threshold. "
                 + "When Cart maintenance is active, mail waits for BOTH Cart >=99% and carried weight >=50%, after verified Autobattle STOP. No carried-only or Cart-only warning is sent.");
             help.SetToolTip(threshold,
                 "Carried-weight warning threshold for Mail-enabled characters whose Cart switch is OFF.");
@@ -233,7 +241,7 @@ namespace _4RTools.Model.Vanilla
         private Control BuildCartGroup()
         {
             var group = new GroupBox { Text = "Automatic Cart maintenance", Dock = DockStyle.Top, AutoSize = true, Padding = new Padding(10) };
-            var table = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 4, RowCount = 5 };
+            var table = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 4, RowCount = 6 };
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180)); table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 330));
             table.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 180)); table.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             table.Controls.Add(autoCart, 0, 0); table.SetColumnSpan(autoCart, 4);
@@ -248,6 +256,7 @@ namespace _4RTools.Model.Vanilla
             table.Controls.Add(categoryHelp, 2, 2);
             Add(table, 3, 0, "Autobattle STOP", autobattleStopHotkey); Add(table, 3, 2, "Inventory hotkey", inventoryHotkey);
             Add(table, 4, 0, "Cart hotkey", cartHotkey);
+            table.Controls.Add(closeWhenComplete, 0, 5); table.SetColumnSpan(closeWhenComplete, 4);
             group.Controls.Add(table); return group;
         }
 
@@ -279,6 +288,7 @@ namespace _4RTools.Model.Vanilla
         {
             loaded = service.Settings;
             autoCart.Checked = loaded.AutoCartEnabled;
+            closeWhenComplete.Checked = loaded.CloseClientWhenFarmingComplete;
             autoThreshold.Value = Clamp(autoThreshold, loaded.AutoCartThresholdPercent); autoRearm.Value = Clamp(autoRearm, loaded.AutoCartRearmPercent);
             transferUse.Checked = loaded.TransferUseItems; transferEquip.Checked = loaded.TransferEquipItems; transferEtc.Checked = loaded.TransferEtcItems;
             autobattleStopKey = loaded.AutobattleStopKey; autobattleStopCtrl = loaded.AutobattleStopCtrl;
@@ -296,6 +306,7 @@ namespace _4RTools.Model.Vanilla
         {
             var value = loaded == null ? new VanillaWeightAlertSettings() : loaded.Clone();
             value.AutoCartEnabled = autoCart.Checked; value.AutoCartThresholdPercent = autoThreshold.Value; value.AutoCartRearmPercent = autoRearm.Value;
+            value.CloseClientWhenFarmingComplete = closeWhenComplete.Checked;
             value.TransferUseItems = transferUse.Checked; value.TransferEquipItems = transferEquip.Checked; value.TransferEtcItems = transferEtc.Checked;
             value.AutobattleStopKey = autobattleStopKey; value.AutobattleStopCtrl = autobattleStopCtrl;
             value.AutobattleStopAlt = autobattleStopAlt; value.AutobattleStopShift = autobattleStopShift;

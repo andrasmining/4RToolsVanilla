@@ -40,6 +40,7 @@ namespace _4RTools.Model.Vanilla
 
         // UI-only cart maintenance. Memory remains read-only; these settings only drive ordinary window input.
         public bool AutoCartEnabled { get; set; }
+        public bool CloseClientWhenFarmingComplete { get; set; }
         public decimal AutoCartThresholdPercent { get; set; } = 50m;
         public decimal AutoCartRearmPercent { get; set; } = 40m;
         public bool TransferUseItems { get; set; } = true;
@@ -223,6 +224,8 @@ namespace _4RTools.Model.Vanilla
         private readonly Dictionary<string, AlertState> states = new Dictionary<string, AlertState>(StringComparer.OrdinalIgnoreCase);
         private System.Threading.Timer timer;
         private System.Threading.Timer emergencyTimer;
+        private System.Threading.Timer stopEmailTimer;
+        private readonly VanillaFarmingStopEmailDispatcher stopEmails;
         private int emergencyPolling;
         private VanillaWeightAlertSettings settings;
         private IReadOnlyList<VanillaWeightObservation> latest = new VanillaWeightObservation[0];
@@ -238,7 +241,17 @@ namespace _4RTools.Model.Vanilla
         public VanillaWeightAlertSettings Settings { get { lock (gate) return settings.Clone(); } }
         public string EmergencyStatus { get { return supervisor.FarmingEmergencyStatus; } }
         public VanillaFarmingEmergencySettings EmergencySettings { get { return supervisor.FarmingEmergencySettings; } }
-        public void SaveEmergencySettings(VanillaFarmingEmergencySettings value) { supervisor.SaveFarmingEmergencySettings(value); }
+        public void SaveEmergencySettings(VanillaFarmingEmergencySettings value)
+        {
+            if (value == null) throw new ArgumentNullException(nameof(value));
+            if (value.SendEmail)
+            {
+                try { Settings.Validate(true); }
+                catch (ArgumentException ex)
+                { throw new ArgumentException("Save valid SMTP settings before enabling emergency e-mail. " + ex.Message, ex); }
+            }
+            supervisor.SaveFarmingEmergencySettings(value);
+        }
         public bool HasEmergencyHolds { get { return supervisor.HasFarmingEmergencyHolds; } }
         public void ClearEmergencyHolds() { supervisor.ClearFarmingEmergencyHolds(); }
 
@@ -251,6 +264,9 @@ namespace _4RTools.Model.Vanilla
             this.supervisor = supervisor;
             cartAutomation = new VanillaWeightCartAutomation(fleetMonitor, supervisor);
             settings = store.Load();
+            supervisor.SetFarmingCompletionPolicy(settings.AutoCartEnabled && settings.CloseClientWhenFarmingComplete,
+                settings.AutoCartEnabled && settings.Enabled);
+            stopEmails = new VanillaFarmingStopEmailDispatcher(supervisor, () => Settings, SendMail, () => IsRunning);
         }
 
         public void Start()
@@ -260,6 +276,8 @@ namespace _4RTools.Model.Vanilla
                 if (disposed || timer != null) return;
                 timer = new System.Threading.Timer(_ => Poll(), null, TimeSpan.Zero, TimeSpan.FromSeconds(settings.PollSeconds));
                 emergencyTimer = new System.Threading.Timer(_ => PollEmergency(), null, 0, 500);
+                // SMTP is independent of the emergency observer and client-close worker.
+                stopEmailTimer = new System.Threading.Timer(_ => stopEmails.Poll(), null, 0, 1000);
                 SetStatusLocked(settings.AutoCartEnabled ? "Weight manager started; automatic cart maintenance is enabled."
                     : settings.Enabled ? "Weight manager started; e-mail alerts are enabled."
                     : "Weight manager started. Verified weight memory remains visible while actions are disabled.");
@@ -270,11 +288,14 @@ namespace _4RTools.Model.Vanilla
         {
             if (value == null) throw new ArgumentNullException(nameof(value));
             value.Validate(false);
-            if (value.Enabled) value.Validate(true);
+            if (value.Enabled || supervisor.FarmingEmergencySettings.SendEmail) value.Validate(true);
             lock (gate)
             {
-                settings = value.Clone();
-                if (save) store.Save(settings);
+                var copy = value.Clone();
+                if (save) store.Save(copy);
+                settings = copy;
+                supervisor.SetFarmingCompletionPolicy(settings.AutoCartEnabled && settings.CloseClientWhenFarmingComplete,
+                    settings.AutoCartEnabled && settings.Enabled);
                 if (timer != null) timer.Change(TimeSpan.Zero, TimeSpan.FromSeconds(settings.PollSeconds));
                 SetStatusLocked(settings.AutoCartEnabled ? "Automatic cart maintenance enabled."
                     : settings.Enabled ? "Weight e-mail alerts enabled." : "Weight actions disabled.");
@@ -349,7 +370,7 @@ namespace _4RTools.Model.Vanilla
 
                     if (cartEnabled)
                     {
-                        ProcessFarmingMilestones(current, observation, mailMode == VanillaWeightMailMode.CartMilestones);
+                        ProcessFarmingMilestones(current, observation);
                         ProcessAutoCart(current, observation);
                     }
                     else if (mailMode == VanillaWeightMailMode.CarriedWeight)
@@ -385,8 +406,7 @@ namespace _4RTools.Model.Vanilla
             };
         }
 
-        private void ProcessFarmingMilestones(VanillaWeightAlertSettings current, VanillaWeightObservation observation,
-            bool mailEnabled)
+        private void ProcessFarmingMilestones(VanillaWeightAlertSettings current, VanillaWeightObservation observation)
         {
             if (!observation.CartVerified || !observation.CartPercent.HasValue) return;
             string accountId = supervisor.ManagedAccountIdForProcess(observation.ProcessId);
@@ -402,24 +422,19 @@ namespace _4RTools.Model.Vanilla
                 // alone still leaves carried capacity available and must not send mail.
                 if (!cartAtDoneThreshold)
                 {
-                    state.DoneNotified = false;
                     state.FarmingDone = false;
                     state.CompletionStopping = false;
-                    state.NextMilestoneMailAt = DateTimeOffset.MinValue;
                     return;
                 }
             }
 
             if (!IsCombinedCapacityReached(observation)) return;
-            bool milestoneMail = mailEnabled && MilestoneMailConfigured(current);
-
             bool alreadyDone;
             lock (gate) alreadyDone = state.FarmingDone;
             alreadyDone = alreadyDone || supervisor.IsWeightCompletedHold(accountId);
             if (alreadyDone)
             {
                 lock (gate) state.FarmingDone = true;
-                if (milestoneMail) TrySendDoneMail(current, observation, accountId, state);
                 return;
             }
 
@@ -449,54 +464,12 @@ namespace _4RTools.Model.Vanilla
                         state.FarmingDone = true;
                         state.NextCompletionAttemptAt = DateTimeOffset.MinValue;
                     }
-                    if (milestoneMail) TrySendDoneMail(current, observation, accountId, state);
                 }
                 finally
                 {
                     lock (gate) state.CompletionStopping = false;
                 }
             });
-        }
-
-        private void TrySendDoneMail(VanillaWeightAlertSettings current, VanillaWeightObservation observation,
-            string accountId, AlertState state)
-        {
-            lock (gate)
-            {
-                if (state.DoneNotified || state.Sending || DateTimeOffset.UtcNow < state.NextMilestoneMailAt) return;
-                state.Sending = true;
-            }
-            try
-            {
-                if (!IsCombinedCapacityReached(observation)
-                    || !supervisor.IsWeightCompletedHold(accountId)
-                    || !TryGetAutomaticMailSettings(observation.ProcessId, accountId,
-                        VanillaWeightMailMode.CartMilestones, out current)) return;
-                SendMail(current, "DONE: " + observation.CharacterName,
-                    "DONE" + Environment.NewLine
-                    + "Character: " + observation.CharacterName + Environment.NewLine
-                    + "Cart: " + observation.CurrentCartWeight + " / " + observation.MaxCartWeight + " ("
-                    + observation.CartPercent.Value.ToString("0.0", CultureInfo.InvariantCulture) + "%)" + Environment.NewLine
-                    + "Carried weight: " + observation.CurrentWeight + " / " + observation.MaxWeight + " ("
-                    + observation.Percent.Value.ToString("0.0", CultureInfo.InvariantCulture) + "%)" + Environment.NewLine
-                    + "Autobattle: OFF" + Environment.NewLine
-                    + "Observed: " + DateTimeOffset.Now.ToString("u", CultureInfo.InvariantCulture));
-                lock (gate)
-                {
-                    state.DoneNotified = true;
-                    state.NextMilestoneMailAt = DateTimeOffset.MinValue;
-                }
-                VanillaDebugLog.Write("WEIGHT", "event=farming-done-email-sent accountId=" + accountId
-                    + " pid=" + observation.ProcessId + " character='" + observation.CharacterName + "'.");
-                SetStatus("DONE notification sent for " + observation.CharacterName + ".");
-            }
-            catch (Exception ex)
-            {
-                lock (gate) state.NextMilestoneMailAt = DateTimeOffset.UtcNow + TimeSpan.FromMinutes(5);
-                VanillaDebugLog.Write("WEIGHT", "event=farming-done-email-failed accountId=" + accountId
-                    + " pid=" + observation.ProcessId + " reason='" + ex.Message + "'.");
-            }
-            finally { lock (gate) state.Sending = false; }
         }
 
         private void ProcessAutoCart(VanillaWeightAlertSettings current, VanillaWeightObservation observation)
@@ -646,18 +619,16 @@ namespace _4RTools.Model.Vanilla
 
         public void ClearManualHolds()
         {
+            supervisor.ClearWeightManualHolds();
             lock (gate) foreach (AlertState state in states.Values)
             {
                 state.ManualHold = false;
                 state.CartArmed = true;
                 state.FarmingDone = false;
                 state.CompletionStopping = false;
-                state.DoneNotified = false;
                 state.NextCartAttemptAt = DateTimeOffset.MinValue;
                 state.NextCompletionAttemptAt = DateTimeOffset.MinValue;
-                state.NextMilestoneMailAt = DateTimeOffset.MinValue;
             }
-            supervisor.ClearWeightManualHolds();
             SetStatus("Weight manual holds cleared. Automatic cart maintenance can run again after the threshold is reached.");
         }
 
@@ -720,6 +691,7 @@ namespace _4RTools.Model.Vanilla
                     message.Subject = (value.SubjectPrefix ?? "").Trim() + (string.IsNullOrWhiteSpace(value.SubjectPrefix) ? "" : " ") + subject;
                     message.Body = body;
                     client.EnableSsl = value.UseSsl;
+                    client.Timeout = 30000;
                     client.DeliveryMethod = SmtpDeliveryMethod.Network;
                     client.UseDefaultCredentials = false;
                     if (!string.IsNullOrWhiteSpace(value.SmtpUser)) client.Credentials = new NetworkCredential(value.SmtpUser, password);
@@ -760,6 +732,7 @@ namespace _4RTools.Model.Vanilla
                 disposed = true;
                 timer?.Dispose(); timer = null;
                 emergencyTimer?.Dispose(); emergencyTimer = null;
+                stopEmailTimer?.Dispose(); stopEmailTimer = null;
             }
         }
 
@@ -770,14 +743,12 @@ namespace _4RTools.Model.Vanilla
             public bool CartArmed = true;
             public bool CartRunning;
             public bool ManualHold;
-            public bool DoneNotified;
             public bool FarmingDone;
             public bool CompletionStopping;
             public DateTimeOffset? LastSentAt;
             public DateTimeOffset NextAttemptAt = DateTimeOffset.MinValue;
             public DateTimeOffset NextCartAttemptAt = DateTimeOffset.MinValue;
             public DateTimeOffset NextCompletionAttemptAt = DateTimeOffset.MinValue;
-            public DateTimeOffset NextMilestoneMailAt = DateTimeOffset.MinValue;
         }
     }
 }

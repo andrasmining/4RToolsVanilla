@@ -302,6 +302,7 @@ namespace _4RTools.Model.Vanilla
             try { statuses = supervisor.Statuses(); }
             catch { statuses = new List<VanillaReconnectStatus>(); }
             var byId = statuses.ToDictionary(s => s.AccountId, StringComparer.OrdinalIgnoreCase);
+            var stops = supervisor.FarmingStopStatuses();
 
             foreach (DataGridViewRow row in accounts.Rows)
             {
@@ -351,6 +352,18 @@ namespace _4RTools.Model.Vanilla
                 row.Cells["Slot"].ToolTipText = observed?.CharacterSlot != null ? "Verified character slot from memory (1-based)"
                     : "Saved character slot (1-15). Unknown is not slot 1; the current shipped profile has no verified slot mapping.";
 
+                var stopped = VanillaFleetDashboardPanel.StopForAccount(profile, stops);
+                if (stopped != null)
+                {
+                    if (accounts.Columns.Contains("RuntimePid"))
+                        row.Cells["RuntimePid"].Value = stopped.ProcessId.HasValue ? stopped.ProcessId.Value.ToString() : "—";
+                    if (accounts.Columns.Contains("RuntimeStatus"))
+                    {
+                        row.Cells["RuntimeStatus"].Value = stopped.Status;
+                        row.Cells["RuntimeStatus"].ToolTipText = stopped.Detail;
+                    }
+                    continue;
+                }
                 VanillaReconnectStatus runtime;
                 if (!byId.TryGetValue(id, out runtime))
                 {

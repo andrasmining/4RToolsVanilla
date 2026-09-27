@@ -609,7 +609,7 @@ namespace _4RTools.Model.Vanilla
             this.baseDirectory = Path.GetFullPath(baseDirectory);
             sessionLog = new VanillaSessionLog(this.baseDirectory);
             store = new VanillaReconnectStore(this.baseDirectory);
-            settings = store.Load(); InitializeFarmingEmergency(); RebuildRuntimes();
+            settings = store.Load(); InitializeFarmingEmergency(); InitializeFarmingStops(); RebuildRuntimes();
         }
         public VanillaReconnectSettings Settings { get { lock (gate) return settings.Clone(); } }
         public bool IsRunning { get { lock (gate) return running; } }
@@ -626,6 +626,7 @@ namespace _4RTools.Model.Vanilla
                 { reason = "the selected character is not part of the active supervisor"; return false; }
                 if (!runtime.Account.Enabled) { reason = "the selected character is disabled"; return false; }
                 if (FarmingEmergencyHeld(runtime)) { reason = FarmingEmergencyDetail(runtime); return false; }
+                if (FarmingCompletionHeld(runtime.Account)) { reason = FarmingStopDetail(runtime.Account.Id); return false; }
                 if (!runtime.ProcessId.HasValue) { reason = "the selected character has no verified running client"; return false; }
                 if (runtime.Stage != VanillaReconnectStage.Online) { reason = "the selected character is not in the stable Online stage"; return false; }
                 VanillaCharacterIdentity observed = CurrentCharacter(runtime.ProcessId.Value);
@@ -654,7 +655,9 @@ namespace _4RTools.Model.Vanilla
                         return new VanillaReconnectStatus { AccountId = account.Id, Label = account.Label, Stage = VanillaReconnectStage.Stopped,
                             VisualState = VanillaVisualState.Unknown, Detail = "No runtime state", UpdatedAt = DateTimeOffset.UtcNow };
                     return new VanillaReconnectStatus { AccountId = runtime.Account.Id, Label = runtime.Account.Label, ProcessId = runtime.ProcessId,
-                        Stage = runtime.Stage, VisualState = runtime.Visual, Detail = runtime.Detail, UpdatedAt = runtime.StageAt };
+                        Stage = runtime.Stage, VisualState = runtime.Visual,
+                        Detail = FarmingStopStatuses().FirstOrDefault(stop => stop.AccountId == runtime.Account.Id)?.Detail ?? runtime.Detail,
+                        UpdatedAt = runtime.StageAt };
                 }).ToList();
             }
         }
@@ -774,6 +777,7 @@ namespace _4RTools.Model.Vanilla
             {
                 Runtime runtime;
                 if (!runtimes.TryGetValue(accountId, out runtime)) throw new ArgumentException("Unknown account.");
+                if (FarmingCompletionHeld(runtime.Account)) return;
                 if (!runtime.ProcessId.HasValue) throw new InvalidOperationException("This account has no assigned Vanilla client.");
                 int pid = runtime.ProcessId.Value;
                 QueueClientRestart(runtime, restartEnvironment.UtcNow, "Manual restart/relogin requested", false, () => restartEnvironment.GetStartTimeUtc(pid));
@@ -827,6 +831,8 @@ namespace _4RTools.Model.Vanilla
                     ResetTerminalEvidence(runtime);
                     if (FarmingEmergencyHeld(runtime))
                     { runtime.NextRecoveryAt = null; SetStage(runtime, VanillaReconnectStage.Error, FarmingEmergencyDetail(runtime)); }
+                    else if (FarmingCompletionHeld(runtime.Account))
+                    { runtime.NextRecoveryAt = null; SetStage(runtime, VanillaReconnectStage.Stopped, FarmingStopDetail(runtime.Account.Id)); }
                     else if (failedDuringRecovery) ScheduleRecoveryFailureLocked(runtime, now, "PID " + old + " exited during recovery");
                     else
                     {
@@ -848,7 +854,7 @@ namespace _4RTools.Model.Vanilla
                     LogMovementWatchdogDiagnostic(runtime, now, null, "temporary action"); runtime.MovementWatchdog.Reset(); continue;
                 }
                 if (weightCompletedHolds.Contains(runtime.Account.Id))
-                { LogMovementWatchdogDiagnostic(runtime, now, null, "farming completed hold"); SetStage(runtime, VanillaReconnectStage.Stopped, "Farming complete: Cart >=99% and carried weight >=50%; Autobattle intentionally OFF"); continue; }
+                { LogMovementWatchdogDiagnostic(runtime, now, null, "farming completed hold"); SetStage(runtime, VanillaReconnectStage.Stopped, FarmingStopDetail(runtime.Account.Id)); continue; }
                 if (weightManualHolds.Contains(runtime.Account.Id))
                 { LogMovementWatchdogDiagnostic(runtime, now, null, "Cart manual hold"); SetStage(runtime, VanillaReconnectStage.Error, "Weight/cart maintenance needs manual emptying; automatic recovery is held for this character only"); continue; }
                 if (runtime.ProcessId.HasValue && CharacterOwnershipChanged(runtime, runtime.ProcessId.Value)) { ReleaseChangedCharacter(runtime); continue; }
@@ -982,7 +988,7 @@ namespace _4RTools.Model.Vanilla
         }
         private bool CanLaunch(Runtime runtime, int aliveCount, DateTimeOffset now)
         {
-            if (!settings.AutoRecover || runtime.ScriptRunning || FarmingEmergencyHeld(runtime)) return false;
+            if (!settings.AutoRecover || runtime.ScriptRunning || FarmingEmergencyHeld(runtime) || FarmingCompletionHeld(runtime.Account)) return false;
             if (aliveCount >= settings.MaxClients) { DeferReservedServerProbeLocked(runtime, "No free client slot for the server availability check"); return false; }
             string missing = MissingCharacterConfiguration(runtime.Account);
             if (missing != null)
@@ -1013,7 +1019,7 @@ namespace _4RTools.Model.Vanilla
         }
         private void Launch(Runtime runtime, DateTimeOffset now)
         {
-            if (FarmingEmergencyHeld(runtime)) return;
+            if (FarmingEmergencyHeld(runtime) || FarmingCompletionHeld(runtime.Account)) return;
             string executable = settings.LaunchExecutable, arguments = settings.LaunchArguments ?? "";
             string accountId = runtime.Account.Id, label = runtime.Account.Label;
             int generation = Interlocked.Increment(ref resumeVerificationGeneration);
@@ -1031,7 +1037,8 @@ namespace _4RTools.Model.Vanilla
                         Runtime current;
                         aborted = disposed || !running || generation != Volatile.Read(ref resumeVerificationGeneration)
                             || !runtimes.TryGetValue(accountId, out current) || !ReferenceEquals(runtime, current)
-                            || current.ResumeOperationGeneration != generation || !current.ScriptRunning || FarmingEmergencyHeld(current);
+                            || current.ResumeOperationGeneration != generation || !current.ScriptRunning || FarmingEmergencyHeld(current)
+                            || FarmingCompletionHeld(current.Account);
                         return aborted;
                     }
                 };
@@ -1083,7 +1090,8 @@ namespace _4RTools.Model.Vanilla
         }
         private void QueueLogin(Runtime runtime, bool freshLaunch, string reason)
         {
-            if (!runtime.RecoveryOwned || runtime.ScriptRunning || !runtime.ProcessId.HasValue || FarmingEmergencyHeld(runtime)) return;
+            if (!runtime.RecoveryOwned || runtime.ScriptRunning || !runtime.ProcessId.HasValue || FarmingEmergencyHeld(runtime)
+                || FarmingCompletionHeld(runtime.Account)) return;
             Runtime owner = OtherRecoveryOwner(runtime);
             if (owner != null)
             { SetStage(runtime, VanillaReconnectStage.WaitingForGameplay, "Queued: waiting for " + owner.Account.Label + " recovery to finish before login input"); return; }
@@ -1346,6 +1354,7 @@ namespace _4RTools.Model.Vanilla
         private static DateTime SafeStart(Process p) { try { return p.StartTime; } catch { return DateTime.MaxValue; } }
         private void RebuildRuntimes()
         {
+            RestoreFarmingCompletionHoldsLocked();
             var wanted = new HashSet<string>(settings.Accounts.Select(a => a.Id), StringComparer.OrdinalIgnoreCase);
             foreach (string old in runtimes.Keys.Where(k => !wanted.Contains(k)).ToList()) runtimes.Remove(old);
             foreach (var account in settings.Accounts)
@@ -1360,6 +1369,8 @@ namespace _4RTools.Model.Vanilla
                 }
                 if (FarmingEmergencyHeld(runtime))
                     SetStage(runtime, VanillaReconnectStage.Error, FarmingEmergencyDetail(runtime));
+                else if (FarmingCompletionHeld(account))
+                    SetStage(runtime, VanillaReconnectStage.Stopped, FarmingStopDetail(account.Id));
             }
         }
         private void RecreateTimer()
@@ -1371,6 +1382,8 @@ namespace _4RTools.Model.Vanilla
         {
             if (FarmingEmergencyHeld(runtime))
             { stage = VanillaReconnectStage.Error; detail = FarmingEmergencyDetail(runtime); }
+            else if (FarmingCompletionHeld(runtime?.Account))
+            { stage = VanillaReconnectStage.Stopped; detail = FarmingStopDetail(runtime.Account.Id); }
             if (runtime.Stage == stage && runtime.Detail == detail) return;
             runtime.Stage = stage; runtime.Detail = detail; runtime.StageAt = DateTimeOffset.UtcNow;
         }
