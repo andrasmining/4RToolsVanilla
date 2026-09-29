@@ -1,6 +1,11 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Globalization;
+using System.Drawing;
+using System.Drawing.Imaging;
+using System.Reflection;
+using System.Windows.Forms;
 using System.Linq;
 using _4RTools.Model.Vanilla;
 
@@ -23,7 +28,17 @@ namespace Vanilla.Diagnostics.Tests
                 { "Unmappable Cart deltas remain explicitly unassigned", UnassignedWeight },
                 { "Farm monitor rejects ambiguous duplicate automatic mappings", DuplicateAutomaticMapping },
                 { "Manual item edits drive total zeny and zeny per hour", ManualValueCalculation },
-                { "Farm monitor state survives store round trip", StoreRoundTrip }
+                { "Farm monitor state survives store round trip", StoreRoundTrip },
+                { "Reset rejects transfers that began in the previous run", ResetRejectsLateTransfer },
+                { "Pause resume rejects transfers that crossed the pause boundary", PauseRejectsLateTransfer },
+                { "Cart transfer tickets are consumed exactly once", TransferDeduplication },
+                { "Reset and transfer accounting stay isolated per character", CharacterIsolation },
+                { "Failed writes preserve the last saved rows timer and counts", WriteRollback },
+                { "Calculator write failures do not propagate into Cart maintenance", TransferWriteFailure },
+                { "Corrupt calculator storage remains intact without disabling the host", CorruptStorage },
+                { "Zero unit weight is rejected without changing saved definitions", RejectZeroWeight },
+                { "Localized decimal prices cannot be mistaken for grouped integers", DecimalPrices },
+                { "Paused grid edits preserve precise prices and latest transfer counts", PausedGridPrecision }
             };
             foreach (var test in tests)
             {
@@ -208,6 +223,218 @@ namespace Vanilla.Diagnostics.Tests
             {
                 try { if (Directory.Exists(directory)) Directory.Delete(directory, true); } catch { }
             }
+        }
+
+        private static void ResetRejectsLateTransfer()
+        {
+            WithService(service =>
+            {
+                service.ReplaceItems("a", "A", new[] { Item("loot", "Loot", 10, 0, VanillaFarmAutoSource.Etc, 1) });
+                service.ResetAt("a", "A", Epoch);
+                var beforeReset = service.BeginCartTransfer("a", "A", VanillaFarmAutoSource.Etc);
+                service.ResetAt("a", "A", Epoch.AddSeconds(5));
+                Assert(!service.RecordCartTransferAt(beforeReset, 300, Epoch.AddSeconds(6)), "Old transfer entered a reset run.");
+                Equal(0L, service.SnapshotAt("a", "A", Epoch.AddSeconds(7)).Items[0].Count, "Reset count was polluted.");
+                var fresh = service.BeginCartTransfer("a", "A", VanillaFarmAutoSource.Etc);
+                Assert(service.RecordCartTransferAt(fresh, 20, Epoch.AddSeconds(8)), "New run did not accept its own transfer.");
+            });
+        }
+
+        private static void PauseRejectsLateTransfer()
+        {
+            WithService(service =>
+            {
+                service.ResetAt("a", "A", Epoch);
+                var old = service.BeginCartTransfer("a", "A", VanillaFarmAutoSource.Use);
+                service.SetRunningAt("a", "A", false, Epoch.AddSeconds(1));
+                Assert(service.BeginCartTransfer("a", "A", VanillaFarmAutoSource.Use) == null, "Paused run issued a ticket.");
+                service.SetRunningAt("a", "A", true, Epoch.AddSeconds(2));
+                Assert(!service.RecordCartTransferAt(old, 30, Epoch.AddSeconds(3)), "Pre-pause transfer was counted after resume.");
+                Equal(0L, service.SnapshotAt("a", "A", Epoch.AddSeconds(4)).UnassignedWeight, "Stale transfer changed unassigned weight.");
+            });
+        }
+
+        private static void TransferDeduplication()
+        {
+            WithService(service =>
+            {
+                service.ReplaceItems("a", "A", new[] { Item("loot", "Loot", 10, 0, VanillaFarmAutoSource.Etc, 1) });
+                service.ResetAt("a", "A", Epoch);
+                var ticket = service.BeginCartTransfer("a", "A", VanillaFarmAutoSource.Etc);
+                Assert(service.RecordCartTransferAt(ticket, 123, Epoch.AddSeconds(1)), "First delivery failed.");
+                Assert(!service.RecordCartTransferAt(ticket, 123, Epoch.AddSeconds(2)), "Duplicate delivery was counted.");
+                Equal(123L, service.SnapshotAt("a", "A", Epoch.AddSeconds(3)).Items[0].Count, "Duplicate quantity reached totals.");
+                var replacement = new VanillaFarmMonitorService(new VanillaFarmMonitorStore(service.StorePath));
+                var foreign = service.BeginCartTransfer("a", "A", VanillaFarmAutoSource.Etc);
+                Assert(!replacement.RecordCartTransferAt(foreign, 123, Epoch.AddSeconds(4)), "A replacement service accepted an old owner's ticket.");
+            });
+        }
+
+        private static void CharacterIsolation()
+        {
+            WithService(service =>
+            {
+                foreach (string id in new[] { "a", "b" })
+                {
+                    service.ReplaceItems(id, id, new[] { Item("loot", "Loot", 5, 0, VanillaFarmAutoSource.Etc, 1) });
+                    service.ResetAt(id, id, Epoch);
+                }
+                var b = service.BeginCartTransfer("b", "b", VanillaFarmAutoSource.Etc);
+                service.ResetAt("a", "a", Epoch.AddSeconds(1));
+                Assert(service.RecordCartTransferAt(b, 40, Epoch.AddSeconds(2)), "Reset of A invalidated B.");
+                Equal(0L, service.SnapshotAt("a", "a", Epoch.AddSeconds(3)).Items[0].Count, "B polluted A's count.");
+                Equal(40L, service.SnapshotAt("b", "b", Epoch.AddSeconds(3)).Items[0].Count, "B lost its count.");
+            });
+        }
+
+        private static void WriteRollback()
+        {
+            WithService(service =>
+            {
+                service.ReplaceItems("a", "A", new[] { Item("loot", "Loot", 10, 12, VanillaFarmAutoSource.Etc, 1) });
+                string saved = File.ReadAllText(service.StorePath);
+                Directory.CreateDirectory(service.StorePath + ".tmp");
+                ExpectFailure(() => service.ReplaceItems("a", "A", new[] { Item("other", "Other", 20, 900, VanillaFarmAutoSource.Etc, 1) }));
+                Equal("loot", service.SnapshotAt("a", "A", Epoch).Items[0].Id, "Failed save replaced rows in memory.");
+                ExpectFailure(() => service.ResetAt("a", "A", Epoch));
+                var snapshot = service.SnapshotAt("a", "A", Epoch.AddHours(1));
+                Assert(!snapshot.Running, "Failed reset started the timer.");
+                Equal(12L, snapshot.Items[0].Count, "Failed reset cleared counts.");
+                Equal(saved, File.ReadAllText(service.StorePath), "Failed save altered durable state.");
+                Directory.Delete(service.StorePath + ".tmp");
+                service.ResetAt("a", "A", Epoch);
+                Directory.CreateDirectory(service.StorePath + ".tmp");
+                ExpectFailure(() => service.SetRunningAt("a", "A", false, Epoch.AddMinutes(1)));
+                Assert(service.SnapshotAt("a", "A", Epoch.AddMinutes(2)).Running, "Failed pause changed run state.");
+                Equal(TimeSpan.FromMinutes(2), service.SnapshotAt("a", "A", Epoch.AddMinutes(2)).Elapsed, "Failed pause changed elapsed time.");
+            });
+        }
+
+        private static void TransferWriteFailure()
+        {
+            WithService(service =>
+            {
+                service.ReplaceItems("a", "A", new[] { Item("loot", "Loot", 10, 0, VanillaFarmAutoSource.Etc, 1) });
+                service.ResetAt("a", "A", Epoch);
+                var ticket = service.BeginCartTransfer("a", "A", VanillaFarmAutoSource.Etc);
+                string saved = File.ReadAllText(service.StorePath);
+                Directory.CreateDirectory(service.StorePath + ".tmp");
+                string error;
+                Assert(!service.TryRecordCartTransfer(ticket, 100, out error), "Failed transfer save reported success.");
+                Assert(!string.IsNullOrWhiteSpace(error), "Missing-transfer warning was lost.");
+                var snapshot = service.SnapshotAt("a", "A", Epoch.AddSeconds(5));
+                Equal(0L, snapshot.Items[0].Count, "Failed transfer save leaked an unsaved count.");
+                Assert(!string.IsNullOrWhiteSpace(snapshot.Warning), "UI snapshot has no visible incomplete-total warning.");
+                Equal(saved, File.ReadAllText(service.StorePath), "Failed transfer changed the file.");
+                Directory.Delete(service.StorePath + ".tmp");
+                Assert(!service.TryRecordCartTransfer(ticket, 100, out error), "A failed delivery ticket was reused.");
+                service.ResetAt("a", "A", Epoch.AddSeconds(6));
+                Assert(string.IsNullOrWhiteSpace(service.SnapshotAt("a", "A", Epoch.AddSeconds(7)).Warning), "Reset did not clear the old warning.");
+            });
+        }
+
+        private static void CorruptStorage()
+        {
+            WithService(service =>
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(service.StorePath));
+                File.WriteAllText(service.StorePath, "{broken calculator data");
+                var unavailable = new VanillaFarmMonitorService(new VanillaFarmMonitorStore(service.StorePath));
+                Assert(!string.IsNullOrWhiteSpace(unavailable.SnapshotAt("a", "A", Epoch).Warning), "Corrupt file has no visible diagnostic.");
+                ExpectFailure(() => unavailable.ResetAt("a", "A", Epoch));
+                Equal("{broken calculator data", File.ReadAllText(service.StorePath), "Corrupt data was replaced with empty defaults.");
+                Assert(unavailable.BeginCartTransfer("a", "A", VanillaFarmAutoSource.Use) == null, "Unavailable store accepted automatic accounting.");
+            });
+        }
+
+        private static void RejectZeroWeight()
+        {
+            WithService(service =>
+            {
+                ExpectFailure(() => service.ReplaceItems("a", "A", new[] { Item("bad", "Invalid", 10, 0, VanillaFarmAutoSource.Use, 0) }));
+                Equal(0, service.SnapshotAt("a", "A", Epoch).Items.Count, "Zero unit weight was retained.");
+            });
+        }
+
+        private static readonly Type CardType = typeof(VanillaFarmMonitorPanel).GetNestedType("FarmMonitorCard", BindingFlags.NonPublic);
+        private const BindingFlags InstancePrivate = BindingFlags.Instance | BindingFlags.NonPublic;
+
+        private static void DecimalPrices()
+        {
+            CultureInfo previous = CultureInfo.CurrentCulture;
+            try
+            {
+                CultureInfo.CurrentCulture = CultureInfo.GetCultureInfo("de-DE");
+                MethodInfo parse = CardType.GetMethod("ParseDecimal", BindingFlags.Static | BindingFlags.NonPublic);
+                foreach (string value in new[] { "585.56", "585,56" })
+                    Equal(585.56m, (decimal)parse.Invoke(null, new object[] { value, "Price" }), "Decimal separator inflated a price.");
+            }
+            finally { CultureInfo.CurrentCulture = previous; }
+        }
+
+        private static void PausedGridPrecision()
+        {
+            WithService(service =>
+            {
+                const decimal price = 159.625714285714m;
+                service.ReplaceItems("a", "A", new[] { Item("loot", "Mixed loot estimate", price, 0, VanillaFarmAutoSource.Etc, 1) });
+                using (var help = new ToolTip())
+                using (var card = (Control)Activator.CreateInstance(CardType, InstancePrivate, null,
+                    new object[] { service, new VanillaReconnectAccount { Id = "a", Label = "A" }, help }, CultureInfo.InvariantCulture))
+                {
+                    var grid = (DataGridView)CardType.GetField("grid", InstancePrivate).GetValue(card);
+                    Assert(!grid.ReadOnly, "Paused rows are not editable.");
+                    grid.Rows[0].Cells["Count"].Value = "50";
+                    CardType.GetMethod("SaveGrid", InstancePrivate).Invoke(card, new object[0]);
+                    var snapshot = service.SnapshotAt("a", "A", Epoch);
+                    Equal(price, snapshot.Items[0].ZenyPerItem, "Editing a count rounded an unrelated price.");
+                    Equal(50L, snapshot.Items[0].Count, "Paused count edit was not saved.");
+                    string output = Environment.GetEnvironmentVariable("FOURRTOOLS_DATA_ROOT");
+                    if (string.IsNullOrWhiteSpace(output)) throw new Exception("Isolated artifact root is required.");
+                    Directory.CreateDirectory(output);
+                    using (var host = new Form { ClientSize = new Size(1100, 360), ShowInTaskbar = false })
+                    {
+                        card.Dock = DockStyle.Fill;
+                        card.AutoSize = false;
+                        host.Controls.Add(card);
+                        host.Show();
+                        foreach (int width in new[] { 520, 1100, 1900 })
+                        {
+                            host.ClientSize = new Size(width, 360);
+                            host.PerformLayout();
+                            card.PerformLayout();
+                            Application.DoEvents();
+                            Assert(grid.Width <= card.ClientSize.Width, "Farm grid overflowed its card.");
+                            using (var bitmap = new Bitmap(host.ClientSize.Width, host.ClientSize.Height))
+                            {
+                                host.DrawToBitmap(bitmap, host.ClientRectangle);
+                                bitmap.Save(Path.Combine(output, "farm-monitor-" + width + ".png"), ImageFormat.Png);
+                            }
+                        }
+                        host.Controls.Remove(card);
+                        host.Hide();
+                    }
+                    service.ResetAt("a", "A", Epoch);
+                    CardType.GetMethod("RefreshSnapshot", InstancePrivate).Invoke(card, new object[] { true });
+                    Assert(grid.ReadOnly, "Running grid allowed edits.");
+                    service.RecordCartTransferAt("a", "A", VanillaFarmAutoSource.Etc, 7, Epoch.AddSeconds(1));
+                    Equal("0", Convert.ToString(grid.Rows[0].Cells["Count"].Value), "Expected the display to await its next tick.");
+                    var pauseButton = (Button)CardType.GetField("pause", InstancePrivate).GetValue(card);
+                    typeof(Button).GetMethod("OnClick", InstancePrivate).Invoke(pauseButton, new object[] { EventArgs.Empty });
+                    Assert(!grid.ReadOnly, "Pausing failed to unlock the grid immediately.");
+                    Equal("7", Convert.ToString(grid.Rows[0].Cells["Count"].Value), "Pause retained a stale count from before the last transfer.");
+                    grid.Rows[0].Cells["Item"].Value = "Renamed loot";
+                    CardType.GetMethod("SaveGrid", InstancePrivate).Invoke(card, new object[0]);
+                    Equal(7L, service.SnapshotAt("a", "A", Epoch.AddHours(2)).Items[0].Count, "Paused row edit lost the most recent automatic transfer.");
+                }
+            });
+        }
+
+        private static void ExpectFailure(System.Action action)
+        {
+            bool failed = false;
+            try { action(); } catch { failed = true; }
+            Assert(failed, "Expected operation to fail.");
         }
 
         private static VanillaFarmMonitorItem Item(string id, string name, decimal zeny, long count,

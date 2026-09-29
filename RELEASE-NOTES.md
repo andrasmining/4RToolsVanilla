@@ -1,14 +1,21 @@
-# 4RTools Vanilla 0.6.87
+# 4RTools Vanilla 0.6.88
 
-## Farming value monitor
+## Resettable farming calculator
 
-- Add a generic per-character farming calculator to the Weight tab. Each character can keep its own item rows with editable item name, zeny per item, count, automatic Cart source and unit weight.
-- Show live active elapsed time, total farmed zeny and zeny/hour so two farming characters or maps can be compared directly over the same run.
-- RESET clears counts, elapsed time and unassigned Cart weight while preserving item definitions, then immediately starts a fresh run. PAUSE freezes time and automatic counting so prices/counts/mappings can be edited or manual loot can be added before resuming.
-- Feed automatic counts only from Cart transfers that are already proven by a verified read-only Cart-weight increase. Use/Equip/Etc mappings convert that verified weight delta to quantity only when the configured unit weight divides exactly; an optional Any row can serve as a fallback.
-- Never infer an item identity from an inventory category. Unmapped or non-divisible transfer weight remains visibly Unassigned so the user can correct the run manually instead of receiving a guessed count.
-- Persist farming-monitor definitions, counts, run state and elapsed-time checkpoints in the Vanilla app-data folder.
+The Weight tab contains an independent calculator for each of the two active characters: editable item name, zeny per item, count, automatic Cart source and weight per item. Total value and zeny/hour use the configured prices and active timer. No monster or item list is hard-coded.
+
+START / RESUME continues the same run. PAUSE freezes the monitor timer and automatic counting, without stopping gameplay, and unlocks the rows for manual corrections or additional untransferred loot. RESET clears counts, elapsed time and unassigned weight, preserves item definitions and immediately starts a new run. Empty carried farming loot provides the cleanest baseline. Definitions and session totals are kept in the stable application-data folder.
+
+Automatic quantities are derived only from transfers already proven by the existing Cart-weight verification. A configured category/weight mapping is a user assumption, not visual or memory-based item identification. Use one automatic row per category; for mixed items in the same category use a combined average value (an estimate), or enter exact item counts manually while paused. Unmapped/non-divisible weight remains explicitly unassigned. Manual final-inventory additions should stay paused to avoid counting them again when they are later transferred.
+
+## Reliability improvements
+
+- Reset, pause/resume and edited definitions invalidate in-flight accounting tickets. A late transfer cannot enter a new run or be counted twice. Other characters remain independent.
+- Failed calculator writes preserve the previously saved rows, counts and timer. Calculator storage errors never interrupt the existing Cart cleanup/resume path; incomplete totals receive a visible warning. An unreadable/corrupt calculator file is preserved and disables only the calculator, not game supervision.
+- Decimal point/comma prices are read without interpreting the decimal point as a thousands separator. Editing another field no longer rounds a high-precision price. Enter prices without thousands separators.
+- Pausing refreshes the saved counts immediately, including a transfer arriving between UI ticks, so subsequent manual edits cannot overwrite it with a stale displayed count.
+- Rebuilt calculator cards dispose their old controls rather than retaining hidden resources.
 
 ## Validation
 
-Windows release gates cover farming-monitor reset/pause/resume behavior, exact Cart-delta quantity conversion, ambiguous/unassigned handling, manual value calculations and persistence alongside the existing full diagnostics suite. The release pipeline also runs Debug/Release builds, portable-package smoke tests, native test-owned process checks, isolated mock UI rendering and public updater verification. These checks do not operate a live Vanilla/Gepard client.
+Windows gates run Debug and Release builds, the full isolated diagnostics suites (including reset/pause/resume, stale/duplicate transfers, character isolation, persistence failures, decimal input and paused UI edits), native test-owned process checks, portable-package smoke tests, mock UI rendering, and real public release updater discovery/download/staging verification. These checks are not live Vanilla/Gepard gameplay or an in-place update on the user's VPS.
