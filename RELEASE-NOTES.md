@@ -13,6 +13,7 @@ Automatic quantities are derived only from transfers already proven by the exist
 - Reset, pause/resume and edited definitions invalidate in-flight accounting tickets. A late transfer cannot enter a new run or be counted twice. Other characters remain independent.
 - Failed calculator writes preserve the previously saved rows, counts and timer. Calculator storage errors never interrupt the existing Cart cleanup/resume path; incomplete totals receive a visible warning. An unreadable/corrupt calculator file is preserved and disables only the calculator, not game supervision.
 - Decimal point/comma prices are read without interpreting the decimal point as a thousands separator. Editing another field no longer rounds a high-precision price. Enter prices without thousands separators.
+- Pausing refreshes the saved counts immediately, including a transfer arriving between UI ticks, so subsequent manual edits cannot overwrite it with a stale displayed count.
 - Rebuilt calculator cards dispose their old controls rather than retaining hidden resources.
 
 ## Validation

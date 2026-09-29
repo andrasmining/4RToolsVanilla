@@ -234,8 +234,8 @@ namespace _4RTools.Model.Vanilla
                 help.SetToolTip(pause, "Stop elapsed time and automatic Cart-transfer counting so item rows can be edited.");
                 help.SetToolTip(start, "Continue elapsed time and automatic counting without clearing the current run.");
 
-                start.Click += (s, e) => Guard(() => monitor.SetRunning(account.Id, DisplayName(account), true));
-                pause.Click += (s, e) => Guard(() => monitor.SetRunning(account.Id, DisplayName(account), false));
+                start.Click += (s, e) => ChangeRunState(true);
+                pause.Click += (s, e) => ChangeRunState(false);
                 reset.Click += (s, e) => ResetRun();
                 add.Click += (s, e) => AddItem();
                 delete.Click += (s, e) => DeleteItem();
@@ -454,6 +454,17 @@ namespace _4RTools.Model.Vanilla
                         snapshot.Items.Where(item => !string.Equals(item.Id, id, StringComparison.OrdinalIgnoreCase)));
                     status.ForeColor = Color.DarkGreen;
                     status.Text = "Item deleted";
+                    RefreshSnapshot(true);
+                });
+            }
+
+            private void ChangeRunState(bool running)
+            {
+                Guard(() =>
+                {
+                    monitor.SetRunning(account.Id, DisplayName(account), running);
+                    // Refresh once at the transition: a transfer may have arrived
+                    // since the last UI tick. Paused edits must start from saved counts.
                     RefreshSnapshot(true);
                 });
             }

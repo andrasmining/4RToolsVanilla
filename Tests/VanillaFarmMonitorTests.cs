@@ -38,7 +38,7 @@ namespace Vanilla.Diagnostics.Tests
                 { "Corrupt calculator storage remains intact without disabling the host", CorruptStorage },
                 { "Zero unit weight is rejected without changing saved definitions", RejectZeroWeight },
                 { "Localized decimal prices cannot be mistaken for grouped integers", DecimalPrices },
-                { "Paused grid edits preserve precise configured prices", PausedGridPrecision }
+                { "Paused grid edits preserve precise prices and latest transfer counts", PausedGridPrecision }
             };
             foreach (var test in tests)
             {
@@ -417,9 +417,15 @@ namespace Vanilla.Diagnostics.Tests
                     service.ResetAt("a", "A", Epoch);
                     CardType.GetMethod("RefreshSnapshot", InstancePrivate).Invoke(card, new object[] { true });
                     Assert(grid.ReadOnly, "Running grid allowed edits.");
-                    service.SetRunningAt("a", "A", false, Epoch.AddSeconds(10));
-                    CardType.GetMethod("RefreshSnapshot", InstancePrivate).Invoke(card, new object[] { true });
-                    Assert(!grid.ReadOnly, "Pausing failed to unlock the grid.");
+                    service.RecordCartTransferAt("a", "A", VanillaFarmAutoSource.Etc, 7, Epoch.AddSeconds(1));
+                    Equal("0", Convert.ToString(grid.Rows[0].Cells["Count"].Value), "Expected the display to await its next tick.");
+                    var pauseButton = (Button)CardType.GetField("pause", InstancePrivate).GetValue(card);
+                    typeof(Button).GetMethod("OnClick", InstancePrivate).Invoke(pauseButton, new object[] { EventArgs.Empty });
+                    Assert(!grid.ReadOnly, "Pausing failed to unlock the grid immediately.");
+                    Equal("7", Convert.ToString(grid.Rows[0].Cells["Count"].Value), "Pause retained a stale count from before the last transfer.");
+                    grid.Rows[0].Cells["Item"].Value = "Renamed loot";
+                    CardType.GetMethod("SaveGrid", InstancePrivate).Invoke(card, new object[0]);
+                    Equal(7L, service.SnapshotAt("a", "A", Epoch.AddHours(2)).Items[0].Count, "Paused row edit lost the most recent automatic transfer.");
                 }
             });
         }
