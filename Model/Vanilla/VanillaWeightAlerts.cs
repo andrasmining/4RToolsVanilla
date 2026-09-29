@@ -224,6 +224,7 @@ namespace _4RTools.Model.Vanilla
         private readonly VanillaWeightAlertStore store;
         private readonly VanillaFleetMonitor fleetMonitor;
         private readonly VanillaReconnectSupervisor supervisor;
+        private readonly VanillaFarmMonitorService farmMonitor;
         private readonly VanillaWeightCartAutomation cartAutomation;
         private readonly object gate = new object();
         private readonly Dictionary<string, AlertState> states = new Dictionary<string, AlertState>(StringComparer.OrdinalIgnoreCase);
@@ -244,6 +245,11 @@ namespace _4RTools.Model.Vanilla
         public string Status { get { lock (gate) return status; } }
         public IReadOnlyList<VanillaWeightObservation> Latest { get { lock (gate) return latest.ToArray(); } }
         public VanillaWeightAlertSettings Settings { get { lock (gate) return settings.Clone(); } }
+        public VanillaFarmMonitorService FarmMonitor { get { return farmMonitor; } }
+        public IReadOnlyList<VanillaReconnectAccount> FarmMonitorAccounts
+        {
+            get { return supervisor.Settings.Accounts.Select(account => account.Clone()).ToArray(); }
+        }
         public string EmergencyStatus { get { return supervisor.FarmingEmergencyStatus; } }
         public VanillaFarmingEmergencySettings EmergencySettings { get { return supervisor.FarmingEmergencySettings; } }
         public void SaveEmergencySettings(VanillaFarmingEmergencySettings value)
@@ -273,7 +279,11 @@ namespace _4RTools.Model.Vanilla
             this.store = store ?? throw new ArgumentNullException(nameof(store));
             this.fleetMonitor = fleetMonitor;
             this.supervisor = supervisor;
-            cartAutomation = new VanillaWeightCartAutomation(fleetMonitor, supervisor);
+            string monitorDirectory = Path.GetDirectoryName(this.store.FilePath);
+            if (string.IsNullOrWhiteSpace(monitorDirectory)) monitorDirectory = VanillaAppData.RootDirectory;
+            farmMonitor = new VanillaFarmMonitorService(
+                new VanillaFarmMonitorStore(Path.Combine(monitorDirectory, "farm-monitor.json")));
+            cartAutomation = new VanillaWeightCartAutomation(fleetMonitor, supervisor, farmMonitor);
             settings = store.Load();
             supervisor.SetFarmingCompletionPolicy(settings.AutoCartEnabled && settings.CloseClientWhenFarmingComplete,
                 settings.AutoCartEnabled && settings.Enabled);
