@@ -372,6 +372,8 @@ namespace _4RTools.Model.Vanilla
                 VanillaFarmMonitorSession session = Find(accountId);
                 if (session == null || !session.Running) return;
                 UpdateLabel(session, label);
+                CommitElapsed(session, now);
+                session.RunningSinceUtc = now;
 
                 VanillaFarmMonitorItem item = session.Items.FirstOrDefault(row => row.AutoSource == source)
                     ?? session.Items.FirstOrDefault(row => row.AutoSource == VanillaFarmAutoSource.Any);
