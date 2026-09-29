@@ -42,7 +42,6 @@ namespace _4RTools.Model.Vanilla
         {
             if (string.IsNullOrWhiteSpace(Id)) Id = Guid.NewGuid().ToString("N");
             Name = (Name ?? "").Trim();
-            if (UnitWeight == 0) UnitWeight = 1;
         }
 
         internal void Validate()
