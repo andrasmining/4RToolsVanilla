@@ -81,6 +81,7 @@ namespace Vanilla.Diagnostics.Tests
             failed += VanillaRecoveryWatchdogTests.Run();
             failed += VanillaRecoveryScreenDiagnosisTests.Run();
             failed += VanillaFarmingEmergencyTests.Run();
+            failed += VanillaFarmMonitorTests.Run();
             failed += VanillaStopNotificationTests.Run();
             failed += VanillaServerClosedPatternTests.Run();
             failed += VanillaServerOutageTests.Run();
