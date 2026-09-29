@@ -241,6 +241,10 @@ namespace _4RTools.Model.Vanilla
                         while (moved < MaxTransfers)
                         {
                             ThrowIfCancelled(cancelled);
+                            VanillaFarmAutoSource farmSource = category == 0 ? VanillaFarmAutoSource.Use
+                                : category == 1 ? VanillaFarmAutoSource.Equip : VanillaFarmAutoSource.Etc;
+                            VanillaFarmMonitorTransfer farmTransfer = farmMonitor == null ? null
+                                : farmMonitor.BeginCartTransfer(token.AccountId, token.Account.Label, farmSource);
                             VanillaCartWeightSample cartBefore = CurrentCartWeight(token.ProcessId);
                             if (cartBefore == null)
                             {
@@ -459,12 +463,14 @@ namespace _4RTools.Model.Vanilla
                             if (cartAfter.Maximum != cartBefore.Maximum || cartAfter.Current > cartBefore.Maximum)
                                 throw new InvalidOperationException("Cart progress contradicts its verified capacity; no further transfer is safe.");
                             uint cartWeightDelta = cartAfter.Current - cartBefore.Current;
-                            if (farmMonitor != null && cartWeightDelta > 0)
+                            if (farmMonitor != null && farmTransfer != null)
                             {
-                                VanillaFarmAutoSource source = category == 0 ? VanillaFarmAutoSource.Use
-                                    : category == 1 ? VanillaFarmAutoSource.Equip
-                                    : VanillaFarmAutoSource.Etc;
-                                farmMonitor.RecordCartTransfer(token.AccountId, token.Account.Label, source, cartWeightDelta);
+                                string farmError;
+                                bool recorded = farmMonitor.TryRecordCartTransfer(farmTransfer, cartWeightDelta, out farmError);
+                                if (farmError != null) activity(token.Account.Label + ": " + farmError);
+                                VanillaDebugLog.Write("FARM", "event=farm-monitor-transfer accountId=" + token.AccountId
+                                    + " source=" + farmSource + " cartWeightDelta=" + cartWeightDelta
+                                    + " recorded=" + recorded + ".");
                             }
                             moved++;
                             categoryMoved++;

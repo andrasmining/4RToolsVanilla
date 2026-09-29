@@ -69,6 +69,7 @@ namespace _4RTools.Model.Vanilla
             cards.SuspendLayout();
             try
             {
+                foreach (Control oldCard in cards.Controls.Cast<Control>().ToArray()) oldCard.Dispose();
                 cards.Controls.Clear();
                 cards.ColumnCount = Math.Max(1, accounts.Count);
                 cards.ColumnStyles.Clear();
@@ -221,14 +222,14 @@ namespace _4RTools.Model.Vanilla
                     "RESET clears counts, elapsed time and unassigned Cart weight, keeps item definitions, and immediately starts a new run. "
                     + "For the cleanest comparison, empty carried farming loot before reset. "
                     + "Automatic rows count only verified Cart-weight increases. Choose one automatic row per Use/Equip/Etc category and enter that item's unit weight. "
-                    + "If a transfer cannot be mapped safely, its Cart-weight delta remains Unassigned instead of being guessed. Pause to edit prices/counts or add manual loot.");
+                    + "If a transfer cannot be mapped safely, its Cart-weight delta remains Unassigned instead of being guessed. Pause to edit prices/counts or add manual loot. Automatic source mappings are YOUR assumptions, not item recognition. Mixed items in one category require a combined average price or manual counts.");
                 root.Controls.Add(info, 0, 4);
                 Controls.Add(root);
 
                 help.SetToolTip(summary, "Total value is sum(count × zeny/item). Zeny/hour uses only the monitor's active elapsed time.");
                 help.SetToolTip(grid,
                     "Item and zeny/item are generic. Count is editable while paused. Auto=Manual never changes automatically. "
-                    + "Use/Equip/Etc maps verified Cart transfers from that category using Weight/item. Any is a fallback for a category without its own mapping.");
+                    + "Use/Equip/Etc maps verified Cart transfers from that category using Weight/item. Any is a fallback for a category without its own mapping. Enter decimal prices without thousands separators; your local decimal separator and a decimal point are accepted.");
                 help.SetToolTip(reset, "Clear this character's counts/time/unassigned deltas, keep item definitions, and start immediately.");
                 help.SetToolTip(pause, "Stop elapsed time and automatic Cart-transfer counting so item rows can be edited.");
                 help.SetToolTip(start, "Continue elapsed time and automatic counting without clearing the current run.");
@@ -246,6 +247,7 @@ namespace _4RTools.Model.Vanilla
                     status.Text = "Invalid item value.";
                 };
 
+                SizeChanged += (s, e) => status.MaximumSize = new Size(Math.Max(180, ClientSize.Width - 30), 0);
                 RefreshSnapshot(true);
             }
 
@@ -296,6 +298,12 @@ namespace _4RTools.Model.Vanilla
                     + "  •  " + FormatZeny(snapshot.TotalZeny)
                     + "  •  " + FormatZeny(snapshot.ZenyPerHour) + "/h";
 
+                if (!string.IsNullOrWhiteSpace(snapshot.Warning))
+                {
+                    status.ForeColor = Color.Firebrick;
+                    status.Text = snapshot.Warning;
+                }
+
                 if (snapshot.UnassignedWeight > 0)
                 {
                     unassigned.Visible = true;
@@ -332,7 +340,7 @@ namespace _4RTools.Model.Vanilla
                     foreach (VanillaFarmMonitorItem item in snapshot.Items)
                     {
                         int row = grid.Rows.Add(item.Id, item.Name,
-                            item.ZenyPerItem.ToString("0.##", CultureInfo.CurrentCulture),
+                            item.ZenyPerItem.ToString("0.############################", CultureInfo.CurrentCulture),
                             item.Count.ToString(CultureInfo.InvariantCulture),
                             item.AutoSource.ToString(),
                             item.UnitWeight.ToString(CultureInfo.InvariantCulture));
@@ -481,8 +489,8 @@ namespace _4RTools.Model.Vanilla
             {
                 string text = Convert.ToString(raw, CultureInfo.CurrentCulture);
                 decimal value;
-                if (!decimal.TryParse(text, NumberStyles.Number, CultureInfo.CurrentCulture, out value)
-                    && !decimal.TryParse(text, NumberStyles.Number, CultureInfo.InvariantCulture, out value))
+                if (!decimal.TryParse(text, NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint | NumberStyles.AllowLeadingWhite | NumberStyles.AllowTrailingWhite, CultureInfo.CurrentCulture, out value)
+                    && !decimal.TryParse(text, NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint | NumberStyles.AllowLeadingWhite | NumberStyles.AllowTrailingWhite, CultureInfo.InvariantCulture, out value))
                     throw new ArgumentException(caption + " is not a valid number.");
                 return value;
             }

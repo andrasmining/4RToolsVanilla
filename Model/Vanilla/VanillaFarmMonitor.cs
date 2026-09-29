@@ -66,6 +66,7 @@ namespace _4RTools.Model.Vanilla
     {
         public string AccountId { get; set; } = "";
         public string Label { get; set; } = "";
+        public Guid Generation { get; set; } = Guid.NewGuid();
         public bool Running { get; set; }
         public long ElapsedTicks { get; set; }
         public DateTimeOffset? RunningSinceUtc { get; set; }
@@ -80,6 +81,7 @@ namespace _4RTools.Model.Vanilla
         {
             AccountId = (AccountId ?? "").Trim();
             Label = (Label ?? "").Trim();
+            if (Generation == Guid.Empty) Generation = Guid.NewGuid();
             if (ElapsedTicks < 0) ElapsedTicks = 0;
             if (UnassignedUseWeight < 0) UnassignedUseWeight = 0;
             if (UnassignedEquipWeight < 0) UnassignedEquipWeight = 0;
@@ -178,6 +180,7 @@ namespace _4RTools.Model.Vanilla
         public long UnassignedEquipWeight { get; internal set; }
         public long UnassignedEtcWeight { get; internal set; }
         public IReadOnlyList<VanillaFarmMonitorItem> Items { get; internal set; }
+        public string Warning { get; internal set; }
 
         public long UnassignedWeight
         {
@@ -231,21 +234,40 @@ namespace _4RTools.Model.Vanilla
         }
     }
 
+    // One ticket covers one physical transfer, including its bounded retries. It is
+    // invalidated by Pause/Resume, Reset or edited definitions, and consumed once.
+    public sealed class VanillaFarmMonitorTransfer
+    {
+        internal VanillaFarmMonitorService Owner;
+        internal string AccountId;
+        internal string Label;
+        internal Guid Generation;
+        internal VanillaFarmAutoSource Source;
+        internal bool Consumed;
+    }
+
     public sealed class VanillaFarmMonitorService
     {
         private readonly object gate = new object();
         private readonly VanillaFarmMonitorStore store;
+        private readonly Dictionary<string, string> warnings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        private readonly string loadError;
         private VanillaFarmMonitorDocument document;
 
-        public VanillaFarmMonitorService()
-            : this(new VanillaFarmMonitorStore())
-        {
-        }
+        public VanillaFarmMonitorService() : this(new VanillaFarmMonitorStore()) { }
 
         internal VanillaFarmMonitorService(VanillaFarmMonitorStore store)
         {
             this.store = store ?? throw new ArgumentNullException(nameof(store));
-            document = store.Load();
+            try { document = store.Load(); }
+            catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException
+                || ex is JsonException || ex is ArgumentException)
+            {
+                // A broken optional calculator file must not disable Cart/emergency
+                // supervision, and must never be overwritten with empty defaults.
+                document = new VanillaFarmMonitorDocument();
+                loadError = "Farming monitor unavailable; saved data was preserved. " + ex.Message;
+            }
         }
 
         public string StorePath { get { return store.FilePath; } }
@@ -261,14 +283,19 @@ namespace _4RTools.Model.Vanilla
             lock (gate)
             {
                 VanillaFarmMonitorSession session = Find(accountId);
+                string warning;
+                warnings.TryGetValue(accountId, out warning);
                 if (session == null)
-                    return EmptySnapshot(accountId, label);
+                {
+                    var empty = EmptySnapshot(accountId, label);
+                    empty.Warning = loadError ?? warning;
+                    return empty;
+                }
 
                 TimeSpan elapsed = session.ElapsedAt(now);
                 decimal total = session.TotalZeny();
                 decimal perHour = elapsed.TotalSeconds >= 1.0
-                    ? total * 3600m / (decimal)elapsed.TotalSeconds
-                    : 0m;
+                    ? total / (decimal)elapsed.TotalSeconds * 3600m : 0m;
                 return new VanillaFarmMonitorSnapshot
                 {
                     AccountId = session.AccountId,
@@ -280,7 +307,8 @@ namespace _4RTools.Model.Vanilla
                     UnassignedUseWeight = session.UnassignedUseWeight,
                     UnassignedEquipWeight = session.UnassignedEquipWeight,
                     UnassignedEtcWeight = session.UnassignedEtcWeight,
-                    Items = session.Items.Select(item => item.Clone()).ToArray()
+                    Items = session.Items.Select(item => item.Clone()).ToArray(),
+                    Warning = loadError ?? warning
                 };
             }
         }
@@ -294,21 +322,17 @@ namespace _4RTools.Model.Vanilla
         {
             lock (gate)
             {
-                VanillaFarmMonitorSession session = GetOrCreate(accountId, label);
-                UpdateLabel(session, label);
-                if (session.Running == running) return;
-                if (running)
+                VanillaFarmMonitorSession current = Find(accountId);
+                if (current != null && current.Running == running) return;
+                ApplyLocked(() =>
                 {
-                    session.Running = true;
-                    session.RunningSinceUtc = now;
-                }
-                else
-                {
+                    VanillaFarmMonitorSession session = GetOrCreate(accountId, label);
+                    UpdateLabel(session, label);
                     CommitElapsed(session, now);
-                    session.Running = false;
-                    session.RunningSinceUtc = null;
-                }
-                SaveLocked();
+                    session.Running = running;
+                    session.RunningSinceUtc = running ? (DateTimeOffset?)now : null;
+                    session.Generation = Guid.NewGuid();
+                });
             }
         }
 
@@ -321,16 +345,20 @@ namespace _4RTools.Model.Vanilla
         {
             lock (gate)
             {
-                VanillaFarmMonitorSession session = GetOrCreate(accountId, label);
-                UpdateLabel(session, label);
-                foreach (VanillaFarmMonitorItem item in session.Items) item.Count = 0;
-                session.UnassignedUseWeight = 0;
-                session.UnassignedEquipWeight = 0;
-                session.UnassignedEtcWeight = 0;
-                session.ElapsedTicks = 0;
-                session.Running = true;
-                session.RunningSinceUtc = now;
-                SaveLocked();
+                ApplyLocked(() =>
+                {
+                    VanillaFarmMonitorSession session = GetOrCreate(accountId, label);
+                    UpdateLabel(session, label);
+                    foreach (VanillaFarmMonitorItem item in session.Items) item.Count = 0;
+                    session.UnassignedUseWeight = 0;
+                    session.UnassignedEquipWeight = 0;
+                    session.UnassignedEtcWeight = 0;
+                    session.ElapsedTicks = 0;
+                    session.Running = true;
+                    session.RunningSinceUtc = now;
+                    session.Generation = Guid.NewGuid();
+                });
+                warnings.Remove(accountId);
             }
         }
 
@@ -339,85 +367,107 @@ namespace _4RTools.Model.Vanilla
             if (items == null) throw new ArgumentNullException(nameof(items));
             lock (gate)
             {
-                VanillaFarmMonitorSession session = GetOrCreate(accountId, label);
-                if (session.Running)
-                    throw new InvalidOperationException("Pause the farming monitor before editing item rows.");
-                var replacement = items.Select(item =>
+                ApplyLocked(() =>
                 {
-                    if (item == null) throw new ArgumentException("Farming-monitor item rows cannot be null.", nameof(items));
-                    return item.Clone();
-                }).ToList();
-                var probe = new VanillaFarmMonitorSession
-                {
-                    AccountId = session.AccountId,
-                    Label = string.IsNullOrWhiteSpace(label) ? session.Label : label.Trim(),
-                    Items = replacement
-                };
-                probe.Validate();
-                UpdateLabel(session, label);
-                session.Items = replacement;
-                SaveLocked();
+                    VanillaFarmMonitorSession session = GetOrCreate(accountId, label);
+                    if (session.Running)
+                        throw new InvalidOperationException("Pause the farming monitor before editing item rows.");
+                    session.Items = items.Select(item =>
+                    {
+                        if (item == null) throw new ArgumentException("Farming-monitor item rows cannot be null.", nameof(items));
+                        return item.Clone();
+                    }).ToList();
+                    UpdateLabel(session, label);
+                    session.Generation = Guid.NewGuid();
+                });
+                warnings.Remove(accountId);
             }
         }
 
-        public void RecordCartTransfer(string accountId, string label, VanillaFarmAutoSource source, uint cartWeightDelta)
+        public VanillaFarmMonitorTransfer BeginCartTransfer(string accountId, string label, VanillaFarmAutoSource source)
         {
-            RecordCartTransferAt(accountId, label, source, cartWeightDelta, DateTimeOffset.UtcNow);
-        }
-
-        internal void RecordCartTransferAt(string accountId, string label, VanillaFarmAutoSource source,
-            uint cartWeightDelta, DateTimeOffset now)
-        {
-            if (string.IsNullOrWhiteSpace(accountId) || cartWeightDelta == 0) return;
-            if (source != VanillaFarmAutoSource.Use && source != VanillaFarmAutoSource.Equip
-                && source != VanillaFarmAutoSource.Etc) return;
-
-            string log = null;
+            if (string.IsNullOrWhiteSpace(accountId) || !IsCartSource(source)) return null;
             lock (gate)
             {
                 VanillaFarmMonitorSession session = Find(accountId);
-                if (session == null || !session.Running) return;
-                UpdateLabel(session, label);
-                CommitElapsed(session, now);
-                session.RunningSinceUtc = now;
-
-                VanillaFarmMonitorItem item = session.Items.FirstOrDefault(row => row.AutoSource == source)
-                    ?? session.Items.FirstOrDefault(row => row.AutoSource == VanillaFarmAutoSource.Any);
-                if (item == null || item.UnitWeight == 0 || cartWeightDelta % item.UnitWeight != 0)
+                if (loadError != null || session == null || !session.Running) return null;
+                return new VanillaFarmMonitorTransfer
                 {
-                    AddUnassigned(session, source, cartWeightDelta);
-                    SaveLocked();
-                    log = "event=farm-monitor-unassigned accountId=" + accountId
-                        + " source=" + source + " cartWeightDelta=" + cartWeightDelta
-                        + " reason='" + (item == null ? "no matching automatic row" : "delta not divisible by configured unit weight") + "'.";
-                }
-                else
-                {
-                    long quantity = cartWeightDelta / item.UnitWeight;
-                    if (quantity <= 0) return;
-                    if (item.Count > 1000000000000L - quantity)
-                        throw new InvalidOperationException("Farming-monitor item count would exceed its supported range.");
-                    item.Count += quantity;
-                    SaveLocked();
-                    log = "event=farm-monitor-count accountId=" + accountId
-                        + " source=" + source + " cartWeightDelta=" + cartWeightDelta
-                        + " item='" + (item.Name ?? "").Replace("'", "") + "' unitWeight=" + item.UnitWeight
-                        + " added=" + quantity + " count=" + item.Count + ".";
-                }
+                    Owner = this, AccountId = accountId, Label = label,
+                    Generation = session.Generation, Source = source
+                };
             }
-            if (!string.IsNullOrWhiteSpace(log)) VanillaDebugLog.Write("FARM", log);
+        }
+
+        // Telemetry is not part of the game's transfer transaction. A calculator
+        // storage failure must never interrupt the established Cart cleanup/resume.
+        public bool TryRecordCartTransfer(VanillaFarmMonitorTransfer transfer, uint cartWeightDelta, out string error)
+        {
+            error = null;
+            try { return RecordCartTransferAt(transfer, cartWeightDelta, DateTimeOffset.UtcNow); }
+            catch (Exception ex)
+            {
+                error = "A Cart transfer was not recorded; totals may be incomplete. Pause and correct or Reset. " + ex.Message;
+                if (transfer != null && ReferenceEquals(transfer.Owner, this))
+                    lock (gate) warnings[transfer.AccountId] = error;
+                return false;
+            }
+        }
+
+        // Synthetic test entry point; production captures the ticket BEFORE input.
+        internal void RecordCartTransferAt(string accountId, string label, VanillaFarmAutoSource source,
+            uint cartWeightDelta, DateTimeOffset now)
+        {
+            RecordCartTransferAt(BeginCartTransfer(accountId, label, source), cartWeightDelta, now);
+        }
+
+        internal bool RecordCartTransferAt(VanillaFarmMonitorTransfer transfer, uint cartWeightDelta, DateTimeOffset now)
+        {
+            if (transfer == null || !ReferenceEquals(transfer.Owner, this)) return false;
+            lock (gate)
+            {
+                if (transfer.Consumed) return false;
+                transfer.Consumed = true;
+                VanillaFarmMonitorSession current = Find(transfer.AccountId);
+                if (current == null || !current.Running || current.Generation != transfer.Generation) return false;
+                if (cartWeightDelta == 0 || cartWeightDelta > 10000)
+                    throw new ArgumentOutOfRangeException(nameof(cartWeightDelta), "Verified Cart delta must be between 1 and 10,000.");
+
+                ApplyLocked(() =>
+                {
+                    VanillaFarmMonitorSession session = Find(transfer.AccountId);
+                    UpdateLabel(session, transfer.Label);
+                    CommitElapsed(session, now);
+                    session.RunningSinceUtc = now;
+                    VanillaFarmMonitorItem item = session.Items.FirstOrDefault(row => row.AutoSource == transfer.Source)
+                        ?? session.Items.FirstOrDefault(row => row.AutoSource == VanillaFarmAutoSource.Any);
+                    if (item == null || cartWeightDelta % item.UnitWeight != 0)
+                    {
+                        AddUnassigned(session, transfer.Source, cartWeightDelta);
+                    }
+                    else
+                    {
+                        long quantity = cartWeightDelta / item.UnitWeight;
+                        if (item.Count > 1000000000000L - quantity)
+                            throw new InvalidOperationException("Farming-monitor item count would exceed its supported range.");
+                        item.Count += quantity;
+                    }
+                });
+                return true;
+            }
+        }
+
+        private static bool IsCartSource(VanillaFarmAutoSource source)
+        {
+            return source == VanillaFarmAutoSource.Use || source == VanillaFarmAutoSource.Equip || source == VanillaFarmAutoSource.Etc;
         }
 
         private static VanillaFarmMonitorSnapshot EmptySnapshot(string accountId, string label)
         {
             return new VanillaFarmMonitorSnapshot
             {
-                AccountId = accountId,
-                Label = label ?? "",
-                Running = false,
-                Elapsed = TimeSpan.Zero,
-                TotalZeny = 0m,
-                ZenyPerHour = 0m,
+                AccountId = accountId, Label = label ?? "", Running = false,
+                Elapsed = TimeSpan.Zero, TotalZeny = 0m, ZenyPerHour = 0m,
                 Items = new VanillaFarmMonitorItem[0]
             };
         }
@@ -454,18 +504,34 @@ namespace _4RTools.Model.Vanilla
 
         private static void AddUnassigned(VanillaFarmMonitorSession session, VanillaFarmAutoSource source, uint delta)
         {
-            switch (source)
+            checked
             {
-                case VanillaFarmAutoSource.Use: session.UnassignedUseWeight += delta; break;
-                case VanillaFarmAutoSource.Equip: session.UnassignedEquipWeight += delta; break;
-                case VanillaFarmAutoSource.Etc: session.UnassignedEtcWeight += delta; break;
+                switch (source)
+                {
+                    case VanillaFarmAutoSource.Use: session.UnassignedUseWeight += delta; break;
+                    case VanillaFarmAutoSource.Equip: session.UnassignedEquipWeight += delta; break;
+                    case VanillaFarmAutoSource.Etc: session.UnassignedEtcWeight += delta; break;
+                }
             }
         }
 
-        private void SaveLocked()
+        // All observers and mutations use gate: a failed validation/write restores
+        // the previous document before any caller can see an unpersisted change.
+        private void ApplyLocked(System.Action change)
         {
-            document.Validate();
-            store.Save(document);
+            if (loadError != null) throw new InvalidOperationException(loadError);
+            VanillaFarmMonitorDocument previous = document;
+            document = JsonConvert.DeserializeObject<VanillaFarmMonitorDocument>(JsonConvert.SerializeObject(previous));
+            try
+            {
+                change();
+                store.Save(document);
+            }
+            catch
+            {
+                document = previous;
+                throw;
+            }
         }
     }
 }
