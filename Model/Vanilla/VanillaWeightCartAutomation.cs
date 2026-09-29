@@ -33,11 +33,19 @@ namespace _4RTools.Model.Vanilla
         internal const int TransientCartRetrySeconds = 60;
         private readonly VanillaFleetMonitor fleet;
         private readonly VanillaReconnectSupervisor supervisor;
+        private readonly VanillaFarmMonitorService farmMonitor;
 
         internal VanillaWeightCartAutomation(VanillaFleetMonitor fleet, VanillaReconnectSupervisor supervisor)
+            : this(fleet, supervisor, null)
+        {
+        }
+
+        internal VanillaWeightCartAutomation(VanillaFleetMonitor fleet, VanillaReconnectSupervisor supervisor,
+            VanillaFarmMonitorService farmMonitor)
         {
             this.fleet = fleet ?? throw new ArgumentNullException(nameof(fleet));
             this.supervisor = supervisor ?? throw new ArgumentNullException(nameof(supervisor));
+            this.farmMonitor = farmMonitor;
         }
 
         internal static uint? KnownItemUnitWeightForCategory(int category)
@@ -450,6 +458,14 @@ namespace _4RTools.Model.Vanilla
 
                             if (cartAfter.Maximum != cartBefore.Maximum || cartAfter.Current > cartBefore.Maximum)
                                 throw new InvalidOperationException("Cart progress contradicts its verified capacity; no further transfer is safe.");
+                            uint cartWeightDelta = cartAfter.Current - cartBefore.Current;
+                            if (farmMonitor != null && cartWeightDelta > 0)
+                            {
+                                VanillaFarmAutoSource source = category == 0 ? VanillaFarmAutoSource.Use
+                                    : category == 1 ? VanillaFarmAutoSource.Equip
+                                    : VanillaFarmAutoSource.Etc;
+                                farmMonitor.RecordCartTransfer(token.AccountId, token.Account.Label, source, cartWeightDelta);
+                            }
                             moved++;
                             categoryMoved++;
                             activity(token.Account.Label + ": weight maintenance: moved " + categoryName + " transfer "
