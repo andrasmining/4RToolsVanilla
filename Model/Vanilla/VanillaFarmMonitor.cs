@@ -343,13 +343,20 @@ namespace _4RTools.Model.Vanilla
                 VanillaFarmMonitorSession session = GetOrCreate(accountId, label);
                 if (session.Running)
                     throw new InvalidOperationException("Pause the farming monitor before editing item rows.");
-                UpdateLabel(session, label);
-                session.Items = items.Select(item =>
+                var replacement = items.Select(item =>
                 {
                     if (item == null) throw new ArgumentException("Farming-monitor item rows cannot be null.", nameof(items));
                     return item.Clone();
                 }).ToList();
-                session.Validate();
+                var probe = new VanillaFarmMonitorSession
+                {
+                    AccountId = session.AccountId,
+                    Label = string.IsNullOrWhiteSpace(label) ? session.Label : label.Trim(),
+                    Items = replacement
+                };
+                probe.Validate();
+                UpdateLabel(session, label);
+                session.Items = replacement;
                 SaveLocked();
             }
         }
