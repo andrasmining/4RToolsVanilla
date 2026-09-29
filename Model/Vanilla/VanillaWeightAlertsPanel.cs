@@ -100,7 +100,8 @@ namespace _4RTools.Model.Vanilla
             // Top-docked content grows to its preferred height so AutoScroll can expose
             // every action on shorter desktops instead of squeezing the final rows.
             var root = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                MinimumSize = new Size(1050, 0), Padding = new Padding(14), ColumnCount = 1, RowCount = 6 };
+                MinimumSize = new Size(1050, 0), Padding = new Padding(14), ColumnCount = 1, RowCount = 7 };
+            root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -122,11 +123,12 @@ namespace _4RTools.Model.Vanilla
 
             root.Controls.Add(BuildEmergencyGroup(), 0, 1);
             root.Controls.Add(BuildCartGroup(), 0, 2);
-            root.Controls.Add(BuildMailGroup(), 0, 3);
+            root.Controls.Add(BuildFarmMonitorGroup(), 0, 3);
+            root.Controls.Add(BuildMailGroup(), 0, 4);
 
             var buttons = new FlowLayoutPanel { Dock = DockStyle.Fill, AutoSize = true, Margin = new Padding(0, 8, 0, 0) };
             buttons.Controls.Add(test); buttons.Controls.Add(clearHold); buttons.Controls.Add(clearEmergency); buttons.Controls.Add(saveStatus); buttons.Controls.Add(status);
-            root.Controls.Add(buttons, 0, 4);
+            root.Controls.Add(buttons, 0, 5);
 
             live.Columns.Add("Client", "Client"); live.Columns.Add("Weight", "Weight"); live.Columns.Add("Percent", "%");
             live.Columns.Add("Cart", "Cart"); live.Columns.Add("CartPercent", "Cart %"); live.Columns.Add("Verification", "State");
@@ -135,7 +137,7 @@ namespace _4RTools.Model.Vanilla
             emergencyStatus.Margin = new Padding(0, 10, 0, 4);
             help.SetToolTip(emergencyStatus, "Always active for enabled character rows while 4RTools runs, including with Recovery and Cart OFF. All three configured emergency limits must be crossed in the same fresh verified observation. Only that client closes; no automatic restart until its emergency hold is explicitly cleared.");
             liveHost.Controls.Add(emergencyStatus, 0, 0);
-            liveHost.Controls.Add(live, 0, 1); root.Controls.Add(liveHost, 0, 5);
+            liveHost.Controls.Add(live, 0, 1); root.Controls.Add(liveHost, 0, 6);
             Controls.Add(root);
             // Docked children do not contribute their minimum width to WinForms'
             // automatic scroll extent; make the two-column settings width explicit.
@@ -143,6 +145,25 @@ namespace _4RTools.Model.Vanilla
             root.SizeChanged += (s, e) => AutoScrollMinSize = new Size(root.MinimumSize.Width, 0);
 
             ConfigureHelp();
+        }
+
+        private Control BuildFarmMonitorGroup()
+        {
+            var group = new GroupBox
+            {
+                Text = "Farming value monitor",
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                AutoSizeMode = AutoSizeMode.GrowAndShrink,
+                Padding = new Padding(10)
+            };
+            var panel = new VanillaFarmMonitorPanel(service) { Dock = DockStyle.Top };
+            group.Controls.Add(panel);
+            help.SetToolTip(group,
+                "Per-character farming calculator. Reset starts a fresh timed run while keeping item definitions. "
+                + "Automatic counts use only verified Cart-weight increases and configured category/unit-weight mappings; "
+                + "unmapped or ambiguous weight is kept as Unassigned instead of guessed. Pause to edit counts and values.");
+            return group;
         }
 
         private Control BuildEmergencyGroup()
