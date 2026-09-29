@@ -155,6 +155,31 @@ not only the reconnect session log.
 
 - Cart maintenance and Weight e-mail are separate per-character policies. Every saved character row carries independent Cart and Mail switches. Shared Weight-tab masters/settings never authorize a character whose matching switch is off. Cart OFF + Mail ON means the carried-weight warning threshold applies. Cart ON + Mail ON suppresses both carried-only and Cart-only warnings and sends one combined DONE notification instead. Cart ON + Mail OFF runs maintenance without mail. Cart OFF + Mail OFF runs neither. Legacy rows with no split fields inherit the old WeightEnabled value; explicit split values survive clone/catalog/discovery/identity enrichment unchanged. Disabling Cart must cancel outstanding Cart ownership safely without disabling Mail or disturbing a healthy sibling; disabling Mail suppresses messages without disabling Cart.
 
+## Farming value monitor
+
+The Weight tab includes a generic per-character farming value monitor. Keep it
+independent from specific monster or item names. Each item row stores a user-editable
+name, zeny-per-item value, count, optional automatic Cart source (Use/Equip/Etc or
+Any fallback), and unit weight. Item definitions and current run state are persisted.
+
+Automatic counting may consume only a transfer that the existing Cart automation has
+already proven through a fresh verified Cart-weight increase. The source category and
+Cart-weight delta are observations; they are not item identity. Never infer an item
+name from a tab. A category may have at most one configured automatic row, plus at most
+one Any fallback, so a verified delta maps unambiguously. Divide the verified Cart
+weight delta by the configured unit weight only when it divides exactly. Missing,
+ambiguous or non-divisible mappings remain explicit unassigned Cart weight and never
+invent item counts. Do not alter Cart transfer safety or retry behavior merely to feed
+the monitor.
+
+The timer and automatic counting are per character. Pause freezes elapsed active time
+and disables automatic transfer counting; paused runs allow direct edits to item
+counts/prices/mappings and manual rows. Resume continues the same run. Reset clears
+counts, elapsed time and unassigned deltas while preserving item definitions and starts
+a fresh run immediately. The UI should remind the user via tooltip/confirmation that
+empty carried farming loot gives the cleanest reset baseline. Total zeny is the sum of
+count times configured zeny-per-item; zeny/hour uses active elapsed time only.
+
 ## Character-bound Smart Teleport
 
 - Integrated Smart Teleport is a per-character policy keyed by the verified username + character-name row. Never require or expose PID/process selection for this feature; resolve the live PID from the existing identity binding.
