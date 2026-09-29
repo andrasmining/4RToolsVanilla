@@ -315,9 +315,9 @@ namespace _4RTools.Model.Vanilla
                 delete.Enabled = !snapshot.Running && grid.SelectedRows.Count > 0;
                 grid.ReadOnly = snapshot.Running;
 
-                if (forceGrid || !snapshot.Running)
+                if (forceGrid)
                     LoadGrid(snapshot);
-                else
+                else if (snapshot.Running)
                     RefreshCounts(snapshot);
             }
 
@@ -332,7 +332,7 @@ namespace _4RTools.Model.Vanilla
                     foreach (VanillaFarmMonitorItem item in snapshot.Items)
                     {
                         int row = grid.Rows.Add(item.Id, item.Name,
-                            item.ZenyPerItem.ToString("0.##", CultureInfo.InvariantCulture),
+                            item.ZenyPerItem.ToString("0.##", CultureInfo.CurrentCulture),
                             item.Count.ToString(CultureInfo.InvariantCulture),
                             item.AutoSource.ToString(),
                             item.UnitWeight.ToString(CultureInfo.InvariantCulture));
