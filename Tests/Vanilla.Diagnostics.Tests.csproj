@@ -72,6 +72,7 @@
     <Compile Include="VanillaRecoveryWatchdogTests.cs" />
     <Compile Include="VanillaRecoveryScreenDiagnosisTests.cs" />
     <Compile Include="VanillaFarmingEmergencyTests.cs" />
+    <Compile Include="VanillaFarmMonitorTests.cs" />
     <Compile Include="VanillaStopNotificationTests.cs" />
     <Compile Include="VanillaServerClosedPatternTests.cs" />
     <Compile Include="VanillaServerOutageTests.cs" />
