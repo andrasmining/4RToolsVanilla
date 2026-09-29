@@ -1,24 +1,14 @@
-# 4RTools Vanilla 0.6.86
+# 4RTools Vanilla 0.6.87
 
-## Memory monitoring and foreground recovery
+## Farming value monitor
 
-- Remove background screenshots from recovery, Smart Teleport, launcher checks
-  and discovery. Background clients are monitored through fresh read-only memory
-  coordinates. Remove the obsolete continuous visual-monitoring switch.
-- Diagnose a stalled client only after acquiring the shared input lock and
-  activating that client. Confirmed logout/disconnect screens can restart it
-  immediately; healthy siblings remain untouched.
-- Recover stationary gameplay with foreground Smart Teleport and the configured
-  Autobattle resume hotkey when needed. Recheck movement before inputs and stop
-  the sequence immediately when fresh coordinates show movement.
-- Keep bounded recovery attempts, verified warp-popup confirmation, the configured
-  no-movement restart deadline, intentional farming holds, and cancellation on
-  STOP or ownership changes. Healthy existing-client adoption stays memory-only.
+- Add a generic per-character farming calculator to the Weight tab. Each character can keep its own item rows with editable item name, zeny per item, count, automatic Cart source and unit weight.
+- Show live active elapsed time, total farmed zeny and zeny/hour so two farming characters or maps can be compared directly over the same run.
+- RESET clears counts, elapsed time and unassigned Cart weight while preserving item definitions, then immediately starts a fresh run. PAUSE freezes time and automatic counting so prices/counts/mappings can be edited or manual loot can be added before resuming.
+- Feed automatic counts only from Cart transfers that are already proven by a verified read-only Cart-weight increase. Use/Equip/Etc mappings convert that verified weight delta to quantity only when the configured unit weight divides exactly; an optional Any row can serve as a fallback.
+- Never infer an item identity from an inventory category. Unmapped or non-divisible transfer weight remains visibly Unassigned so the user can correct the run manually instead of receiving a guessed count.
+- Persist farming-monitor definitions, counts, run state and elapsed-time checkpoints in the Vanilla app-data folder.
 
 ## Validation
 
-Windows release gates exercise movement-only supervision, foreground ownership,
-terminal-screen recovery, cancellation, popup verification and existing regressions.
-They also run Debug/Release builds, isolated mock UI and test-owned process checks,
-portable packaging and public/legacy updater discovery, download and staging.
-These checks do not operate live game clients or send real e-mail.
+Windows release gates cover farming-monitor reset/pause/resume behavior, exact Cart-delta quantity conversion, ambiguous/unassigned handling, manual value calculations and persistence alongside the existing full diagnostics suite. The release pipeline also runs Debug/Release builds, portable-package smoke tests, native test-owned process checks, isolated mock UI rendering and public updater verification. These checks do not operate a live Vanilla/Gepard client.
