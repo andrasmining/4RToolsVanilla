@@ -1,4 +1,17 @@
-# 4RTools Vanilla 0.6.88
+# 4RTools Vanilla 0.6.89
+
+## Launcher updates and unattended Cart cleanup
+
+- A verified launcher that remains open without GAME START for two minutes now triggers one coordinated update retry, including update-error screens without a progress bar. Same-installation patchers and both clients close with verified process identities and confirmed exits before the launcher restarts. The existing faster frozen-progress check, ten-minute reset cooldown, cancellation and sequential client recovery remain in effect.
+- Cart quantity confirmation no longer requires numeric OCR merely because Cart usage crossed 75%. At any fill level, a fresh coherent snapshot proving the entire carried inventory fits permits one confirmation of the untouched default amount. Capacity is checked again immediately before input, and a verified Cart-weight increase is still required. Capacity-limited transfers retain conservative count bounds and exact numeric readback.
+- Quantity cleanup allows bounded retries only while the originally recognized dialog remains verified. Losing the number's blue selection is not proof that the dialog closed. After transfer or cancellation, two fresh owned-window observations must prove actual modal disappearance before cleanup/resume continues. Missing, stale, changed or ambiguous evidence still withholds input.
+- Recovery/debug logs now include carried weight, free Cart capacity and specific quantity-dismissal evidence.
+
+## Validation of this update
+
+Regression cases cover the reported remaining carried weight of 329 with Cart weight 7632/10000, high-fill whole-inventory capacity proof, delayed dialog closure, unselected surviving modals, bounded Escape retries, cancellation/ownership changes, launcher errors without progress, changing progress and the two-minute timeout boundary. Windows gates build Debug and Release, run the complete isolated diagnostics suite, native test-owned process checks, mock UI and portable-package smoke tests, and public/legacy updater discovery/download/staging checks. These pipeline checks do not establish live Vanilla gameplay or a real server patch.
+
+The farming calculator and persistent user settings from 0.6.88 are retained.
 
 ## Resettable farming calculator
 

@@ -107,16 +107,21 @@ not only the reconnect session log.
 
 ## Weight / Cart UI automation
 
-- Below the 75% precision threshold, a fresh coherent same-character snapshot
+- At any Cart fill level, a fresh coherent same-character snapshot
   proving that all carried weight fits in the free Cart capacity permits one
   confirmation of the untouched default quantity. Require a unique stable prompt
   newly appearing after the drag and recheck capacity immediately before input;
   verify Cart-weight progress afterward. Reading/retyping the number is unnecessary
   for this case. Capacity-limited entry retains exact numeric readback and uses
   Home/Shift+End rather than Ctrl+A in the custom edit control.
+  This whole-inventory fit proof takes precedence over the older 75% category
+  restriction; it does not require a known item weight.
 - Quantity cancellation does not depend on number OCR. Require fresh owned-window
   evidence of actual modal disappearance with a bounded settle, not merely loss of
   its blue selection. Never treat missing captures as successful dismissal.
+  Retry Escape at most three times after bounded settle, requiring fresh proof of
+  the same observed modal and its surrounding pixels before another input. Also
+  require two fresh post-transfer captures proving actual modal disappearance.
 
 - Critical farming emergency overrides every Cart resume/retry and recovery path:
   a single fresh verified same-client snapshot meeting all three editable limits
@@ -193,19 +198,25 @@ count times configured zeny-per-item; zeny/hour uses active elapsed time only.
 
 In active Cart mode, notify only after Cart >=99% AND carried weight >=50% plus a verified completion STOP. Neither capacity alone sends mail. Without active Cart maintenance, Mail uses the configured carried-weight warning threshold. Re-check current shared and per-character Mail settings immediately before dispatch so queued work cannot use an obsolete enabled switch. Reserve a single in-flight DONE send per character. Mail-only profile edits must preserve Cart/recovery input ownership; Cart, identity, enabled-state or input-setting edits retain normal cancellation. Use EffectiveCartMaintenanceEnabled in every Cart guard, never the legacy WeightEnabled field directly.
 
-## Launcher update reset exception (2026-09-20)
+## Launcher update reset exception (2026-10-03)
 
 Always start through Vanilla Launcher.exe / patcher.exe, never bypass updates with
 a direct game launch. A supplied game path may resolve to its adjacent launcher;
 missing launcher means configuration failure, not a fallback.
 
-The user authorizes a narrow exception to healthy-sibling isolation: a verified
-launcher update progress screen with no GAME START and no progress/status change
-for 60 continuous seconds may close same-installation patchers and BOTH game
-clients. Missing Start alone, failed/unknown captures and changing progress never
-authorize this. Preflight paths plus creation times twice, freshly reconfirm the
-screen, retain the global recovery lease, close patchers then games and confirm
-every exit plus a final empty process snapshot before restarting the launcher.
+The user authorizes a narrow exception to healthy-sibling isolation: the verified
+same-installation launcher remaining open without GAME START for two continuous
+minutes may close its patchers and BOTH game clients so a running sibling cannot
+block an update. Fresh rendered foreground captures, native launcher HWND/class/title,
+process path and creation time must establish this wait; changing progress/status
+does not postpone its two-minute deadline. The existing frozen verified update
+progress/status path may still reset after 60 continuous seconds. Missing/blank,
+failed or unknown captures, observation gaps, newly available GAME START and
+changed process/window/geometry invalidate the corresponding evidence. Allow
+enough bounded launch time to observe the full two-minute wait before timing out.
+Preflight paths plus creation times twice, freshly reconfirm the screen, retain
+the global recovery lease, close patchers then games and confirm every exit plus
+a final empty process snapshot before restarting the launcher.
 Use the existing bounded creation-time-pinned Windows close protocol. Metadata
 uses limited query only, with no alternate access after failure.
 
@@ -215,5 +226,5 @@ STOP, settings/generation, runtime/PID/session replacement cancel pending closes
 and delayed restart. Preserve disabled characters and Cart/manual/completion holds.
 Restore enabled characters sequentially through login, verified movement and
 minimization; cold startup revisits earlier closed rows before supervision starts.
-Ordinary recovery still leaves healthy siblings untouched. Log the evidence and
-confirmed exits; do not claim a proven file lock from a frozen update screen alone.
+Ordinary recovery still leaves healthy siblings untouched. Log which wait authorized
+the reset and the confirmed exits; no-Start evidence does not prove a file lock.

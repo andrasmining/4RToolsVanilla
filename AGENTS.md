@@ -776,7 +776,7 @@ updater's discovery/download/staging path before declaring completion.
 ### Quantity confirmation and failed-state diagnosis (2026-09-25)
 
 After a verified Inventory-to-Cart drag, separate recognition of the quantity
-dialog from reading its number. Below the 75% precision threshold, when a fresh,
+dialog from reading its number. At any Cart fill level, when a fresh,
 coherent same-character snapshot proves free Cart capacity can hold the entire
 carried inventory, confirm the untouched default quantity once without numeric
 OCR or rewriting it. Require two fresh unique prompt observations, reject panels
@@ -785,11 +785,18 @@ require verified Cart-weight progress before reporting transfer success.
 Capacity-limited transfers retain observed-count bounds and exact numeric
 readback; custom edit fields use Home/Shift+End selection rather than Ctrl+A.
 Never infer an item identity from its Inventory category.
+The whole-inventory capacity proof takes precedence over the older 75% category
+restriction: safe default confirmation does not require a known item weight.
 
 Cancel a positively recognized quantity dialog without requiring readable digits.
 Allow bounded dismissal time; require fresh same-window captures proving that both
 the selected field and known modal surface disappeared. Lost selection, missing
 captures, a changed window or an ambiguous prompt do not prove dismissal.
+Allow at most three Escape attempts, with bounded settle and fresh proof of the
+same observed modal before each retry. After selection disappears, preserve its
+observed surrounding pixels rather than authorizing input on a generic panel.
+Post-transfer verification also waits for two fresh captures proving the known
+modal and selected field disappeared; Cart progress alone does not clear a modal.
 
 Background supervision is memory-only. Never take background screenshots or use
 PrintWindow for the game, launcher, diagnostics or Smart Teleport. Fresh verified
@@ -871,7 +878,7 @@ Smart Teleport activates the affected stalled client under the shared serialized
 
 In active Cart mode, notify only after Cart >=99% AND carried weight >=50% plus a verified completion STOP. Neither capacity alone sends mail. Without active Cart maintenance, Mail uses the configured carried-weight warning threshold. Re-check current shared and per-character Mail settings immediately before dispatch so queued work cannot use an obsolete enabled switch. Reserve a single in-flight DONE send per character. Mail-only profile edits must preserve Cart/recovery input ownership; Cart, identity, enabled-state or input-setting edits retain normal cancellation. Use EffectiveCartMaintenanceEnabled in every Cart guard, never the legacy WeightEnabled field directly.
 
-## Launcher update reset exception (2026-09-20)
+## Launcher update reset exception (2026-10-03)
 
 Always start through Vanilla Launcher.exe / patcher.exe, never bypass updates with
 a direct game launch. A supplied game path may resolve to its adjacent launcher;
@@ -879,16 +886,19 @@ missing launcher means configuration failure, not a fallback.
 
 The user authorizes a narrow exception to healthy-sibling isolation: a verified
 launcher update progress screen with no GAME START and no progress/status change
-for 60 continuous seconds may close same-installation patchers and BOTH game
-clients. Missing Start alone, failed/unknown captures and changing progress never
-authorize this. Preflight paths plus creation times twice, freshly reconfirm the
-screen, retain the global recovery lease, close patchers then games and confirm
+for 60 continuous seconds, or a verified owned launcher window continuously
+without GAME START for two minutes, may close same-installation patchers and BOTH
+game clients. The two-minute path also covers update errors with no progress bar;
+it does not establish a proven file lock. Failed/unknown captures, missing window
+identity or stale observations never authorize this. Preflight paths plus creation
+times twice, freshly reconfirm the screen, retain the global recovery lease,
+close patchers then games and confirm
 every exit plus a final empty process snapshot before restarting the launcher.
 Use the existing bounded creation-time-pinned Windows close protocol. Metadata
 uses limited query only, with no alternate access after failure.
 
 Allow one reset per launch invocation, with a ten-minute supervisor cooldown.
-Recognized changing update progress may extend waiting to a ten-minute hard bound.
+The two-minute no-Start deadline also applies while update progress changes.
 STOP, settings/generation, runtime/PID/session replacement cancel pending closes
 and delayed restart. Preserve disabled characters and Cart/manual/completion holds.
 Restore enabled characters sequentially through login, verified movement and
