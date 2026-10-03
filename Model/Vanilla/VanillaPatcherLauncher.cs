@@ -157,6 +157,7 @@ namespace _4RTools.Model.Vanilla
                 var clock = Stopwatch.StartNew();
                 TimeSpan deadline = TimeSpan.FromMilliseconds(timeoutMs);
                 var patchWatch = new VanillaLauncherPatchWatch();
+                var noStartWatch = new VanillaLauncherNoStartWatch();
                 string lastPatchSignature = null;
                 DateTime nextClick = DateTime.MinValue;
                 string launcherName = Path.GetFileNameWithoutExtension(executablePath);
@@ -222,6 +223,7 @@ namespace _4RTools.Model.Vanilla
                                     log?.Invoke("Launcher is visible but Windows foreground activation is not ready; no GAME START action sent. "
                                         + activationEvidence);
                                     patchWatch.Reset();
+                                    noStartWatch.Reset();
                                     nextClick = DateTime.UtcNow.AddMilliseconds(1000);
                                     continue;
                                 }
@@ -231,6 +233,7 @@ namespace _4RTools.Model.Vanilla
                                 if (nativeFound)
                                 {
                                     patchWatch.Reset();
+                                    noStartWatch.Reset();
                                     if (cancelled != null && cancelled()) throw new OperationCanceledException();
                                     UIntPtr result;
                                     IntPtr sent = SendMessageTimeout(nativeGameStart, BM_CLICK, IntPtr.Zero, IntPtr.Zero, SMTO_ABORTIFHUNG, 2000, out result);
@@ -248,31 +251,43 @@ namespace _4RTools.Model.Vanilla
                                     {
                                         clickAttempt--;
                                         log?.Invoke("GAME START is not safely detected yet; no fallback coordinate click was sent. " + firstEvidence);
-                                        var frame = ObservePatchFrame(patcherPid.Value, launcherHwnd);
+                                        var waitFrame = ObserveLauncherWaitFrame(patcherPid.Value, launcherHwnd);
+                                        var frame = waitFrame?.Patch;
                                         var blocked = VanillaLauncherUpdateProcess.Read(patcherPid.Value);
                                         bool stalled = patchWatch.Observe(patcherPid.Value, launcherHwnd, frame, clock.Elapsed, blocked.StartedUtc.Ticks);
+                                        bool startTimedOut = noStartWatch.Observe(patcherPid.Value, launcherHwnd, waitFrame, clock.Elapsed, blocked.StartedUtc.Ticks);
+                                        if (recoverUpdate != null)
+                                            deadline = ExtendNoStartDeadline(deadline, noStartWatch.VerificationDeadline);
                                         if (frame != null && lastPatchSignature != frame.Signature)
                                         {
-                                            deadline = TimeSpan.FromMilliseconds(Math.Min(MaximumUpdateWaitMs, clock.ElapsedMilliseconds + timeoutMs));
+                                            deadline = ExtendNoStartDeadline(deadline, TimeSpan.FromMilliseconds(clock.ElapsedMilliseconds + timeoutMs));
                                             log?.Invoke("event=launcher-updating Update progress/status observed; waiting for GAME START (maximum 10 minutes).");
                                         }
                                         lastPatchSignature = frame?.Signature;
-                                        if (stalled && recoverUpdate != null)
+                                        if ((stalled || startTimedOut) && recoverUpdate != null)
                                         {
+                                            log?.Invoke(startTimedOut
+                                                ? "event=launcher-start-timeout Verified launcher remained open without GAME START for 120 seconds; checking same-installation clients before one coordinated update retry."
+                                                : "event=launcher-update-stalled Verified update progress/status remained frozen for 60 seconds; checking same-installation clients before one coordinated update retry.");
                                             bool recovered = recoverUpdate(blocked, () =>
                                             {
                                                 if (cancelled != null && cancelled()) throw new OperationCanceledException();
                                                 if (FindNewVanillaProcess(before, launcherDirectory).HasValue) return false;
-                                                var fresh = ObservePatchFrame(blocked.Pid, launcherHwnd);
-                                                return fresh != null && fresh.Signature == frame.Signature;
+                                                IntPtr freshControl; string freshControls;
+                                                if (TryFindNativeGameStart(launcherHwnd, out freshControl, out freshControls)) return false;
+                                                var fresh = ObserveLauncherWaitFrame(blocked.Pid, launcherHwnd);
+                                                return fresh != null && fresh.Size == waitFrame.Size
+                                                    && (startTimedOut || (fresh.Patch != null && fresh.Patch.Signature == frame.Signature));
                                             });
                                             if (recovered) throw new UpdateResetCompletedException();
                                             patchWatch.Reset();
+                                            noStartWatch.Reset();
                                         }
                                         nextClick = DateTime.UtcNow.AddMilliseconds(1000);
                                         continue;
                                     }
                                     patchWatch.Reset();
+                                    noStartWatch.Reset();
                                     SleepCancellable(VisualConfirmationDelayMs, cancelled);
                                     int? startedDuringConfirmation = FindNewVanillaProcess(before, launcherDirectory);
                                     if (startedDuringConfirmation.HasValue)
@@ -304,6 +319,7 @@ namespace _4RTools.Model.Vanilla
                             catch (Exception ex)
                             {
                                 patchWatch.Reset();
+                                noStartWatch.Reset();
                                 log?.Invoke("Launcher GAME START attempt failed before completion: " + ex.GetType().Name + ": " + ex.Message);
                             }
                             nextClick = DateTime.UtcNow.AddMilliseconds(retryMs);
@@ -311,6 +327,7 @@ namespace _4RTools.Model.Vanilla
                         else
                         {
                             patchWatch.Reset();
+                            noStartWatch.Reset();
                             stableLauncherPid = 0;
                             launcherWindowStableAt = null;
                             if (sawLauncherWindow)
@@ -561,12 +578,19 @@ namespace _4RTools.Model.Vanilla
             }
         }
 
-        private static VanillaLauncherPatchFrame ObservePatchFrame(int pid, IntPtr hwnd)
+        internal static TimeSpan ExtendNoStartDeadline(TimeSpan deadline, TimeSpan? verificationDeadline)
+        {
+            if (!verificationDeadline.HasValue) return deadline;
+            return TimeSpan.FromMilliseconds(Math.Min(MaximumUpdateWaitMs,
+                Math.Max(deadline.TotalMilliseconds, verificationDeadline.Value.TotalMilliseconds)));
+        }
+
+        private static VanillaLauncherWaitFrame ObserveLauncherWaitFrame(int pid, IntPtr hwnd)
         {
             try
             {
                 using (var image = CaptureLauncherForeground(pid, hwnd))
-                    return image == null ? null : VanillaLauncherPatchFrame.Read(image);
+                    return VanillaLauncherWaitFrame.Read(image);
             }
             catch { return null; } // Failed capture is unknown, never stalled-update evidence.
         }
@@ -576,7 +600,8 @@ namespace _4RTools.Model.Vanilla
             uint owner;
             if (!IsWindow(hwnd) || !IsWindowVisible(hwnd) || GetForegroundWindow() != hwnd
                 || GetWindowThreadProcessId(hwnd, out owner) == 0 || owner != (uint)pid
-                || !string.Equals(WindowClass(hwnd), "TThorForm", StringComparison.OrdinalIgnoreCase)) return null;
+                || !string.Equals(WindowClass(hwnd), "TThorForm", StringComparison.OrdinalIgnoreCase)
+                || WindowTitle(hwnd).IndexOf("Vanilla MMO Launcher", StringComparison.OrdinalIgnoreCase) < 0) return null;
             RECT rect;
             if (!GetClientRect(hwnd, out rect)) return null;
             int width = rect.Right - rect.Left, height = rect.Bottom - rect.Top;

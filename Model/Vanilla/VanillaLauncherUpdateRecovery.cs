@@ -12,7 +12,7 @@ using Microsoft.Win32.SafeHandles;
 
 namespace _4RTools.Model.Vanilla
 {
-    // A missing GAME START alone is not evidence of an update or a stalled update.
+    // The progress detector remains the narrow, faster frozen-update signal.
     internal sealed class VanillaLauncherPatchFrame
     {
         internal string Signature { get; private set; }
@@ -82,6 +82,53 @@ namespace _4RTools.Model.Vanilla
             else samples++;
             previous = now;
             return samples >= 10 && (now - since).TotalMilliseconds >= StallMs;
+        }
+    }
+
+    internal sealed class VanillaLauncherWaitFrame
+    {
+        internal Size Size { get; private set; }
+        internal VanillaLauncherPatchFrame Patch { get; private set; }
+
+        internal static VanillaLauncherWaitFrame Read(Bitmap image)
+        {
+            if (image == null || image.Width < 200 || image.Height < 120 || image.Width > 4096 || image.Height > 2160) return null;
+            double x, y; string ignored;
+            if (VanillaPatcherLauncher.TryFindGameStart(image, out x, out y, out ignored)) return null;
+            // A blank/unrendered desktop capture is unknown. Native launcher ownership
+            // is verified by the caller; its progress bar need not survive an error.
+            Color first = image.GetPixel(0, 0);
+            bool rendered = false;
+            for (int py = 0; py < 8 && !rendered; py++) for (int px = 0; px < 8; px++)
+            {
+                Color c = image.GetPixel(px * (image.Width - 1) / 7, py * (image.Height - 1) / 7);
+                if (Math.Abs(c.R - first.R) + Math.Abs(c.G - first.G) + Math.Abs(c.B - first.B) > 40)
+                { rendered = true; break; }
+            }
+            return rendered ? new VanillaLauncherWaitFrame { Size = image.Size, Patch = VanillaLauncherPatchFrame.Read(image) } : null;
+        }
+    }
+
+    internal sealed class VanillaLauncherNoStartWatch
+    {
+        internal const int WaitMs = 120000;
+        private string identity;
+        private TimeSpan since, previous;
+        private int samples;
+        internal TimeSpan? VerificationDeadline
+        {
+            get { return samples == 0 ? (TimeSpan?)null : since.Add(TimeSpan.FromMilliseconds(WaitMs + VanillaLauncherPatchWatch.MaximumSampleGapMs)); }
+        }
+        internal void Reset() { identity = null; samples = 0; }
+        internal bool Observe(int pid, IntPtr window, VanillaLauncherWaitFrame frame, TimeSpan now, long birth)
+        {
+            if (pid <= 0 || birth <= 0 || window == IntPtr.Zero || frame == null) { Reset(); return false; }
+            string current = pid + ":" + birth + ":" + window.ToInt64() + ":" + frame.Size;
+            if (current != identity || now <= previous || (now - previous).TotalMilliseconds > VanillaLauncherPatchWatch.MaximumSampleGapMs)
+            { identity = current; since = now; samples = 1; }
+            else samples++;
+            previous = now;
+            return samples >= 10 && (now - since).TotalMilliseconds >= WaitMs;
         }
     }
 
@@ -267,7 +314,7 @@ namespace _4RTools.Model.Vanilla
                             nextLauncherUpdateReset = restartEnvironment.MonotonicNow.Add(TimeSpan.FromMilliseconds(VanillaLauncherUpdateReset.CooldownMs));
                             launcherUpdateResetSerial++;
                             Interlocked.Increment(ref weightMaintenanceGeneration); Interlocked.Increment(ref smartTeleportGeneration);
-                            Log(owner.Account.Label + ": update stalled without GAME START for 60s. Closing launchers and both same-installation clients under the global recovery lease.");
+                            Log(owner.Account.Label + ": launcher remains without GAME START after the verified update/no-Start wait. Closing launchers and both same-installation clients under the global recovery lease.");
                             VanillaDebugLog.Write("LAUNCHER", "event=update-reset-start accountId=" + owner.Account.Id + " launcherPid=" + launcher.Pid);
                         }
                     });

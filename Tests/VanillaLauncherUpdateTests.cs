@@ -26,6 +26,12 @@ namespace Vanilla.Diagnostics.Tests
             Test("Unknown frame resets stall evidence", UnknownFrame);
             Test("Gaps, rollback and cached timestamps reset evidence", Gaps);
             Test("PID, HWND and creation-time changes reset evidence", Identity);
+            Test("Launcher error without progress resets both blockers after 120s", NoStartError);
+            Test("Changing progress does not postpone the two-minute no-Start recovery", NoStartProgress);
+            Test("Ready, blank and missing captures invalidate no-Start evidence", NoStartUnknown);
+            Test("No-Start observation gaps and stale time reset the two-minute wait", NoStartGaps);
+            Test("No-Start process, window and geometry changes reset evidence", NoStartIdentity);
+            Test("Launch timeout leaves time for the full verified two-minute wait", NoStartDeadline);
             Test("One blocker closes before launcher restart", () => ResetCase(1));
             Test("Both blockers and old patchers close before restart", () => ResetCase(2));
             Test("No blockers: no reset", () => { var h = new H(0); Assert(!h.Run() && h.Closed.Count == 0); });
@@ -82,6 +88,64 @@ namespace Vanilla.Diagnostics.Tests
         { foreach (int t in new[] { 59, 2, 66 }) { var w = new VanillaLauncherPatchWatch(); Warm(w); Assert(!Sample(w, t)); } }
         private static void Identity()
         { for (int i = 0; i < 3; i++) { var w = new VanillaLauncherPatchWatch(); Warm(w); Assert(!Sample(w, 60, pid: i == 0 ? 4 : 1, hwnd: i == 1 ? 4 : 2, birth: i == 2 ? 4 : 3)); } }
+        private static VanillaLauncherWaitFrame WaitingFrame(float scale = 1, float fill = 0, bool ready = false)
+        { using (var b = Image(scale, fill, ready, true)) return VanillaLauncherWaitFrame.Read(b); }
+        private static bool NoStartSample(VanillaLauncherNoStartWatch w, int second, VanillaLauncherWaitFrame frame = null, int pid = 10, int hwnd = 2, long birth = 3)
+        { return w.Observe(pid, new IntPtr(hwnd), frame ?? WaitingFrame(), TimeSpan.FromSeconds(second), birth); }
+        private static void WarmNoStart(VanillaLauncherNoStartWatch w)
+        { var frame = WaitingFrame(); Assert(frame != null && frame.Patch == null); for (int s = 0; s < 120; s++) Assert(!NoStartSample(w, s, frame)); }
+        private static void NoStartError()
+        {
+            var w = new VanillaLauncherNoStartWatch(); WarmNoStart(w);
+            Assert(NoStartSample(w, 120));
+            var h = new H(); Assert(h.Run() && h.Closed.SequenceEqual(new[] { 10, 1, 2 }));
+        }
+        private static void NoStartProgress()
+        {
+            var w = new VanillaLauncherNoStartWatch();
+            for (int s = 0; s <= 120; s++)
+            {
+                var frame = WaitingFrame(fill: .2f + (s % 30) * .02f);
+                Assert(frame != null && frame.Patch != null);
+                Assert(NoStartSample(w, s, frame) == (s == 120));
+            }
+        }
+        private static void NoStartUnknown()
+        {
+            Assert(WaitingFrame(ready: true) == null && VanillaLauncherWaitFrame.Read(null) == null);
+            foreach (var color in new[] { Color.Black, Color.White, Color.Yellow, Color.LightBlue })
+                using (var b = new Bitmap(780, 327)) { using (var g = Graphics.FromImage(b)) g.Clear(color); Assert(VanillaLauncherWaitFrame.Read(b) == null); }
+            var w = new VanillaLauncherNoStartWatch(); WarmNoStart(w);
+            Assert(!w.Observe(10, new IntPtr(2), null, TimeSpan.FromSeconds(120), 3) && w.VerificationDeadline == null);
+            for (int s = 121; s < 241; s++) Assert(!NoStartSample(w, s));
+            Assert(NoStartSample(w, 241));
+        }
+        private static void NoStartGaps()
+        {
+            foreach (int t in new[] { 119, 2, 126 })
+            { var w = new VanillaLauncherNoStartWatch(); WarmNoStart(w); Assert(!NoStartSample(w, t)); }
+        }
+        private static void NoStartIdentity()
+        {
+            for (int i = 0; i < 4; i++)
+            {
+                var w = new VanillaLauncherNoStartWatch(); WarmNoStart(w);
+                Assert(!NoStartSample(w, 120, i == 3 ? WaitingFrame(.8f) : WaitingFrame(),
+                    pid: i == 0 ? 11 : 10, hwnd: i == 1 ? 4 : 2, birth: i == 2 ? 4 : 3));
+            }
+            var invalid = new VanillaLauncherNoStartWatch(); WarmNoStart(invalid);
+            Assert(!NoStartSample(invalid, 120, birth: 0));
+        }
+        private static void NoStartDeadline()
+        {
+            var w = new VanillaLauncherNoStartWatch(); Assert(!NoStartSample(w, 4));
+            var original = TimeSpan.FromSeconds(120);
+            var extended = VanillaPatcherLauncher.ExtendNoStartDeadline(original, w.VerificationDeadline);
+            Assert(extended == TimeSpan.FromSeconds(129));
+            Assert(VanillaPatcherLauncher.ExtendNoStartDeadline(extended, TimeSpan.FromSeconds(124)) == extended);
+            Assert(VanillaPatcherLauncher.ExtendNoStartDeadline(extended, null) == extended);
+            Assert(VanillaPatcherLauncher.ExtendNoStartDeadline(extended, TimeSpan.FromHours(1)) == TimeSpan.FromMinutes(10));
+        }
         private static VanillaLauncherUpdateProcess P(int pid, bool game = false, string dir = "4R-reset-test", int seconds = 0)
         { return new VanillaLauncherUpdateProcess(pid, Epoch.AddSeconds(seconds), Path.Combine(Path.GetTempPath(), dir, game ? "Vanilla MMO.exe" : "Vanilla Launcher.exe"), game); }
         private sealed class H
