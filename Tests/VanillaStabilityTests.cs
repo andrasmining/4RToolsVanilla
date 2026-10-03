@@ -34,13 +34,15 @@ namespace Vanilla.Diagnostics.Tests
             Test("Quantity recognition supports both observed text polarities", QuantityContrastVision);
             Test("Blank, mixed-polarity and non-positive quantities authorize no numeric input", QuantityRejectedVision);
             Test("Competing repeated-digit OCR readings cannot authorize a quantity", QuantityAmbiguousVision);
-            Test("Untouched stack acceptance requires all carried weight to fit below precision fill", QuantityDefaultCapacity);
+            Test("Untouched stack acceptance requires all carried weight to fit at every Cart percentage", QuantityDefaultCapacity);
             Test("Quantity capacity evidence requires fresh matching character and process state", QuantityFreshWeights);
             Test("Quantity capacity evidence rejects stale or inconsistent individual weight fields", QuantityWeightFields);
             Test("Unreadable default quantity is confirmed once from stable prompt and capacity evidence", QuantityDefaultPrompt);
             Test("Quantity-like panels seen before the drag never authorize default confirmation or Escape", QuantityBeforeDragPanels);
             Test("Quantity confirmation rejects stale, changed, missing and ambiguous prompt evidence", QuantityPromptGuards);
             Test("Quantity cancellation waits for delayed dismissal and two consecutive absent frames", QuantityCancelPrompt);
+            Test("Quantity cancellation retries only the same preserved modal after selection is lost", QuantityCancelRetry);
+            Test("Post-transfer quantity dismissal waits for the real modal to disappear", QuantityPassiveDismissal);
             Test("Quantity cancellation rejects stale or replaced absence evidence and remaining modals", QuantityDismissalGuards);
             Test("Temporary pending cast finishes before move and sit", TemporaryRestSequence);
             Test("Temporary sit requires movement and fails on the bounded deadline", TemporaryMoveTimeout);
@@ -360,9 +362,13 @@ namespace Vanilla.Diagnostics.Tests
         {
             Assert(VanillaCartQuantity.CanAcceptWholeInventory(10000, 0, 10000), "Exact entire-inventory fit was rejected.");
             Assert(VanillaCartQuantity.CanAcceptWholeInventory(2501, 7499, 10000), "Exact fit immediately below 75% was rejected.");
+            Assert(VanillaCartQuantity.CanAcceptWholeInventory(2500, 7500, 10000), "Exact fit at 75% was rejected.");
+            Assert(VanillaCartQuantity.CanAcceptWholeInventory(329, 7632, 10000), "Observed remaining farming loot was forced into numeric OCR despite whole-inventory capacity proof.");
+            Assert(VanillaCartQuantity.CanAcceptWholeInventory(1, 9999, 10000), "Exact final-unit fit was rejected.");
             Assert(!VanillaCartQuantity.CanAcceptWholeInventory(2502, 7499, 10000), "A one-weight capacity overflow was accepted.");
-            foreach (uint cart in new[] { 7500U, 9999U, 10000U, 10001U, uint.MaxValue })
-                Assert(!VanillaCartQuantity.CanAcceptWholeInventory(1, cart, 10000), "Precision-fill/full/invalid Cart accepted an unedited stack.");
+            Assert(!VanillaCartQuantity.CanAcceptWholeInventory(330, 9671, 10000), "Capacity-limited stack was accepted without numeric proof.");
+            foreach (uint cart in new[] { 10000U, 10001U, uint.MaxValue })
+                Assert(!VanillaCartQuantity.CanAcceptWholeInventory(1, cart, 10000), "Full/invalid Cart accepted an unedited stack.");
             Assert(!VanillaCartQuantity.CanAcceptWholeInventory(0, 0, 10000), "Missing carried weight became capacity proof.");
             Assert(!VanillaCartQuantity.CanAcceptWholeInventory(10001, 0, 10000), "Excess carried weight was accepted.");
             foreach (uint maximum in new[] { 0U, 9999U, 10001U, uint.MaxValue })
@@ -451,7 +457,7 @@ namespace Vanilla.Diagnostics.Tests
             }
             var input = new FakeQuantityPrompt();
             int capacityChecks = 0;
-            VanillaCartQuantity.ConfirmDefault(input, () => { capacityChecks++; return VanillaCartQuantity.CanAcceptWholeInventory(1000, 100, 10000); });
+            VanillaCartQuantity.ConfirmDefault(input, () => { capacityChecks++; return VanillaCartQuantity.CanAcceptWholeInventory(329, 7632, 10000); });
             Assert(input.Captures == 2 && capacityChecks == 1 && input.Keys.SequenceEqual(new[] { Keys.Enter }),
                 "Default quantity required OCR, skipped repeated prompt evidence or sent duplicate Enter.");
             Assert(input.PressedCapture == 2, "Enter did not use the latest prompt capture.");
@@ -506,11 +512,64 @@ namespace Vanilla.Diagnostics.Tests
             Assert(VanillaCartQuantity.CancelKnownPrompt(absent) && absent.Captures == 2 && absent.Keys.Count == 0,
                 "Already absent prompt required input or skipped confirmation.");
             var persistent = new FakeQuantityPrompt();
-            Assert(!VanillaCartQuantity.CancelKnownPrompt(persistent) && persistent.Keys.SequenceEqual(new[] { Keys.Escape })
-                && persistent.Captures == 17, "A persistent prompt was accepted or cancellation was unbounded.");
+            Assert(!VanillaCartQuantity.CancelKnownPrompt(persistent)
+                && persistent.Keys.Count == VanillaCartQuantity.CancelAttemptLimit && persistent.Keys.All(key => key == Keys.Escape)
+                && persistent.Captures == 2 + VanillaCartQuantity.CancelSettleSamples * VanillaCartQuantity.CancelAttemptLimit,
+                "A persistent prompt was accepted or cancellation was unbounded.");
             var stopped = new FakeQuantityPrompt { CancelAfterEscape = true };
             Reject(() => VanillaCartQuantity.CancelKnownPrompt(stopped));
             Assert(stopped.Keys.SequenceEqual(new[] { Keys.Escape }), "STOP after Escape sent further keys.");
+        }
+        private static void QuantityCancelRetry()
+        {
+            foreach (bool selectionLost in new[] { false, true })
+            {
+                var delayed = new FakeQuantityPrompt
+                {
+                    Frame = n => new QuantityFrame
+                    {
+                        Count = n <= 2 + VanillaCartQuantity.CancelSettleSamples + 2 ? 1 : 0,
+                        Unselected = selectionLost && n > 2
+                    }
+                };
+                string evidence;
+                Assert(VanillaCartQuantity.CancelKnownPrompt(delayed, null, Rectangle.Empty, out evidence)
+                    && delayed.Keys.SequenceEqual(new[] { Keys.Escape, Keys.Escape }),
+                    "A laggy unchanged quantity modal did not receive a bounded fresh-confirmed retry: " + evidence);
+            }
+            var replaced = new FakeQuantityPrompt
+            {
+                Frame = n => new QuantityFrame { Unselected = n > 2, ChangedSurface = n > 2 }
+            };
+            Assert(!VanillaCartQuantity.CancelKnownPrompt(replaced) && replaced.Keys.SequenceEqual(new[] { Keys.Escape }),
+                "A replaced unselected white modal inherited permission for another Escape.");
+            var stopped = new FakeQuantityPrompt { CancelAtCapture = 2 + VanillaCartQuantity.CancelSettleSamples };
+            Reject(() => VanillaCartQuantity.CancelKnownPrompt(stopped));
+            Assert(stopped.Keys.SequenceEqual(new[] { Keys.Escape }), "STOP at the cancellation retry boundary sent another Escape.");
+        }
+        private static void QuantityPassiveDismissal()
+        {
+            Rectangle dialog, field;
+            using (Bitmap image = QuantityPromptImage(new QuantityFrame()))
+                Assert(VanillaInventoryVision.TryFindQuantityPrompt(image, out dialog, out field), "Known prompt fixture not recognized.");
+            string evidence;
+            var delayed = new FakeQuantityPrompt { Frame = n => new QuantityFrame { Count = n <= 3 || n == 5 ? 1 : 0 } };
+            Assert(VanillaCartQuantity.WaitForPromptClear(delayed, dialog, out evidence)
+                && delayed.Captures == 7 && delayed.Keys.Count == 0,
+                "Passive dismissal did not wait for consecutive actual absence: " + evidence);
+            var unselected = new FakeQuantityPrompt { Frame = n => new QuantityFrame { Unselected = true } };
+            Assert(!VanillaCartQuantity.WaitForPromptClear(unselected, dialog, out evidence)
+                && unselected.Keys.Count == 0 && unselected.Captures == VanillaCartQuantity.CancelSettleSamples,
+                "Selection loss was reported as modal dismissal.");
+            foreach (string change in new[] { "timestamp", "window", "process", "origin", "size", "missing", "proof" })
+            {
+                var changed = new FakeQuantityPrompt { Frame = n => { var frame = QuantityChangedFrame(change, n); frame.Count = 0; return frame; } };
+                Assert(!VanillaCartQuantity.WaitForPromptClear(changed, dialog, out evidence) && changed.Keys.Count == 0,
+                    "Invalid/replaced absence capture was accepted: " + change);
+            }
+            var stopped = new FakeQuantityPrompt { CancelAtCapture = 1 };
+            Reject(() => { string ignored; VanillaCartQuantity.WaitForPromptClear(stopped, dialog, out ignored); });
+            Assert(stopped.Keys.Count == 0, "Passive dismissal sent input after STOP.");
         }
         private static void QuantityDismissalGuards()
         {
@@ -522,18 +581,15 @@ namespace Vanilla.Diagnostics.Tests
             Assert(!VanillaCartQuantity.CancelKnownPrompt(edited, null, knownDialog) && edited.Keys.Count == 0,
                 "An already edited quantity modal became successful dismissal or received blind Escape.");
             foreach (bool afterEscape in new[] { false, true })
-            foreach (string change in new[] { "timestamp", "window", "process", "origin", "size", "missing", "proof", "multiple", "fields", "unselected" })
+            foreach (string change in new[] { "timestamp", "window", "process", "origin", "size", "missing", "proof", "multiple", "fields" })
             {
-                // With no earlier selected prompt, a plain white panel has no
-                // established quantity identity. The post-Escape case pins that identity.
-                if (!afterEscape && change == "unselected") continue;
                 var input = new FakeQuantityPrompt
                 {
                     Frame = n =>
                     {
                         if (afterEscape && n <= 2) return new QuantityFrame();
                         QuantityFrame frame = QuantityChangedFrame(change, n);
-                        if (change != "multiple" && change != "fields" && change != "unselected") frame.Count = 0;
+                        if (change != "multiple" && change != "fields") frame.Count = 0;
                         return frame;
                     }
                 };
@@ -548,7 +604,7 @@ namespace Vanilla.Diagnostics.Tests
         private sealed class QuantityFrame
         {
             internal int Count = 1, Offset;
-            internal bool SplitField, Unselected, MissingImage, MissingProof;
+            internal bool SplitField, Unselected, MissingImage, MissingProof, ChangedSurface;
             internal int ProcessId = 201;
             internal IntPtr Window = new IntPtr(501);
             internal Point Origin = new Point(20, 30);
@@ -585,6 +641,7 @@ namespace Vanilla.Diagnostics.Tests
                 {
                     int x = 180 + frame.Offset, y = 170 + index * 120;
                     graphics.FillRectangle(Brushes.White, x, y, 270, 80);
+                    if (frame.ChangedSurface) graphics.FillRectangle(Brushes.Black, x + 10, y + 8, 80, 12);
                     graphics.FillRectangle(frame.Unselected ? Brushes.WhiteSmoke : Brushes.Blue, x + 20, y + 40, 90, 24);
                     graphics.DrawString("abc", font, frame.Unselected ? Brushes.Black : Brushes.White,
                         x + 24, y + 42, StringFormat.GenericTypographic);

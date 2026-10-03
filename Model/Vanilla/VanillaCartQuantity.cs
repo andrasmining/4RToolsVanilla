@@ -28,6 +28,9 @@ namespace _4RTools.Model.Vanilla
 
     internal static class VanillaCartQuantity
     {
+        internal const int CancelAttemptLimit = 3;
+        internal const int CancelSettleSamples = 15;
+
         private sealed class PromptInput : IVanillaQuantityPromptInput
         {
             private readonly VanillaForegroundInput input;
@@ -42,7 +45,6 @@ namespace _4RTools.Model.Vanilla
         internal static bool CanAcceptWholeInventory(uint carriedWeight, uint cartWeight, uint cartMaximum)
         {
             return carriedWeight > 0 && cartMaximum == 10000 && cartWeight <= cartMaximum
-                && !VanillaWeightCartAutomation.RequiresPrecisionFill(cartWeight * 100m / cartMaximum)
                 && carriedWeight <= cartMaximum - cartWeight;
         }
 
@@ -310,14 +312,65 @@ namespace _4RTools.Model.Vanilla
             throw new InvalidOperationException("Quantity field did not become empty after clearing; no value typed.");
         }
 
+        internal static bool WaitForPromptClear(VanillaForegroundInput input, Rectangle knownDialog, out string evidence)
+        { return WaitForPromptClear(new PromptInput(input), knownDialog, out evidence); }
+
+        internal static bool WaitForPromptClear(IVanillaQuantityPromptInput input, Rectangle knownDialog, out string evidence)
+        {
+            VanillaVisualInputProof previous = null;
+            int absent = 0;
+            evidence = "Quantity dismissal not yet observed.";
+            for (int pass = 0; pass < CancelSettleSamples; pass++)
+            {
+                input.Check();
+                using (Bitmap image = input.Capture())
+                {
+                    if (!HasCaptureProof(image, input.Proof)
+                        || (previous != null && !SameFreshSurface(previous, input.Proof)))
+                    {
+                        evidence = "Quantity dismissal capture is missing, stale or belongs to a changed client surface.";
+                        return false;
+                    }
+                    previous = input.Proof;
+                    bool remains = VanillaInventoryVision.HasQuantityPrompt(image)
+                        || (!knownDialog.IsEmpty && VanillaInventoryVision.HasQuantityDialogSurface(image, knownDialog));
+                    absent = remains ? 0 : absent + 1;
+                    if (absent >= 2)
+                    {
+                        evidence = "Quantity prompt and known modal absent on two fresh owned-client captures.";
+                        return true;
+                    }
+                }
+                input.Pause(120);
+            }
+            evidence = "Quantity prompt or known modal remains after the bounded passive settle; no further transfer input is safe.";
+            return false;
+        }
+
         internal static bool CancelKnownPrompt(VanillaForegroundInput input, Rectangle[] beforeDrag = null,
             Rectangle knownDialog = default(Rectangle))
-        { return CancelKnownPrompt(new PromptInput(input), beforeDrag, knownDialog); }
+        {
+            string evidence;
+            return CancelKnownPrompt(new PromptInput(input), beforeDrag, knownDialog, out evidence);
+        }
+
+        internal static bool CancelKnownPrompt(VanillaForegroundInput input, Rectangle[] beforeDrag,
+            Rectangle knownDialog, out string evidence)
+        { return CancelKnownPrompt(new PromptInput(input), beforeDrag, knownDialog, out evidence); }
 
         internal static bool CancelKnownPrompt(IVanillaQuantityPromptInput input, Rectangle[] beforeDrag = null,
             Rectangle knownDialog = default(Rectangle))
         {
+            string evidence;
+            return CancelKnownPrompt(input, beforeDrag, knownDialog, out evidence);
+        }
+
+        internal static bool CancelKnownPrompt(IVanillaQuantityPromptInput input, Rectangle[] beforeDrag,
+            Rectangle knownDialog, out string evidence)
+        {
+            evidence = "Quantity dismissal was not evaluated.";
             VanillaQuantityObservation previous = null, cancelled = null;
+            KnownPromptPixels knownPixels = null;
             VanillaVisualInputProof lastCapture = null;
             int absent = 0;
             // Escape only after two fresh observations of the same unique prompt.
@@ -328,63 +381,134 @@ namespace _4RTools.Model.Vanilla
                 using (Bitmap image = input.Capture())
                 {
                     if (!HasCaptureProof(image, input.Proof)
-                        || (lastCapture != null && !SameFreshSurface(lastCapture, input.Proof))) return false;
+                        || (lastCapture != null && !SameFreshSurface(lastCapture, input.Proof)))
+                        return DismissalResult(false, "Missing, stale or changed owned-client quantity capture.", out evidence);
                     lastCapture = input.Proof;
                     Rectangle dialog, field;
                     if (VanillaInventoryVision.TryFindQuantityPrompt(image, out dialog, out field))
                     {
-                        if (WasPresentBeforeDrag(dialog, beforeDrag)) return false;
+                        if (WasPresentBeforeDrag(dialog, beforeDrag))
+                            return DismissalResult(false, "Quantity-like surface was already present before this drag.", out evidence);
                         absent = 0;
                         var current = new VanillaQuantityObservation { Dialog = dialog, Field = field, Proof = input.Proof };
                         if (SamePrompt(previous, current))
                         {
                             input.Check();
+                            knownPixels = new KnownPromptPixels(image, current.Dialog, current.Field);
                             input.Press(Keys.Escape, current.Proof);
                             cancelled = current;
+                            VanillaDebugLog.Write("WEIGHT", "event=quantity-cancel attempt=1/" + CancelAttemptLimit
+                                + " dialog=" + current.Dialog + " selectedField=" + current.Field + ".");
                             break;
                         }
                         previous = current;
                     }
                     else
                     {
-                        if (VanillaInventoryVision.HasQuantityPrompt(image)) return false;
+                        if (VanillaInventoryVision.HasQuantityPrompt(image))
+                            return DismissalResult(false, "Quantity cancellation found multiple/ambiguous prompts or edit fields.", out evidence);
                         // Limited quantity entry may have already removed the blue
                         // selection. Its previously recognized modal must still be
                         // absent before resume; blank edit text is not dismissal.
-                        if (!knownDialog.IsEmpty && VanillaInventoryVision.HasQuantityDialogSurface(image, knownDialog)) return false;
-                        if (previous != null && VanillaInventoryVision.HasQuantityDialogSurface(image, previous.Dialog)) return false;
+                        if (!knownDialog.IsEmpty && VanillaInventoryVision.HasQuantityDialogSurface(image, knownDialog))
+                            return DismissalResult(false, "Known quantity surface remains without a newly verified selected edit; Escape withheld.", out evidence);
+                        if (previous != null && VanillaInventoryVision.HasQuantityDialogSurface(image, previous.Dialog))
+                            return DismissalResult(false, "Observed quantity lost selection but its surface remains; Escape withheld.", out evidence);
                         previous = null;
-                        if (++absent >= 2) return true;
+                        if (++absent >= 2)
+                            return DismissalResult(true, "Quantity prompt and known modal absent on two fresh captures; no Escape needed.", out evidence);
                     }
                 }
                 input.Pause(120);
             }
-            if (cancelled == null) return false;
+            if (cancelled == null)
+                return DismissalResult(false, "No unique stable quantity prompt was verified for cancellation.", out evidence);
             absent = 0;
-            for (int pass = 0; pass < 15; pass++)
+            int attempts = 1, remaining = 0;
+            for (int pass = 0; pass < CancelSettleSamples * CancelAttemptLimit; pass++)
             {
                 input.Pause(120);
                 input.Check();
                 using (Bitmap image = input.Capture())
                 {
-                    if (!HasCaptureProof(image, input.Proof) || !SameFreshSurface(lastCapture, input.Proof)) return false;
+                    if (!HasCaptureProof(image, input.Proof) || !SameFreshSurface(lastCapture, input.Proof))
+                        return DismissalResult(false, "Missing, stale or changed owned-client capture after quantity Escape.", out evidence);
                     lastCapture = input.Proof;
                     Rectangle dialog, field;
-                    if (!VanillaInventoryVision.HasQuantityPrompt(image))
+                    bool selected = VanillaInventoryVision.HasQuantityPrompt(image);
+                    bool surfaceRemains = VanillaInventoryVision.HasQuantityDialogSurface(image, cancelled.Dialog);
+                    if (!selected && !surfaceRemains)
                     {
-                        // Losing only the blue selection is not proof of dismissal.
-                        if (VanillaInventoryVision.HasQuantityDialogSurface(image, cancelled.Dialog)) absent = 0;
-                        else if (++absent >= 2) return true;
+                        remaining = 0;
+                        if (++absent >= 2)
+                            return DismissalResult(true, "Quantity edit and known modal disappeared on two fresh captures after "
+                                + attempts + " verified Escape attempt(s).", out evidence);
                     }
                     else
                     {
                         absent = 0;
-                        if (!VanillaInventoryVision.TryFindQuantityPrompt(image, out dialog, out field)
-                            || dialog != cancelled.Dialog || field != cancelled.Field) return false;
+                        // Escape can remove the selection before the custom modal closes.
+                        // Preserve its observed title/button pixels, excluding only the
+                        // previously identified edit. A different/unknown white panel
+                        // must never inherit permission for another Escape.
+                        if (!surfaceRemains || !knownPixels.Matches(image)
+                            || (selected && (!VanillaInventoryVision.TryFindQuantityPrompt(image, out dialog, out field)
+                                || dialog != cancelled.Dialog || field != cancelled.Field)))
+                            return DismissalResult(false, "Quantity surface changed or became ambiguous after Escape; no further input.", out evidence);
+                        remaining++;
+                        if (attempts < CancelAttemptLimit && remaining >= 2 && (pass + 1) % CancelSettleSamples == 0)
+                        {
+                            input.Check();
+                            input.Press(Keys.Escape, input.Proof);
+                            attempts++;
+                            remaining = 0;
+                            VanillaDebugLog.Write("WEIGHT", "event=quantity-cancel attempt=" + attempts + "/" + CancelAttemptLimit
+                                + " dialog=" + cancelled.Dialog + " selectionPresent=" + selected
+                                + " preservedModalPixels=True.");
+                        }
                     }
                 }
             }
-            return false;
+            return DismissalResult(false, "Known quantity modal remains after " + attempts
+                + " bounded verified Escape attempts; resume withheld.", out evidence);
+        }
+
+        private static bool DismissalResult(bool dismissed, string detail, out string evidence)
+        {
+            evidence = detail;
+            VanillaDebugLog.Write("WEIGHT", "event=quantity-cancel-result dismissed=" + dismissed + " evidence='" + detail + "'.");
+            return dismissed;
+        }
+
+        private sealed class KnownPromptPixels
+        {
+            private readonly Rectangle dialog, edit;
+            private readonly int[] pixels;
+            internal KnownPromptPixels(Bitmap image, Rectangle dialog, Rectangle field)
+            {
+                this.dialog = dialog;
+                edit = Rectangle.Intersect(dialog, Rectangle.Inflate(field, 6, 6));
+                pixels = new int[dialog.Width * dialog.Height];
+                for (int y = dialog.Top; y < dialog.Bottom; y++)
+                for (int x = dialog.Left; x < dialog.Right; x++)
+                    pixels[(y - dialog.Top) * dialog.Width + x - dialog.Left] = image.GetPixel(x, y).ToArgb();
+            }
+            internal bool Matches(Bitmap image)
+            {
+                if (image == null || !new Rectangle(Point.Empty, image.Size).Contains(dialog)) return false;
+                int observed = 0, changed = 0;
+                for (int y = dialog.Top; y < dialog.Bottom; y++)
+                for (int x = dialog.Left; x < dialog.Right; x++)
+                {
+                    if (edit.Contains(x, y)) continue;
+                    observed++;
+                    Color before = Color.FromArgb(pixels[(y - dialog.Top) * dialog.Width + x - dialog.Left]);
+                    Color after = image.GetPixel(x, y);
+                    if (Math.Abs(before.R - after.R) + Math.Abs(before.G - after.G) + Math.Abs(before.B - after.B) > 24)
+                        changed++;
+                }
+                return observed >= 100 && changed <= observed / 100;
+            }
         }
 
         private static void ConfirmFocus(VanillaForegroundInput input, Rectangle field)

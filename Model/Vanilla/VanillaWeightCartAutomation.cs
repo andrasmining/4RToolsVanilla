@@ -350,6 +350,11 @@ namespace _4RTools.Model.Vanilla
                                 if (quantity)
                                 {
                                     VanillaFleetClientInfo capacity = QuantityWeights(token, cartBefore.Maximum);
+                                    activity(token.Account.Label + ": quantity capacity proof: carried=" + capacity.CurrentWeight
+                                        + ", Cart=" + capacity.CurrentCartWeight + "/" + capacity.MaxCartWeight
+                                        + ", free=" + (capacity.MaxCartWeight.Value - capacity.CurrentCartWeight.Value)
+                                        + "; whole-inventory fit=" + VanillaCartQuantity.CanAcceptWholeInventory(capacity.CurrentWeight.Value,
+                                            capacity.CurrentCartWeight.Value, capacity.MaxCartWeight.Value) + ".");
                                     if (VanillaCartQuantity.CanAcceptWholeInventory(capacity.CurrentWeight.Value,
                                         capacity.CurrentCartWeight.Value, capacity.MaxCartWeight.Value))
                                     {
@@ -398,13 +403,12 @@ namespace _4RTools.Model.Vanilla
 
                                 bool cartIncreased = WaitForCartWeightIncrease(token.ProcessId, cartBefore.Current, cancelled,
                                     out cartAfter, CartProgressTimeoutMs);
-                                using (Bitmap verify = input.CaptureClientBitmap())
+                                string promptClearEvidence;
+                                if (!VanillaCartQuantity.WaitForPromptClear(input, knownQuantityDialog, out promptClearEvidence))
                                 {
-                                    if (VanillaInventoryVision.HasQuantityPrompt(verify))
-                                    {
-                                        manualHold = true;
-                                        throw new VanillaCartManualException("A quantity dialog remained or appeared late. No unverified confirmation was sent; clearing the known prompt before paused-state recovery.");
-                                    }
+                                    manualHold = true;
+                                    throw new VanillaCartManualException("A quantity dialog remained or appeared late. " + promptClearEvidence
+                                        + " No unverified confirmation was sent; clearing the known prompt before paused-state recovery.");
                                 }
 
                                 if (!cartIncreased)
@@ -639,8 +643,11 @@ namespace _4RTools.Model.Vanilla
                 bool neededResume = paused;
                 if (paused)
                 {
-                    if (!VanillaCartQuantity.CancelKnownPrompt(input, quantityBeforeDrag, knownQuantityDialog))
-                        throw new InvalidOperationException("Quantity dialog could not be safely cleared before resume.");
+                    string cancellationEvidence;
+                    bool dismissed = VanillaCartQuantity.CancelKnownPrompt(input, quantityBeforeDrag, knownQuantityDialog, out cancellationEvidence);
+                    report(token.Account.Label + ": quantity cleanup: " + cancellationEvidence);
+                    if (!dismissed)
+                        throw new InvalidOperationException("Quantity dialog could not be safely cleared before resume. " + cancellationEvidence);
                     VerifyResume(token, input, cancelled, report);
                     paused = false;
                 }
